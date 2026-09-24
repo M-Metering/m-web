@@ -1,0 +1,175 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   BASE RESET
+   ============================================ */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* ============================================
+   GLOBAL TYPOGRAPHY & BODY
+   ============================================ */
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+}
+
+/* ============================================
+   APP BACKGROUND — flat, solid surface (see the
+   `background` token in tailwind.config.js). No decorative
+   gradient mesh — enterprise-plain by design.
+   Light Theme uses gray-100 (not gray-50) specifically so
+   white cards/panels have visible contrast against the page
+   — gray-50 was close enough to white that cards blended
+   into the background (see the `.card` rule below, which
+   pairs this with a real border for the same reason).
+   ============================================ */
+.app-bg-light {
+  background-color: #f3f4f6; /* gray-100 */
+  min-height: 100vh;
+}
+
+.app-bg-dark {
+  background-color: #030712; /* gray-950 */
+  min-height: 100vh;
+}
+
+/* ============================================
+   CARD / PANEL SURFACE — the shared "elevated surface"
+   look for dashboard stat cards, tables, panels, forms, and
+   list cards throughout the app. Centralized here (Light
+   Theme visibility pass) so a card previously relying on
+   shadow alone — and blending into the page background in
+   Light Theme — always gets a real, visible border. Dark
+   Theme's existing look (gray-800 surface on a gray-950
+   page) already had enough contrast and is unchanged here.
+   ============================================ */
+@layer components {
+  .card {
+    @apply bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg shadow-sm;
+  }
+
+  /* ============================================
+     FORM CONTROLS — text/search/date inputs, selects,
+     textareas. Light Theme intentionally pairs white input
+     text with a dark input surface (per design request)
+     instead of the usual white-surface/dark-text pairing,
+     specifically so the white text stays readable — do not
+     apply `text-white` to an input without this background.
+     Dark Theme's existing input look (dark surface, white
+     text) already worked and is unchanged here.
+     ============================================ */
+  .form-input {
+    @apply bg-gray-800 text-white placeholder-gray-400 border border-gray-600 rounded-lg
+           focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500
+           disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-gray-700
+           dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 dark:border-gray-600
+           transition-colors;
+  }
+}
+
+/* ============================================
+   SCROLLBAR — Theme-aware, brand-coloured
+   ============================================ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(184, 134, 10, 0.35); /* brand-600 */
+  border-radius: 99px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(184, 134, 10, 0.6);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(220, 172, 15, 0.4); /* brand-500 */
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(220, 172, 15, 0.65);
+}
+
+/* ============================================
+   MISC UTILITIES
+   ============================================ */
+html {
+  scroll-behavior: smooth;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+/* Safe area for notched devices (iOS) */
+.safe-area-inset-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ============================================
+   ANIMATIONS
+   ============================================ */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+/* ============================================
+   PRINT — landscape by default, since printable report
+   tables (see AdminReports.jsx's "Print to PDF") are wide.
+   The app chrome itself (sidebar/header/footer) is hidden via
+   Tailwind's `print:hidden` utility at each usage site, not
+   here — this file only holds the one rule Tailwind has no
+   utility for (`@page`).
+   ============================================ */
+@media print {
+  @page {
+    size: landscape;
+    margin: 12mm;
+  }
+}
