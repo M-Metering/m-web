@@ -8,8 +8,9 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import JEDApiService from '../services/api';
-import { isCompletedStatus, isAwaitingInstallationStatus } from '../../utils/statusBadge';
+import { jedStatusLabel } from '../../utils/statusBadge';
 import { fetchAllPages } from '../../utils/fetchAllPages';
+import { splitJedQueue, matchesInstallerSearch, jedRequestKey } from '../../utils/installerQueue';
 import StatusTabs from '../common/StatusTabs';
 import StatusBadge from '../common/StatusBadge';
 import InstallerJobSummary from './InstallerJobSummary';
@@ -47,7 +48,7 @@ function JobRow({ job, onClick }) {
           </p>
           <StatusBadge
             status={job.status}
-            label={isCompletedStatus(job.status) ? 'Paid & Completed' : job.status || 'pending'}
+            label={jedStatusLabel(job.status)}
             className="shrink-0 text-[11px]"
           />
         </div>
@@ -78,7 +79,7 @@ function JobTableRow({ job, onClick }) {
         {job.meterNo || job.meterNumber || 'N/A'}
       </td>
       <td className="px-4 py-3">
-        <StatusBadge status={job.status} label={isCompletedStatus(job.status) ? 'Paid & Completed' : job.status || 'pending'} />
+        <StatusBadge status={job.status} label={jedStatusLabel(job.status)} />
       </td>
       <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
         {formatDateOnly(job.dateRequested)}
@@ -105,7 +106,7 @@ function JobList({ jobs, onRowClick, emptyIcon: EmptyIcon, emptyMessage }) {
       {/* Mobile: card list */}
       <div className="sm:hidden divide-y divide-gray-200 dark:divide-gray-700">
         {jobs.map((job) => (
-          <JobRow key={job.id || job.accountNumber} job={job} onClick={onRowClick} />
+          <JobRow key={jedRequestKey(job)} job={job} onClick={onRowClick} />
         ))}
       </div>
 
@@ -124,7 +125,7 @@ function JobList({ jobs, onRowClick, emptyIcon: EmptyIcon, emptyMessage }) {
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
             {jobs.map((job) => (
-              <JobTableRow key={job.id || job.accountNumber} job={job} onClick={onRowClick} />
+              <JobTableRow key={jedRequestKey(job)} job={job} onClick={onRowClick} />
             ))}
           </tbody>
         </table>
@@ -179,29 +180,19 @@ function InstallerDashboard() {
     // elsewhere (e.g. an admin's bulk payment import) — see DataRefreshContext.
   }, [fetchJobs, refreshKey, refreshSignal]);
 
-  // Awaiting Installation = PAID only (INITIATED requests haven't been
-  // paid yet, so there's nothing for an installer to act on there — they
-  // don't appear in either tab). Completed = COMPLETED only.
-  const awaitingJobs = useMemo(
-    () => allJobs.filter((j) => isAwaitingInstallationStatus(j.status)),
-    [allJobs]
-  );
-  const completedJobs = useMemo(
-    () => allJobs.filter((j) => isCompletedStatus(j.status)),
+  // Awaiting = PAID, Completed = COMPLETED, INITIATED is neither — and each
+  // request is counted once, by account number. splitJedQueue is the single
+  // definition of those buckets (utils/installerQueue.js); the two status
+  // queries above are merged here, so a record the API returns in both would
+  // otherwise render twice.
+  const { awaiting: awaitingJobs, completed: completedJobs, duplicates } = useMemo(
+    () => splitJedQueue(allJobs),
     [allJobs]
   );
 
   const visibleJobs = useMemo(() => {
     const source = activeTab === 'awaiting' ? awaitingJobs : completedJobs;
-    if (!searchTerm.trim()) return source;
-    const term = searchTerm.toLowerCase();
-    return source.filter(
-      (j) =>
-        j.accountNumber?.toString().toLowerCase().includes(term) ||
-        j.custNames?.toLowerCase().includes(term) ||
-        j.applicantName?.toLowerCase().includes(term) ||
-        j.meterNo?.toString().toLowerCase().includes(term)
-    );
+    return source.filter((job) => matchesInstallerSearch(job, searchTerm));
   }, [activeTab, awaitingJobs, completedJobs, searchTerm]);
 
   const handleRowClick = (job) => {
@@ -257,7 +248,27 @@ function InstallerDashboard() {
         </div>
       )}
 
-      {/* Tabs */}
+      {/* The JED shared queue — deliberately headed, because the cards above
+          are a DIFFERENT list (jobs dispatched to this installer) and used to
+          carry the same two words. Two sections with identical labels and
+          different numbers is what made this screen look like it was showing
+          the same job twice. */}
+      <section aria-labelledby="jed-queue" className="space-y-2">
+        <div>
+          <h2 id="jed-queue" className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+            JED shared queue
+          </h2>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Paid JED requests every installer can pick up — these are not assigned to you.
+          </p>
+        </div>
+
+        {duplicates > 0 && (
+          <p role="status" className="text-xs text-amber-700 dark:text-amber-400">
+            {duplicates} repeated record{duplicates === 1 ? '' : 's'} from the server {duplicates === 1 ? 'was' : 'were'} shown once.
+          </p>
+        )}
+
       <div className="card overflow-hidden">
         <StatusTabs
           tabs={[
@@ -294,6 +305,7 @@ function InstallerDashboard() {
           }
         />
       </div>
+      </section>
     </div>
   );
 }

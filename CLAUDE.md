@@ -25,7 +25,7 @@ Versions below are read directly from `package.json` — verify there before ass
 | Icons | lucide-react 0.548.0 |
 | PWA | vite-plugin-pwa 1.3.0 (Workbox-generated service worker) |
 | Linting | ESLint 9.36.0, flat config (`eslint.config.js`), React Hooks + React Refresh plugins |
-| Testing | Vitest 3 + React Testing Library + jsdom (dev-only, added 2026-09-21). `npm test` runs `src/**/__tests__/*.test.{js,jsx}`: unit tests for the installation-scope, installer-job-filter, meter-capacity, meter-inventory, meter-display, meter-number, seal-number, user-account, payment-summary, error-message, xlsx, completed-report and pagination utils, plus component tests for Installation Requests, Assignments, Meter Schedule, User Management, My Jobs, InstallationDetail, Report Installation and the installer job summary, all against a mocked `jedApi`. `scripts/excel-check/` generates sample workbooks with the real export code and checks them in Microsoft Excel over COM (Windows with Excel only). Coverage is still narrow; see `CodeBaseAudit.md` for the untested high-risk areas |
+| Testing | Vitest 3 + React Testing Library + jsdom (dev-only, added 2026-09-21). `npm test` runs `src/**/__tests__/*.test.{js,jsx}`: unit tests for the installation-scope, installer-queue, status-badge, api-result, user-account, installer-job-filter, meter-capacity, meter-inventory, meter-display, meter-number, seal-number, user-account, payment-summary, error-message, xlsx, completed-report and pagination utils, plus component tests for Installation Requests, Assignments, Meter Schedule (inventory, search), User Management (edit/delete payloads), Navigation (the role matrix), Installer Dashboard, My Jobs, InstallationDetail, Report Installation and the installer job summary, all against a mocked `jedApi`. `scripts/excel-check/` generates sample workbooks with the real export code and checks them in Microsoft Excel over COM (Windows with Excel only). Coverage is still narrow; see `CodeBaseAudit.md` for the untested high-risk areas |
 | Spreadsheets | ExcelJS 4 (lazy-loaded chunk, excluded from the PWA precache), with an npm `overrides` pin of `uuid` ≥ 11.1.1 for a moderate advisory in ExcelJS's own `uuid` dependency |
 | Other | `sharp` (dev-only, PWA icon generation script) |
 
@@ -92,6 +92,32 @@ separate `importedAt`), `assignedAt` (dispatch to an installer) and `installatio
 (the physical install). `filterByImportDate` and the Installation Requests "Imported from/to" filter
 read **only** `importedAt`. JED's Remita requests are never imported — `importedAt` is `null` for them
 and `dateRequested` must never stand in for it.
+
+**Meter-number search uses `GET /meters/meter-number/{n}`** (`getMeterByNumber`) — one request, whole inventory, exact match. Only a PARTIAL term falls back to paging `GET /meters`, which has no search parameter. Never "solve" search by raising a page cap: that is slower and still wrong.
+
+**A 2xx is not a success.** This API can answer 200 with `{ success: false, message }`. Every mutation
+must pass its response through `assertApiSuccess` (`utils/apiResult.js`) before reporting success —
+otherwise the modal closes, the list refetches, and nothing changed. This has bitten JED completion
+and user delete already.
+
+**Send exactly the documented body.** The backend validates with Joi and rejects unknown keys
+(`"name" is not allowed`), and `getErrorMessage` drops that wording as backend-internal — so an
+over-full payload fails with a bare fallback and no clue why. `UserUpdate` is `firstName`,
+`lastName`, `role`, `email`, `homeAddress`, `officeAddress` — **not** phone, NIN, password or name.
+Validate only what you will actually send: validating a field the request omits can block a form
+that would otherwise succeed.
+
+**One installer-queue definition:** `utils/installerQueue.js` owns both installer lists —
+`splitAssignedJobs` (the installer's own dispatched jobs) and `splitJedQueue` (the shared JED queue)
+— plus `summarizeInstallerJobs`, which is *derived from* the first so a count can never disagree with
+the list under it. Dedup uses the resource's own key: integer `id` for `InstallationRequest`,
+`accountNumber` for `JedCustomerRequest`. **Never dedupe on customer name or meter number**, and
+never sum the two queues: the same customer can legitimately exist in both.
+
+**One name per status:** `JED_STATUS_LABELS`/`jedStatusLabel()` in `utils/statusBadge.js` is the only
+JED status vocabulary (PAID → "Awaiting Installation", COMPLETED → "Completed", INITIATED →
+"Awaiting Payment"). Don't write a status label inline — three screens had drifted to
+"Paid & Completed" and raw "PAID" before this was centralised (2026-09-24).
 
 **One Installations area:** `/installations` (`components/installations/InstallationsPage.jsx`) holds
 both admin views — **All Requests** (default) and **JED Queue** (`?view=jed`) — as one nav item. The

@@ -4,12 +4,32 @@
 // unavailable meter can't be picked. Serials are shown in full, as strings
 // (leading zeros intact). Large inventories are searched rather than scrolled:
 // at most MAX_SHOWN matches render at once.
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Search, X, Loader2, RefreshCw, ClipboardPaste } from 'lucide-react';
-import { matchPastedSerials } from '../../utils/meterInventory';
+import jedApi from '../services/api';
+import { matchPastedSerials, meterDeletionBlockReason } from '../../utils/meterInventory';
 import { meterMakeModel } from '../../utils/meterDisplay';
+import { normalizeStatus } from '../../utils/statusBadge';
 
 const MAX_SHOWN = 200;
+const COMPLETE_METER_NUMBER_RE = /^\d{10,13}$/;
+
+/**
+ * Why a real meter isn't offered for dispatch. Mirrors isAssignableMeter's
+ * rule (status AVAILABLE, assignmentStatus not ASSIGNED/USED/LOST) but phrased
+ * for the admin looking at an empty search box.
+ */
+function undispatchableReason(meter) {
+  const status = normalizeStatus(meter?.status);
+  const assignment = normalizeStatus(meter?.assignmentStatus);
+  if (assignment === 'ASSIGNED') return 'it is already dispatched to an installer';
+  if (assignment === 'USED') return 'it has already been installed';
+  if (assignment === 'LOST') return 'it is recorded as lost';
+  if (status && status !== 'AVAILABLE') return `its status is ${status.toLowerCase()}`;
+  // Exists, looks dispatchable, but isn't in this list — e.g. dispatched
+  // earlier in this same session, or beyond the loaded page cap.
+  return meterDeletionBlockReason(meter) ? 'it is in use' : 'it is not in the available list';
+}
 
 function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChange, disabled, invalid }) {
   const [query, setQuery] = useState('');
@@ -17,6 +37,8 @@ function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChan
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [pasteResult, setPasteResult] = useState(null);
+  // What the API says about a complete meter number that isn't in this list.
+  const [lookup, setLookup] = useState(null);
 
   const selected = useMemo(() => new Set(value), [value]);
   const phases = useMemo(
@@ -29,6 +51,39 @@ function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChan
     return options.filter((o) => (!phase || o.phaseType === phase) && (!term || o.serial.includes(term)));
   }, [options, query, phase]);
   const shown = matches.slice(0, MAX_SHOWN);
+
+  // This list deliberately contains only DISPATCHABLE meters, so a meter that
+  // exists but is installed, already out with an installer, or retired simply
+  // isn't here — which looks identical to "the search is broken". When a
+  // complete meter number finds nothing, ask the API what that meter actually
+  // is (GET /meters/meter-number/{n}) and say so. Nothing is invented: if the
+  // API doesn't have it either, that is what gets reported.
+  useEffect(() => {
+    const serial = query.trim();
+    if (matches.length > 0 || !COMPLETE_METER_NUMBER_RE.test(serial)) {
+      setLookup(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setLookup({ state: 'loading', serial });
+    (async () => {
+      try {
+        const response = await jedApi.getMeterByNumber(serial);
+        const payload = response?.data ?? response;
+        const meter = Array.isArray(payload) ? payload[0] : payload;
+        if (cancelled) return;
+        setLookup(meter?.meterNumber
+          ? { state: 'found', serial, reason: undispatchableReason(meter) }
+          : { state: 'missing', serial });
+      } catch (err) {
+        if (cancelled) return;
+        setLookup(String(err?.message || '').startsWith('NOT_FOUND:')
+          ? { state: 'missing', serial }
+          : { state: 'error', serial });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [query, matches.length]);
 
   const toggle = (serial) => {
     onChange(selected.has(serial) ? value.filter((s) => s !== serial) : [...value, serial]);
@@ -109,7 +164,23 @@ function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChan
         <p className="p-3 text-sm text-gray-500 dark:text-gray-400">No available meters to dispatch.</p>
       ) : (
         <ul id={`${id}-list`} aria-label="Available meters" className="max-h-60 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700/60">
-          {shown.length === 0 && <li className="p-3 text-sm text-gray-500 dark:text-gray-400">No meter matches &ldquo;{query}&rdquo;.</li>}
+          {shown.length === 0 && (
+            <li className="p-3 text-sm text-gray-500 dark:text-gray-400">
+              <p>No meter matches &ldquo;{query}&rdquo;.</p>
+              {lookup?.state === 'loading' && <p className="text-xs mt-1">Checking the meter inventory…</p>}
+              {lookup?.state === 'found' && (
+                <p className="text-xs mt-1 text-amber-700 dark:text-amber-400">
+                  Meter {lookup.serial} exists, but can&rsquo;t be dispatched because {lookup.reason}.
+                </p>
+              )}
+              {lookup?.state === 'missing' && (
+                <p className="text-xs mt-1">Meter {lookup.serial} is not in the meter inventory.</p>
+              )}
+              {lookup?.state === 'error' && (
+                <p className="text-xs mt-1">Couldn&rsquo;t check the wider inventory just now.</p>
+              )}
+            </li>
+          )}
           {shown.map((o) => (
             <li key={o.serial}>
               <label className="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-900/50">

@@ -7,6 +7,81 @@
 > **new resource**, not as changes to the JED endpoints. Read the section directly below before
 > the older gap entries, several of which are now historical.
 
+## 2026-09-24 (third pass): live probe of the failing endpoints
+
+The three reported failures survived two attempted fixes, so this pass probed the **live API**
+directly (unauthenticated — no credentials are available to this environment) to separate
+"route missing" from "route exists, auth required". A 404 `Route not found` and a 401
+`Access token required` are cleanly distinguishable, and bogus routes were probed as a control.
+
+| Request | Live result | What it proves |
+|---|---|---|
+| `GET /api/v1/users` | **401** Access token required | Route exists |
+| `GET /api/v1/users/{uuid}` | **401** | Route exists; a UUID does not 404 |
+| `PUT /api/v1/users/{uuid}` | **401** | **Route and method are correct** |
+| `PATCH /api/v1/users/{uuid}` | **404** Route not found | PATCH is wrong; PUT is right |
+| `DELETE /api/v1/users/{uuid}` | **401** | **Route and method are correct** |
+| `GET /api/v1/meters/meter-number/{n}` | **401** | Route exists — see below |
+| `GET /api/v1/users/{uuid}/not-a-route` | 404 (control) | The 401s above are meaningful |
+
+**Conclusions.** The frontend addresses the right routes with the right methods, and the UUID does
+not cause a routing failure. The base URL is the ME Metering API (no `.env` override is present; the
+default `https://api.memetering.com` applies) and there is exactly one HTTP client in the codebase.
+Everything past the auth boundary — payload validation, the integer-vs-UUID question in gap **Y**,
+and the actual status code a Super Admin's DELETE receives — **cannot be observed from here**.
+
+### Gap AA — `GET /meters/meter-number/{meterNumber}` was never used (frontend fix, not a gap)
+
+Recorded here because it corrects gap **X**'s framing. The endpoint exists and is the authoritative
+way to find a meter by its number across the whole inventory in one request. `api.js` has defined
+`getMeterByNumber` since the beginning with **zero call sites** — `CodeBaseAudit.md`'s 2026-08-29
+pass deliberately left it unwired as "a pure redundant round-trip for data already on screen". That
+reasoning is right for a details modal and wrong for search, where the entire point is to reach a
+meter that is *not* on screen. Meter search now uses it for a complete meter number; gap **X** (no
+`search` parameter) still stands for **partial** terms, which have no endpoint and still require the
+paged scan.
+
+## 2026-09-24 (second pass): meter search, and the user update/delete contract
+
+**Verified against:** the live `swagger.json`, re-read for the `/users` and `/meters` groups.
+
+| # | Gap | Effect in the app today | What the backend needs to provide |
+|---|---|---|---|
+| X | **`GET /meters` has no search parameter.** Documented query params are exactly `page`, `limit` (max 100), `status`, `phaseType`. There is no `search`, `q` or `meterNumber` filter, and `GET /meters/export` is the same. | Meter-number search pages through the whole filtered inventory and matches client-side. That is correct but costly: finding one meter in ~6,000 costs ~60 requests. The scan is capped at 10,000 records and the UI now *says* when the cap cut it short instead of showing a confident "not found". | A `search` parameter on `GET /meters` (matching meter number, SIM and SGC as substrings), so one request replaces sixty. `GET /meters/meter-number/{meterNumber}` exists but is exact-match only and can't back a partial search box. |
+| Y | **`PUT` and `DELETE /users/{id}` document the id as `integer, minimum: 1`, but user ids are UUIDs.** `GET /users/{id}` correctly documents `type: string, format: uuid`; the other two still carry the pre-migration integer, with examples `1` and `5`. | The app sends the UUID to all three, which is the only thing it can do. If the backend validates the path parameter as documented, **every update and delete would be rejected** — which is consistent with the reported "delete doesn't work". This could not be confirmed: no credentials were available to observe a live response. | Correct the `PUT`/`DELETE` path-parameter schema to `string`/`uuid` to match `GET` and the real `User.id`, **or** confirm the integer is genuine and say what id the client should send. This is the one open question behind the delete report. |
+| Z | **A 2xx response can carry `success: false`.** Known behaviour (the JED completion path has guarded against it since 2026-09-21), but it isn't documented for the user endpoints. | Create, update and delete now assert `success !== false` before reporting success (`utils/apiResult.js`), so a body that says the operation failed is no longer treated as a silent win. | Either document that `success` must be read on 2xx for these endpoints, or return a 4xx when the operation fails. |
+
+**Not backend gaps — fixed in the frontend this pass** (details in `PROJECT_CONTEXT.md`): the meter-search
+scan was capped at 2,000 records against a ~6,000-meter inventory; the Edit User payload sent three
+fields (`name`, `phone`, `nin`) that `UserUpdate` does not define; and the edit form validated phone
+and NIN, which the update never sends, so an account with no `nin` on record could not be saved at all.
+
+## 2026-09-24: meter field verification, and installer-queue duplication
+
+**Verified against:** `GET https://api.memetering.com/api-docs/swagger.json`, re-pulled. Unchanged.
+
+### Meter Make / Model / Manufacture Date — definitive
+
+| Field | In the API? | Endpoint | Actual field name | Notes |
+|---|---|---|---|---|
+| Make | **Yes** | `GET /meters` only | `meterMake` | Top-level, `type: string`, not required. The **only** make/manufacturer field in the spec. |
+| Model | **Yes** | `GET /meters` only | `model` | Top-level, `type: string`, not required. Separate from `meterMake`. |
+| Manufacture Date | **Yes** | `GET /meters` only | `manufacturedDate` | Top-level, `type: string` with **no `format: date`** — so the value's shape is whatever the importer wrote. Distinct from `createdAt`/`uploadedAt`/`assignedAt`/`installationDate`. |
+| Manufacturer (as a field distinct from Make) | **No** | — | — | The string "manufactur" occurs **once** in all 85 operations: `manufacturedDate`. There is no `manufacturer` and no `make` field. |
+
+**The caveat that matters (gap U below):** all three are documented on `GET /meters` and **nowhere else**.
+`GET /meters/{id}`, `GET /meters/meter-number/{meterNumber}`, `GET /installations/me/meters` and
+`GET /assignments/{id}` all document a **description only, with no response schema**, so whether they
+return these fields cannot be verified from the spec, and no credentials were available to observe a
+live response. The app therefore treats all three as optional on every screen and renders
+"Not recorded" when absent, rather than assuming the documented shape holds everywhere.
+
+| # | Gap | Effect in the app today | What the backend needs to provide |
+|---|---|---|---|
+| U | **Only one of the five meter-returning endpoints documents its response.** `GET /meters` has an item schema; `GET /meters/{id}`, `GET /meters/meter-number/{n}`, `GET /installations/me/meters` and `GET /assignments/{id}` have none. | Make/model/manufactured-date are read defensively everywhere (`utils/meterDisplay.js`) and shown as "Not recorded" when missing. The installer's My Meters list and the dispatch-batch detail may therefore show "Not recorded" for meters that do have the data, simply because those endpoints' payloads are unknown. | Publish the meter item schema once and reference it from all five, and confirm the same fields are returned by each. Also give `manufacturedDate` a `format` (`date`) so it isn't an untyped string. |
+| V | **The JED installer queue is shared, so an installer's dashboard mixes two different lists.** `GET /external/jed/requests/installer` is filterable by status only — there is no per-installer scoping (gap A). The multi-disco `GET /installations/me/jobs` *is* scoped to the caller. | The Installer Dashboard shows both, now explicitly labelled ("Dispatched to you by an administrator" vs. "Paid JED requests every installer can pick up — these are not assigned to you") and never summed. The same customer can genuinely appear in both, which is what made the screen look like it was duplicating jobs. | Per-installer scoping on the JED queue (or the backend-owned bridge described in gap A), so an installer has one list of their own work rather than two lists with different ownership semantics. |
+| W | **Repeated records are possible and unexplained.** The dashboard asks `GET /external/jed/requests/installer` for `PAID` and `COMPLETED` separately and merges the results; nothing in the spec says a record can't satisfy both, and no `pagination` block is documented for this route. | Both installer lists now deduplicate by the resource's own key (`accountNumber` for JED, `id` for imported jobs) and **report the count of repeats** to the user instead of hiding them. | Confirm the status filter is exclusive, document the `pagination` block for this route, and guarantee a record appears at most once per response. |
+
 ## 2026-09-23 (second pass): meter make/model, Meter Schedule assignment, deleting imported data
 
 **Verified against:** `GET https://api.memetering.com/api-docs/swagger.json`, re-pulled and diffed

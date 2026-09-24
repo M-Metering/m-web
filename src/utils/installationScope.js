@@ -14,7 +14,7 @@
 // Why this exists: the screen used to query only GET /installations, so
 // choosing JED showed nothing and "All discos" silently meant "every disco
 // except JED" — JED's requests live in a different resource entirely.
-import { normalizeStatus } from './statusBadge';
+import { normalizeStatus, JED_STATUS_LABELS } from './statusBadge';
 import { INSTALLATION_STATUS_ORDER, installationStatusLabel } from './installationStatus';
 
 export const ROW_SOURCE = Object.freeze({ MULTI: 'MULTI', JED: 'JED' });
@@ -27,13 +27,9 @@ export const JED_BUCKET = 'JED';
 
 export const JED_STATUS_ORDER = ['INITIATED', 'PAID', 'COMPLETED'];
 
-// "Awaiting Installation" is the app-wide UI label for PAID — see
-// isAwaitingInstallationStatus in statusBadge.js. Not new statuses.
-export const JED_STATUS_LABELS = Object.freeze({
-  INITIATED: 'Awaiting Payment',
-  PAID: 'Awaiting Installation',
-  COMPLETED: 'Completed',
-});
+// Re-exported from statusBadge.js, which owns the JED status vocabulary for
+// the whole app (this module used to declare its own copy).
+export { JED_STATUS_LABELS };
 
 /** Sentinel filter value for rows where the attribute is blank. */
 export const NOT_RECORDED = '__NONE__';

@@ -21,6 +21,7 @@ import { isInstalledStatus, getCoordinates } from './installationStatus';
 import { isCompletedStatus } from './statusBadge';
 import { parseAmount } from './paymentSummary';
 import { COLUMN_TYPES } from './xlsx';
+import { meterMakeOf, meterModelOf, manufacturedDateOf } from './meterDisplay';
 
 const { TEXT, COORDINATE, CURRENCY, DATE, DATETIME } = COLUMN_TYPES;
 
@@ -129,8 +130,11 @@ const COLUMNS = [
   ['meterVendor', 'Meter Vendor', TEXT, (row) => row.raw.meterVendor],
   // Meter record (joined by serial from GET /meters)
   ['simNumber', 'SIM Serial Number', TEXT, (row, meter) => meter?.simNumber],
-  ['meterMake', 'Meter Make', TEXT, (row, meter) => meter?.meterMake],
-  ['meterModel', 'Meter Model', TEXT, (row, meter) => meter?.model],
+  // Read through meterDisplay so the export names the same fields the screens
+  // do — `meterMake` is the API's only make field, `model` is separate.
+  ['meterMake', 'Meter Make', TEXT, (row, meter) => meterMakeOf(meter)],
+  ['meterModel', 'Meter Model', TEXT, (row, meter) => meterModelOf(meter)],
+  ['manufacturedDate', 'Meter Manufactured Date', TEXT, (row, meter) => manufacturedDateOf(meter)],
   ['sgcNumber', 'SGC Number', TEXT, (row, meter) => meter?.sgcNumber],
   ['meterPhase', 'Meter Phase (inventory)', TEXT, (row, meter) => meter?.phaseType],
   ['meterStatus', 'Meter Status (inventory)', TEXT, (row, meter) => meter?.status],

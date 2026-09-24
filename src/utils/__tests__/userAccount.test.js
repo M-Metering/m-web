@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  isSameUserAccount, canDeleteUserAccount,
+  isSameUserAccount, canDeleteUserAccount, userIdOf,
   SELF_DELETE_SUPERADMIN_MESSAGE, SELF_DELETE_MESSAGE, DELETE_NOT_PERMITTED_MESSAGE,
 } from '../userAccount';
 
@@ -56,5 +56,30 @@ describe('canDeleteUserAccount', () => {
 
   it('refuses when there is no target', () => {
     expect(canDeleteUserAccount({ currentUser: superAdmin, targetUser: null, isSuperAdmin: true }).allowed).toBe(false);
+  });
+});
+
+describe('userIdOf', () => {
+  it('uses `id`, which is what the API returns', () => {
+    expect(userIdOf({ id: '3904aad1-2f27-42d1-9c33-fe87502ea594' }))
+      .toBe('3904aad1-2f27-42d1-9c33-fe87502ea594');
+  });
+
+  it('keeps a UUID as an opaque string — never coerced', () => {
+    const id = '00000000-1111-2222-3333-444444444444';
+    expect(userIdOf({ id })).toBe(id);
+    expect(typeof userIdOf({ id: 5 })).toBe('string');
+  });
+
+  it('tolerates other shapes rather than addressing /users/undefined', () => {
+    expect(userIdOf({ userId: 'a' })).toBe('a');
+    expect(userIdOf({ _id: 'b' })).toBe('b');
+    expect(userIdOf({ uuid: 'c' })).toBe('c');
+  });
+
+  it('returns empty when there is genuinely no identifier, so the caller can refuse', () => {
+    expect(userIdOf({ email: 'x@y.z' })).toBe('');
+    expect(userIdOf({})).toBe('');
+    expect(userIdOf(null)).toBe('');
   });
 });

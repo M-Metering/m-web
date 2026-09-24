@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { formatDateOnly } from '../../utils/date';
 import { unwrapListResponse } from '../../utils/unwrapListResponse';
+import { fetchAllPagesDetailed } from '../../utils/fetchAllPages';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { downloadServerXlsx } from '../../utils/xlsx';
 import {
@@ -78,26 +79,87 @@ const TABS = [
 // API_GAP_REPORT.md), so "Account Number"/"Customer Name" search is not
 // possible here without fabricating a relationship the API doesn't have.
 const MATCHABLE_METER_FIELDS = ['meterNumber', 'simNumber', 'meterMake', 'model', 'sgcNumber'];
-const FULL_METER_FETCH_PAGE_LIMIT = 100; // the API's documented maximum
-const FULL_METER_FETCH_MAX_PAGES = 20; // safety cap (~2000 meters), same as AdminReports.jsx
 
+// A complete meter number, the authoritative search criterion. 10-13 digits,
+// as a string — see utils/meterNumber.js.
+const COMPLETE_METER_NUMBER_RE = /^\d{10,13}$/;
+
+// Safety ceiling for the fallback scan below. Only ever reached by a PARTIAL
+// term, which has no endpoint of its own.
+const FULL_METER_FETCH_MAX_PAGES = 100;
+
+const matchesActiveFilters = (meter, { status, phaseType } = {}) => {
+  if (status && status !== 'ALL' && normalizeStatus(meter?.status) !== normalizeStatus(status)) return false;
+  if (phaseType && phaseType !== 'ALL' && normalizeStatus(meter?.phaseType) !== normalizeStatus(phaseType)) return false;
+  return true;
+};
+
+const isNotFoundError = (err) => String(err?.message || '').startsWith('NOT_FOUND:');
+
+/**
+ * Every meter matching the current server-side filters, paged. This is the
+ * FALLBACK path — see searchMeters. Reports whether the cap cut it short.
+ */
 async function fetchAllMeters({ status, phaseType } = {}) {
-  const all = [];
-  let page = 1;
-  while (page <= FULL_METER_FETCH_MAX_PAGES) {
-    const params = { page, limit: FULL_METER_FETCH_PAGE_LIMIT };
-    if (status && status !== 'ALL') params.status = status;
-    if (phaseType && phaseType !== 'ALL') params.phaseType = phaseType;
-    const response = await JEDApiService.getMeters(params);
-    const pageData = unwrapListResponse(response);
-    if (pageData.length === 0) break;
-    all.push(...pageData);
-    const paginationData = response?.pagination || response?.data?.pagination || {};
-    const hasNext = paginationData.hasNext ?? (pageData.length === FULL_METER_FETCH_PAGE_LIMIT);
-    if (!hasNext) break;
-    page += 1;
+  const params = {};
+  if (status && status !== 'ALL') params.status = status;
+  if (phaseType && phaseType !== 'ALL') params.phaseType = phaseType;
+  // GET /meters omits `hasNext`, so a full page means "there may be more".
+  return fetchAllPagesDetailed(
+    (p) => JEDApiService.getMeters(p),
+    params,
+    { maxPages: FULL_METER_FETCH_MAX_PAGES, inferNextFromFullPage: true }
+  );
+}
+
+/**
+ * Find meters for a search term.
+ *
+ * ROOT CAUSE THIS FIXES. GET /meters has no search parameter, so search was
+ * implemented as "download the inventory, filter in the browser". That is
+ * capped by definition — so a meter past the cap was reported as not existing
+ * — and it costs ~60 requests against a ~6,000-meter inventory. Raising the
+ * cap (the previous attempt) made it slower without making it correct.
+ *
+ * The API does have an authoritative lookup: GET /meters/meter-number/{n}.
+ * It was defined in api.js as getMeterByNumber and never called from anywhere
+ * (CodeBaseAudit's 2026-08-29 pass dismissed it as a redundant round-trip —
+ * true for a details modal, wrong for search, where the whole point is to
+ * reach a meter that is NOT on screen).
+ *
+ * So: a complete meter number is ONE server-side request against the entire
+ * inventory, with no paging and no cap. A partial term (part of a serial, a
+ * SIM, a make, an SGC) has no endpoint, so it still falls back to the paged
+ * scan — which is now the exception rather than the rule.
+ *
+ * @returns {{ items: object[], truncated: boolean, exact: boolean }}
+ */
+async function searchMeters(term, filters) {
+  if (COMPLETE_METER_NUMBER_RE.test(term)) {
+    try {
+      // The term is passed through as a string, exactly as typed — never
+      // padded, trimmed to a length, or coerced to a number.
+      const response = await JEDApiService.getMeterByNumber(term);
+      const payload = response?.data ?? response;
+      const meter = Array.isArray(payload) ? payload[0] : payload;
+      const items = meter?.meterNumber && matchesActiveFilters(meter, filters) ? [meter] : [];
+      return { items, truncated: false, exact: true };
+    } catch (err) {
+      // A genuine "no such meter" is an empty result, not an error.
+      if (isNotFoundError(err)) return { items: [], truncated: false, exact: true };
+      // Anything else (network, 500): fall through to the scan rather than
+      // failing a search the slower path could still satisfy.
+      console.warn('[MeterSchedule] Exact meter lookup unavailable, scanning instead:', err?.message);
+    }
   }
-  return all;
+
+  const all = await fetchAllMeters(filters);
+  const needle = term.toLowerCase();
+  return {
+    items: all.items.filter((m) => meterMatchesSearch(m, needle)),
+    truncated: all.truncated,
+    exact: false,
+  };
 }
 
 function meterMatchesSearch(meter, lowerCaseTerm) {
@@ -150,7 +212,7 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
   // already-fetched data instead of re-running the full multi-page fetch
   // on every page click. Invalidated automatically whenever the search
   // term or status/phaseType filters change (the cache key changes too).
-  const searchCacheRef = useRef({ key: null, matches: [] });
+  const searchCacheRef = useRef({ key: null, matches: [], truncated: false });
 
   const fetchMeters = useCallback(async (page = 1, currentFilters = filters, pageLimit = null) => {
     const limit = pageLimit || pagination.limit;
@@ -172,16 +234,22 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
         // not just a changed search term/filter.
         const cacheKey = JSON.stringify({ searchTerm, status: currentFilters.status, phaseType: currentFilters.phaseType, refreshSignal });
         let matches;
+        let truncated;
         if (searchCacheRef.current.key === cacheKey) {
-          matches = searchCacheRef.current.matches;
+          ({ matches, truncated } = searchCacheRef.current);
         } else {
-          const all = await fetchAllMeters(currentFilters);
-          const term = searchTerm.toLowerCase();
-          matches = all.filter((m) => meterMatchesSearch(m, term));
-          searchCacheRef.current = { key: cacheKey, matches };
+          const result = await searchMeters(searchTerm, currentFilters);
+          matches = result.items;
+          truncated = result.truncated;
+          searchCacheRef.current = { key: cacheKey, matches, truncated };
         }
 
         if (requestIdRef.current !== requestId) return; // a newer request superseded this one
+
+        // An incomplete scan must never look like a confident "not found".
+        setError(truncated
+          ? 'The inventory is larger than this search can scan, so some meters may be missing. Narrow the status or phase filter and search again.'
+          : null);
 
         const total = matches.length;
         const pages = Math.max(1, Math.ceil(total / limit));
@@ -804,8 +872,9 @@ const MeterFilterControls = ({ filters, onFilterChange, loading, onRefresh, onEx
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex flex-col sm:flex-row gap-3 flex-1">
             <div className="flex-1">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Status</label>
+              <label htmlFor="meter-status-1" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Status</label>
               <select
+                id="meter-status-1"
                 value={filters.status}
                 onChange={(e) => handleStatusChange(e.target.value)}
                 className="form-input w-full px-3 py-2 text-sm"
@@ -820,8 +889,9 @@ const MeterFilterControls = ({ filters, onFilterChange, loading, onRefresh, onEx
             </div>
 
             <div className="flex-1">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phase Type</label>
+              <label htmlFor="meter-phase-1" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phase Type</label>
               <select
+                id="meter-phase-1"
                 value={filters.phaseType}
                 onChange={(e) => handlePhaseChange(e.target.value)}
                 className="form-input w-full px-3 py-2 text-sm"
@@ -912,8 +982,9 @@ const QueryFilterControls = ({ filters, onFilterChange, loading, onRefresh, onEx
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex flex-col sm:flex-row gap-4 flex-1">
             <div className="flex-1">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Status</label>
+              <label htmlFor="meter-status-2" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Status</label>
               <select
+                id="meter-status-2"
                 value={filters.status}
                 onChange={(e) => handleStatusChange(e.target.value)}
                 className="form-input w-full px-3 py-2 text-sm"
@@ -928,8 +999,9 @@ const QueryFilterControls = ({ filters, onFilterChange, loading, onRefresh, onEx
             </div>
 
             <div className="flex-1">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phase Type</label>
+              <label htmlFor="meter-phase-2" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phase Type</label>
               <select
+                id="meter-phase-2"
                 value={filters.phaseType}
                 onChange={(e) => handlePhaseChange(e.target.value)}
                 className="form-input w-full px-3 py-2 text-sm"

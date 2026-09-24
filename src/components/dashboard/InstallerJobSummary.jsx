@@ -12,7 +12,7 @@ import { Clock, CheckCircle, ChevronRight } from 'lucide-react';
 import jedApi from '../services/api';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import { fetchAllPages } from '../../utils/fetchAllPages';
-import { summarizeInstallerJobs } from '../../utils/installationStatus';
+import { summarizeInstallerJobs } from '../../utils/installerQueue';
 
 function SummaryCard({ title, value, icon: Icon, tone, loading }) {
   const tones = {
@@ -64,9 +64,16 @@ function InstallerJobSummary() {
 
   return (
     <section aria-labelledby="my-jobs-summary" className="space-y-2">
-      <h2 id="my-jobs-summary" className="text-sm font-semibold text-gray-700 dark:text-gray-300">
-        My assigned jobs
-      </h2>
+      <div>
+        <h2 id="my-jobs-summary" className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+          My assigned jobs
+        </h2>
+        {/* Says whose jobs these are, because the JED shared queue below uses
+            the same two words for a different list. */}
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Dispatched to you by an administrator. Tap a card to open My Jobs.
+        </p>
+      </div>
       {error ? (
         <p role="alert" className="text-sm text-red-700 dark:text-red-400">Couldn&apos;t load your job summary.</p>
       ) : (
@@ -77,6 +84,12 @@ function InstallerJobSummary() {
           </div>
           {!loading && summary?.total === 0 && (
             <p className="text-xs text-gray-500 dark:text-gray-400">No jobs have been assigned to you yet.</p>
+          )}
+          {!loading && summary?.duplicates > 0 && (
+            <p role="status" className="text-xs text-amber-700 dark:text-amber-400">
+              {summary.duplicates} repeated record{summary.duplicates === 1 ? '' : 's'} from the server
+              {summary.duplicates === 1 ? ' was' : ' were'} counted once.
+            </p>
           )}
         </>
       )}

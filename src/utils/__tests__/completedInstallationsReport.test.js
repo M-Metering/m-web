@@ -3,7 +3,6 @@ import { normalizeMultiRow, normalizeJedRow, JED_BUCKET } from '../installationS
 import {
   isCompletedRow, completionDateOf, filterByCompletionDate, buildMeterIndex, buildCompletedInstallationsReport,
 } from '../completedInstallationsReport';
-import { summarizeInstallerJobs } from '../installationStatus';
 
 const multi = (over) => normalizeMultiRow({
   id: 1, accountNumber: '0100', customerName: 'ADA OBI', customerPhone: '08149454601', discoCode: 'ABA_POWER',
@@ -96,11 +95,3 @@ describe('buildCompletedInstallationsReport', () => {
   });
 });
 
-describe('summarizeInstallerJobs', () => {
-  it('counts awaiting (assigned, in progress) and completed (installed, exported)', () => {
-    const jobs = ['ASSIGNED', 'IN_PROGRESS', 'IN_PROGRESS', 'INSTALLED', 'EXPORTED', 'FAILED', 'CANCELLED']
-      .map((status, id) => ({ id, status }));
-    expect(summarizeInstallerJobs(jobs)).toEqual({ awaiting: 3, completed: 2, total: 7 });
-    expect(summarizeInstallerJobs([])).toEqual({ awaiting: 0, completed: 0, total: 0 });
-  });
-});

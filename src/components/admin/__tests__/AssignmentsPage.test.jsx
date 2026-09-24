@@ -19,6 +19,7 @@ vi.mock('../../services/api', () => ({
     getInstallations: vi.fn(),
     getUsers: vi.fn(),
     getMeters: vi.fn(),
+    getMeterByNumber: vi.fn(),
     getAssignmentBatches: vi.fn(),
     getAssignmentBatch: vi.fn(),
     assignMeters: vi.fn(),
@@ -49,6 +50,7 @@ beforeEach(() => {
   jedApi.getDiscos.mockResolvedValue(page([{ code: 'ABA_POWER', name: 'Aba Power' }]));
   jedApi.getUsers.mockResolvedValue(page([{ id: 'uuid-1', firstName: 'Musa', lastName: 'Bello', role: 'INSTALLER' }]));
   jedApi.getMeters.mockResolvedValue(page(METERS));
+  jedApi.getMeterByNumber.mockRejectedValue(new Error('NOT_FOUND:Meter not found'));
   jedApi.getInstallations.mockImplementation(async ({ status }) => page(OPEN_JOBS.filter((j) => j.status === status)));
   jedApi.getAssignmentBatches.mockResolvedValue(page([
     { id: 10, status: 'ACTIVE' },
@@ -186,5 +188,88 @@ describe('AssignmentsPage — meter capacity', () => {
     fireEvent.click(screen.getByRole('button', { name: /Dispatch 1 meter/ }));
     expect(await screen.findByText("Couldn't check meter needs. Please retry.")).toBeTruthy();
     expect(jedApi.assignMeters).not.toHaveBeenCalled();
+  });
+});
+
+describe('AssignmentsPage — meter-number search covers the inventory', () => {
+  it('scans every page of available meters, not just the first', async () => {
+    await renderPage();
+    // GET /meters omits hasNext, so a full page must be treated as "more".
+    expect(jedApi.getMeters).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'AVAILABLE', page: 1, limit: 100 })
+    );
+  });
+
+  it('matches the full meter number, and a partial, without coercing either', async () => {
+    await renderPage();
+    const box = screen.getByPlaceholderText('Search meter serial number');
+    const serialsShown = () => within(meterList()).getAllByRole('checkbox')
+      .map((cb) => cb.closest('label').querySelector('.font-mono').textContent);
+
+    // The whole identifier, leading zero included.
+    fireEvent.change(box, { target: { value: '0239110006911' } });
+    expect(serialsShown()).toEqual(['0239110006911']);
+
+    // A partial is a substring match by design (an installer types the last
+    // few digits off the meter) — it never pads or reformats the term.
+    fireEvent.change(box, { target: { value: '6912' } });
+    expect(serialsShown()).toEqual(['0239110006912']);
+
+    // A serial that simply isn't in stock matches nothing — no fuzzy fallback.
+    fireEvent.change(box, { target: { value: '9999999999999' } });
+    expect(within(meterList()).queryAllByRole('checkbox')).toHaveLength(0);
+  });
+
+  it('sends no search parameter the API does not document', async () => {
+    await renderPage();
+    fireEvent.change(screen.getByPlaceholderText('Search meter serial number'), { target: { value: '0239110006911' } });
+    jedApi.getMeters.mock.calls.forEach(([params]) => {
+      expect(params).not.toHaveProperty('search');
+    });
+  });
+
+  it('searching does not re-query the API — the inventory is already loaded', async () => {
+    await renderPage();
+    const before = jedApi.getMeters.mock.calls.length;
+    fireEvent.change(screen.getByPlaceholderText('Search meter serial number'), { target: { value: '0239' } });
+    fireEvent.change(screen.getByPlaceholderText('Search meter serial number'), { target: { value: '02391' } });
+    expect(jedApi.getMeters.mock.calls.length).toBe(before);
+  });
+});
+
+describe('AssignmentsPage — a meter that exists but cannot be dispatched', () => {
+  const searchFor = (serial) =>
+    fireEvent.change(screen.getByPlaceholderText('Search meter serial number'), { target: { value: serial } });
+
+  it('explains that an installed meter exists rather than just showing nothing', async () => {
+    jedApi.getMeterByNumber.mockResolvedValue({
+      success: true,
+      data: { meterNumber: '0239110009999', status: 'INSTALLED', assignmentStatus: 'USED' },
+    });
+    await renderPage();
+    searchFor('0239110009999');
+
+    expect(await screen.findByText(/can.t be dispatched because it has already been installed/)).toBeTruthy();
+    expect(jedApi.getMeterByNumber).toHaveBeenCalledWith('0239110009999');
+  });
+
+  it('says plainly when the meter is not in the inventory at all', async () => {
+    await renderPage();
+    searchFor('9999999999999');
+    expect(await screen.findByText(/is not in the meter inventory/)).toBeTruthy();
+  });
+
+  it('does not look up a partial serial — only a complete meter number', async () => {
+    await renderPage();
+    searchFor('99999');
+    await waitFor(() => expect(screen.getByText(/No meter matches/)).toBeTruthy());
+    expect(jedApi.getMeterByNumber).not.toHaveBeenCalled();
+  });
+
+  it('does not look one up while the list still has matches', async () => {
+    await renderPage();
+    searchFor('0239110006911');
+    await waitFor(() => expect(within(meterList()).getAllByRole('checkbox')).toHaveLength(1));
+    expect(jedApi.getMeterByNumber).not.toHaveBeenCalled();
   });
 });

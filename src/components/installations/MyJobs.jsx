@@ -40,6 +40,9 @@ import {
 } from '../../utils/installerJobFilters';
 import { collectSealKeys } from '../../utils/sealNumber';
 import { meterSummaryLine } from '../../utils/meterDisplay';
+import {
+  splitAssignedJobs, matchesInstallerSearch, assignedJobKey,
+} from '../../utils/installerQueue';
 
 // Jobs render a page at a time so a large round stays responsive on a phone.
 const PAGE_SIZE = 25;
@@ -264,6 +267,7 @@ function MyJobs() {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const [jobs, setJobs] = useState([]);
+  const [duplicateCount, setDuplicateCount] = useState(0);
   const [meters, setMeters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -295,7 +299,12 @@ function MyJobs() {
           fetchAllPages((p) => jedApi.getMyMeters(p), {}),
         ]);
         if (!cancelled) {
-          setJobs(jobList);
+          // Deduplicated at the source, by the job's own id, so every count
+          // and list on this page — and the Dashboard card, which summarises
+          // the same endpoint the same way — describes distinct jobs.
+          const { all, duplicates } = splitAssignedJobs(jobList);
+          setJobs(all);
+          setDuplicateCount(duplicates);
           setMeters(meterList);
         }
       } catch (err) {
@@ -314,14 +323,9 @@ function MyJobs() {
   const filterable = useMemo(() => toFilterableJobs(jobs), [jobs]);
 
   const searchedAndFiltered = useMemo(() => {
-    const term = search.trim().toLowerCase();
     const byField = applyJobFilters(filterable, fieldFilters).map((r) => r.job);
-    if (!term) return byField;
-    return byField.filter((j) =>
-      [j.accountNumber, j.customerName, j.meterNumber, j.customerAddress, j.feederName, j.transformerName, j.area]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(term))
-    );
+    // The same search predicate the Installer Dashboard uses.
+    return byField.filter((job) => matchesInstallerSearch(job, search));
   }, [filterable, fieldFilters, search]);
 
   const visibleJobs = useMemo(() => {
@@ -463,6 +467,17 @@ function MyJobs() {
           <p className="text-sm text-green-800 dark:text-green-300">{successMessage}</p>
         </div>
       )}
+      {/* Said out loud rather than silently swallowed — a server returning the
+          same job twice is worth knowing about. */}
+      {duplicateCount > 0 && (
+        <div role="status" className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-sm text-amber-800 dark:text-amber-300">
+            {duplicateCount} repeated record{duplicateCount === 1 ? '' : 's'} from the server
+            {duplicateCount === 1 ? ' was' : ' were'} shown once.
+          </p>
+        </div>
+      )}
 
       <div className="card overflow-hidden">
         <StatusTabs
@@ -600,7 +615,7 @@ function MyJobs() {
                 <div className="divide-y divide-gray-200 dark:divide-gray-700">
                   {visibleJobs.slice(0, visibleCount).map((job) => (
                     <JobCard
-                      key={job.id}
+                      key={assignedJobKey(job)}
                       job={job}
                       busy={busyId === job.id}
                       onStart={handleStart}

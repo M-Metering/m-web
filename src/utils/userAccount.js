@@ -12,10 +12,21 @@
 // authoritative (see API_GAP_REPORT.md).
 import { ROLES } from '../components/auth/permissions';
 
-const idOf = (user) => {
-  const value = user?.id ?? user?.userId ?? user?._id;
+/**
+ * The identifier the user endpoints are addressed by. `id` is what the API
+ * returns (a UUID since the 2026-09-21 migration); `userId`/`_id` are
+ * tolerated only so a differently-shaped list response can't silently produce
+ * a request to `/users/undefined`.
+ */
+export const userIdOf = (user) => {
+  const value = user?.id ?? user?.userId ?? user?._id ?? user?.uuid;
   return value === null || value === undefined ? '' : String(value).trim();
 };
+
+const idOf = userIdOf;
+
+export const MISSING_USER_ID_MESSAGE =
+  'This account has no identifier, so it cannot be changed. Refresh the list and try again.';
 const emailOf = (user) => String(user?.email ?? '').trim().toLowerCase();
 const phoneOf = (user) => String(user?.phone ?? '').replace(/[\s()-]/g, '');
 

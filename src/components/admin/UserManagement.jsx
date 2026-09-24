@@ -8,7 +8,10 @@ import { ROLES, getRoleMetadata } from '../auth/permissions';
 import jedApi from '../services/api';
 import { fetchAllPages } from '../../utils/fetchAllPages';
 import { getErrorMessage } from '../../utils/errorMessage';
-import { canDeleteUserAccount, isSameUserAccount } from '../../utils/userAccount';
+import {
+  canDeleteUserAccount, isSameUserAccount, userIdOf, MISSING_USER_ID_MESSAGE,
+} from '../../utils/userAccount';
+import { assertApiSuccess } from '../../utils/apiResult';
 import {
   Users,
   UserPlus,
@@ -125,6 +128,13 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
+  // Validation follows the schema the submit will actually use: UserCreate on
+  // create, UserUpdate on edit. Editing used to validate phone and NIN too —
+  // fields UserUpdate has no place for. An existing account whose record
+  // carries no `nin` (the users list doesn't always return one) could
+  // therefore never be saved at all: the form blocked submit over a value it
+  // was never going to send, with no visible reason. That was half of
+  // "Failed to edit user"; the payload was the other half.
   const validateForm = () => {
     const newErrors = {};
 
@@ -135,28 +145,27 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
       newErrors.lastName = 'Last Name is required';
     }
 
-    if (!formData.phone.trim()) {
-      newErrors.phone = 'Phone is required';
-    } else if (!/^\d{11}$/.test(formData.phone)) {
-      newErrors.phone = 'Phone must be 11 digits';
-    }
-
     if (!formData.email.trim()) {
       newErrors.email = 'Email is required';
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
       newErrors.email = 'Invalid email format';
     }
 
-    if (!formData.nin.trim()) {
-      newErrors.nin = 'NIN is required';
-    } else if (!/^\d{11}$/.test(formData.nin)) {
-      newErrors.nin = 'NIN must be 11 digits';
-    }
-
-    // Password is required by the real UserCreate schema (minLength 6) —
-    // only collected/validated when creating, since UserUpdate has no
-    // password field at all (password changes go through a separate flow).
+    // Create-only: phone, NIN and password are on UserCreate, not UserUpdate.
     if (!user) {
+      if (!formData.phone.trim()) {
+        newErrors.phone = 'Phone is required';
+      } else if (!/^\d{11}$/.test(formData.phone)) {
+        newErrors.phone = 'Phone must be 11 digits';
+      }
+
+      if (!formData.nin.trim()) {
+        newErrors.nin = 'NIN is required';
+      } else if (!/^\d{11}$/.test(formData.nin)) {
+        newErrors.nin = 'NIN must be 11 digits';
+      }
+
+      // Required by the real UserCreate schema (minLength 6).
       if (!formData.password) {
         newErrors.password = 'Password is required';
       } else if (formData.password.length < 6) {
@@ -233,16 +242,25 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Phone *
           </label>
+          {/* Not on the UserUpdate schema — the API cannot change it through
+              this endpoint, so it is read-only once the account exists rather
+              than an input whose changes would be silently dropped. */}
           <input
             type="tel"
             value={formData.phone}
             onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-            className={`form-input w-full px-3 py-2 ${
+            disabled={!!user}
+            className={`form-input w-full px-3 py-2 ${user ? 'opacity-60 cursor-not-allowed' : ''} ${
               errors.phone ? 'border-red-400 dark:border-red-500 focus:ring-red-500' : ''
             }`}
             placeholder="Enter phone number"
             maxLength={11}
           />
+          {user && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Phone is the sign-in identifier and can&apos;t be changed here.
+            </p>
+          )}
           {errors.phone && (
             <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.phone}</p>
           )}
@@ -294,16 +312,23 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             NIN *
           </label>
+          {/* Also absent from UserUpdate — see the phone field above. */}
           <input
             type="text"
             value={formData.nin}
             onChange={(e) => setFormData({ ...formData, nin: e.target.value })}
-            className={`form-input w-full px-3 py-2 ${
+            disabled={!!user}
+            className={`form-input w-full px-3 py-2 ${user ? 'opacity-60 cursor-not-allowed' : ''} ${
               errors.nin ? 'border-red-400 dark:border-red-500 focus:ring-red-500' : ''
             }`}
             placeholder="11-digit NIN"
             maxLength={11}
           />
+          {user && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              NIN can&apos;t be changed here.
+            </p>
+          )}
           {errors.nin && (
             <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.nin}</p>
           )}
@@ -421,6 +446,8 @@ function UserManagement() {
   const [showForm, setShowForm] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [userToDelete, setUserToDelete] = useState(null);
+  // Short-lived confirmation after a successful create/update/delete.
+  const [notice, setNotice] = useState(null);
   const [userToResetPassword, setUserToResetPassword] = useState(null);
   // "View" action — GET /users/{id}, distinct from the table row (which only
   // shows name/email/phone/role/active) so an admin can see the rest of the
@@ -506,13 +533,14 @@ function UserManagement() {
       if (import.meta.env.DEV) {
         console.log('[UserManagement] Creating user:', payload.email);
       }
-      await jedApi.createUser(payload);
+      assertApiSuccess(await jedApi.createUser(payload), 'The server did not confirm the new account.');
 
       setShowForm(false);
       await fetchUsers();
+      setNotice('User created successfully.');
     } catch (err) {
       console.error('[UserManagement] Error creating user:', err);
-      setError(getErrorMessage(err, 'Failed to create user'));
+      setError(getErrorMessage(err, 'Unable to create this user. Please try again.'));
     } finally {
       setActionLoading(null);
     }
@@ -528,26 +556,60 @@ function UserManagement() {
     try {
       setActionLoading(`update-${editingUser.id}`);
       setError(null);
+      setNotice(null);
 
-      // Construct the payload to match the API's expected format
-      const payload = {
-        firstName: userData.firstName,
-        lastName: userData.lastName,
-        name: `${userData.firstName} ${userData.lastName}`.trim(),
-        email: userData.email,
-        phone: userData.phone,
-        role,
-        nin: userData.nin,
+      // EXACTLY the documented UserUpdate schema: firstName, lastName, role,
+      // email, homeAddress, officeAddress — and nothing else.
+      //
+      // This used to also send `name`, `phone` and `nin`. None of those are on
+      // UserUpdate, and this API validates with Joi, which rejects an unknown
+      // key outright ('"name" is not allowed'). getErrorMessage deliberately
+      // drops that wording as backend-internal, so every edit failed with the
+      // bare fallback "Failed to update user" and no clue why. That was the
+      // bug — not the error message.
+      //
+      // Only changed fields are sent: UserUpdate has no required fields, so a
+      // partial update is legal, and re-sending an unchanged email avoids the
+      // API's "email already exists" check firing against the user's own
+      // address.
+      const payload = {};
+      const changed = (field, next) => {
+        const before = String(editingUser[field] ?? '').trim();
+        const after = String(next ?? '').trim();
+        if (after && after !== before) payload[field] = after;
       };
+      changed('firstName', userData.firstName);
+      changed('lastName', userData.lastName);
+      changed('email', userData.email);
+      if (role !== String(editingUser.role ?? '').toUpperCase()) payload.role = role;
 
-      await jedApi.updateUser(editingUser.id, payload);
+      if (Object.keys(payload).length === 0) {
+        setShowForm(false);
+        setEditingUser(null);
+        setNotice('No changes to save.');
+        return;
+      }
+
+      // A 2xx body can still say success:false — that used to close the modal
+      // and report nothing while the record stayed unchanged.
+      // Address the record by its resolved identifier rather than assuming
+      // `.id` exists — a list response shaped differently would otherwise
+      // produce a request to `/users/undefined` and a baffling failure.
+      const targetId = userIdOf(editingUser);
+      if (!targetId) throw new Error(MISSING_USER_ID_MESSAGE);
+
+      assertApiSuccess(
+        await jedApi.updateUser(targetId, payload),
+        'The server did not confirm the update.'
+      );
 
       setShowForm(false);
       setEditingUser(null);
       await fetchUsers();
+      setNotice('User updated successfully.');
     } catch (err) {
       console.error('[UserManagement] Error updating user:', err);
-      setError(getErrorMessage(err, 'Failed to update user'));
+      setError(getErrorMessage(err, 'Unable to update this user. Please try again.'));
     } finally {
       setActionLoading(null);
     }
@@ -570,17 +632,29 @@ function UserManagement() {
       return;
     }
 
+    const name = `${userToDelete.firstName || ''} ${userToDelete.lastName || ''}`.trim() || 'The user';
     try {
       setActionLoading(`delete-${userToDelete.id}`);
       setError(null);
+      setNotice(null);
 
-      await jedApi.deleteUser(userToDelete.id);
+      // A 2xx body can still carry success:false. Without this the modal
+      // closed, the list refetched, and the user was simply still there —
+      // a delete that reported nothing and did nothing.
+      const targetId = userIdOf(userToDelete);
+      if (!targetId) throw new Error(MISSING_USER_ID_MESSAGE);
+
+      assertApiSuccess(
+        await jedApi.deleteUser(targetId),
+        'The server did not confirm the deletion.'
+      );
 
       await fetchUsers();
       setUserToDelete(null); // Close modal on success
+      setNotice(`${name} was deleted.`);
     } catch (err) {
       console.error('[UserManagement] Error deleting user:', err);
-      setError(getErrorMessage(err, 'Failed to delete user'));
+      setError(getErrorMessage(err, 'Unable to delete this user. Please try again.'));
       // Keep the modal open on error so the user sees the message
     } finally {
       setActionLoading(null);
@@ -721,8 +795,19 @@ function UserManagement() {
       )}
 
       {/* Error Alert */}
+      {notice && (
+        <div role="status" className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4 flex items-start gap-3">
+          <Check className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-green-800 dark:text-green-300 flex-1 break-words">{notice}</p>
+          <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss"
+            className="p-1 rounded-lg text-green-700 dark:text-green-300 hover:bg-green-100 dark:hover:bg-green-900/40 flex-shrink-0">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {error && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+        <div role="alert" className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
           <div className="flex gap-3">
             <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
             <div className="flex-1">
@@ -765,6 +850,11 @@ function UserManagement() {
             </div>
             <div className="p-6">
               <UserForm
+                // Keyed so switching the target user remounts the form: its
+                // state is seeded from props inside useState, which only runs
+                // on mount — without this, editing user B after user A could
+                // show A's values.
+                key={editingUser ? userIdOf(editingUser) : 'new'}
                 user={editingUser}
                 onSubmit={editingUser ? handleUpdateUser : handleCreateUser}
                 onCancel={() => {

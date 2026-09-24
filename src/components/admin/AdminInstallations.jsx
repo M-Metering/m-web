@@ -20,7 +20,7 @@ import { useDataRefresh } from '../contexts/DataRefreshContext';
 import JedAssignmentNotice from '../installations/JedAssignmentNotice';
 import StatusTabs from '../common/StatusTabs';
 import StatusBadge from '../common/StatusBadge';
-import { isCompletedStatus } from '../../utils/statusBadge';
+import { jedStatusLabel } from '../../utils/statusBadge';
 import { formatDateOnly } from '../../utils/date';
 import { fetchAllRequests } from '../../utils/fetchAllRequests';
 import {
@@ -74,7 +74,7 @@ function JobRow({ job, onClick, selectable, selected, onToggleSelect, onAssignOn
           </p>
           <StatusBadge
             status={job.status}
-            label={isCompletedStatus(job.status) ? 'Completed' : job.status || 'PAID'}
+            label={jedStatusLabel(job.status)}
             className="shrink-0 text-[11px]"
           />
         </div>
@@ -122,7 +122,7 @@ function JobTableRow({ job, onClick, selectable, selected, onToggleSelect, onAss
         <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300 font-mono cursor-pointer" onClick={() => onClick(job)}>{job.sealNo || 'N/A'}</td>
       )}
       <td className="px-4 py-3 cursor-pointer" onClick={() => onClick(job)}>
-        <StatusBadge status={job.status} label={isCompletedStatus(job.status) ? 'Completed' : job.status || 'PAID'} />
+        <StatusBadge status={job.status} label={jedStatusLabel(job.status)} />
       </td>
       <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400 cursor-pointer" onClick={() => onClick(job)}>{formatDateOnly(getDisplayDate(job, completedView))}</td>
       <td className="px-4 py-3">

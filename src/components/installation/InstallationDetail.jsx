@@ -1,7 +1,7 @@
 // src/components/installation/InstallationDetail.jsx
 // Detail view reached by clicking a row in InstallerDashboard (or Admin's
 // recent installations). Pending jobs show the Complete Installation form;
-// completed jobs show a read-only "Paid & Completed" summary.
+// completed jobs show a read-only completion summary.
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { usePermissions } from '../auth/usePermissions';
@@ -13,7 +13,7 @@ import PaymentTimeline from '../common/PaymentTimeline';
 import GenerateRRRModal from '../common/GenerateRRRModal';
 import StatusBadge from '../common/StatusBadge';
 import { buildRrrPayload } from '../../utils/rrrPayload';
-import { isCompletedStatus, isAwaitingInstallationStatus } from '../../utils/statusBadge';
+import { isCompletedStatus, isAwaitingInstallationStatus, jedStatusLabel } from '../../utils/statusBadge';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { validateMeterNumber, METER_NUMBER_HINT } from '../../utils/meterNumber';
 import { normalizeSealNumber, isDuplicateSealError, DUPLICATE_SEAL_MESSAGE } from '../../utils/sealNumber';
@@ -285,7 +285,7 @@ function InstallationDetail() {
           </h1>
           <StatusBadge
             status={job.status}
-            label={completed ? 'Paid & Completed' : job.status || 'Pending'}
+            label={jedStatusLabel(job.status)}
             className="mt-1"
           />
         </div>

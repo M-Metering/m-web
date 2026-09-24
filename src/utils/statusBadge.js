@@ -77,3 +77,24 @@ export const isCompletedStatus = (status) =>
  */
 export const isAwaitingInstallationStatus = (status) =>
   normalizeStatus(status) === 'PAID';
+
+/**
+ * The user-facing name of every JedCustomerRequest status — the single
+ * mapping, so one screen can't call PAID "Awaiting Installation" while
+ * another shows the raw "PAID", and COMPLETED isn't "Completed" in one place
+ * and "Paid & Completed" in another. (Both really happened; fixed 2026-09-24.)
+ *
+ * These are LABELS, not statuses: the backend enum is only
+ * INITIATED / PAID / COMPLETED — see CLAUDE.md, "Business workflow".
+ */
+export const JED_STATUS_LABELS = Object.freeze({
+  INITIATED: 'Awaiting Payment',
+  PAID: 'Awaiting Installation',
+  COMPLETED: 'Completed',
+});
+
+/** A JED status as it should be shown to a user, for any casing. */
+export const jedStatusLabel = (status) => {
+  const key = normalizeStatus(status);
+  return JED_STATUS_LABELS[key] || key || 'Unknown';
+};
