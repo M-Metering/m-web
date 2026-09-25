@@ -31,6 +31,12 @@ export function usePermissions() {
   // (e.g. gating creation of ADMIN/SUPERADMIN accounts).
   const isAdmin = useMemo(() => isAdminRole || isSuperAdmin, [isAdminRole, isSuperAdmin]);
   const isInstaller = useMemo(() => userRole === ROLES.INSTALLER, [userRole]);
+  // Supervisor is deliberately OUTSIDE `isAdmin`: every existing
+  // `permissions.isAdmin` gate in the app (users, reports, payments,
+  // settings, schedule, imports, every *:MANAGE action) therefore denies it
+  // without any of those call sites having to learn about the new role.
+  // What a Supervisor may reach is granted explicitly below instead.
+  const isSupervisor = useMemo(() => userRole === ROLES.SUPERVISOR, [userRole]);
 
   // Get role metadata
   const roleMetadata = useMemo(() => getRoleMetadata(userRole), [userRole]);
@@ -42,9 +48,12 @@ export function usePermissions() {
   const permissionChecks = useMemo(() => ({
     // Dashboard permissions
     canViewDashboard: isAdmin || hasPermission(userRole, PERMISSIONS.DASHBOARD.VIEW),
-    canViewAdminDashboard: isAdmin,
+    // Which dashboard /dashboard renders. Supervisor gets the pipeline
+    // dashboard rather than the Installer one — it has no field jobs of its
+    // own — but the money figures on it are gated separately below.
+    canViewAdminDashboard: isAdmin || isSupervisor,
     canViewInstallerDashboard: hasPermission(userRole, PERMISSIONS.DASHBOARD.VIEW_INSTALLER),
-    
+
     // Installation permissions
     canViewInstallations: hasPermission(userRole, PERMISSIONS.INSTALLATIONS.VIEW),
     canViewAllInstallations: isAdmin || hasPermission(userRole, PERMISSIONS.INSTALLATIONS.VIEW_ALL),
@@ -75,6 +84,13 @@ export function usePermissions() {
     canUploadExcel: hasPermission(userRole, PERMISSIONS.UPLOADS.EXCEL),
     canUploadFiles: isAdmin || hasPermission(userRole, PERMISSIONS.UPLOADS.FILES),
 
+    // Payments / money. Named explicitly because Supervisor must not see
+    // financial figures anywhere, including the revenue KPI and trend chart
+    // on the dashboard it CAN reach — `isAdmin` alone already excludes it,
+    // but a named check says why at the point of use.
+    canViewPayments: isAdmin || hasPermission(userRole, PERMISSIONS.PAYMENTS.VIEW),
+    canManagePayments: isAdmin,
+
     // Complaint form — Installer only (a complaint must be attributable to
     // the installer who raised it; admin-tier accounts bypass hasPermission()
     // for every permission, so the role is checked explicitly here).
@@ -86,9 +102,20 @@ export function usePermissions() {
     // than an overview — admins use the Installation Requests page instead.
     canViewMyJobs: userRole === ROLES.INSTALLER && hasPermission(userRole, PERMISSIONS.INSTALLATIONS.FIELD_JOBS),
     canRunImports: isAdmin || hasPermission(userRole, PERMISSIONS.IMPORTS.RUN),
+    // Reaching the Assignments page vs. actually dispatching from it. These
+    // were one check until Supervisor existed; they are separate now because
+    // Supervisor holds ASSIGNMENTS.VIEW and not ASSIGNMENTS.MANAGE.
+    canViewAssignments: isAdmin || hasPermission(userRole, PERMISSIONS.ASSIGNMENTS.VIEW),
     canManageAssignments: isAdmin || hasPermission(userRole, PERMISSIONS.ASSIGNMENTS.MANAGE),
     canViewInstallationRequests: isAdmin || hasPermission(userRole, PERMISSIONS.INSTALLATIONS.VIEW_ALL),
-  }), [userRole, isAdmin]);
+
+    // Meter dispatch capacity rule (see utils/meterCapacity.js). An Admin may
+    // only hand an installer meters the installer has matching open jobs for;
+    // a Super Admin may dispatch independently of any job assignment. This is
+    // the ONE place that decides which, so the hook, the pickers and the
+    // summary can never disagree about it.
+    enforcesMeterCapacity: !isSuperAdmin,
+  }), [userRole, isAdmin, isSuperAdmin, isSupervisor]);
 
   return {
     // User context
@@ -101,6 +128,7 @@ export function usePermissions() {
     isAdminRole,
     isSuperAdmin,
     isInstaller,
+    isSupervisor,
     
     // Role metadata
     roleDisplayName: roleMetadata.displayName,

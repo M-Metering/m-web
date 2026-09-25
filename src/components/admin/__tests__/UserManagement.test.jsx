@@ -31,6 +31,13 @@ vi.mock('../../auth/usePermissions', () => ({
     isAdminRole: currentUser.role === 'ADMIN',
     isSuperAdmin: currentUser.role === 'SUPERADMIN',
     canManageUsers: true,
+    // Admin-tier: sees the page, creates and edits. The Super Admin-only rules
+    // (delete, password reset, privileged roles) are still asserted below via
+    // isSuperAdmin, exactly as before.
+    canViewUsers: true,
+    canCreateUsers: true,
+    canUpdateUsers: true,
+    canDeleteUsers: true,
   }),
 }));
 
@@ -262,7 +269,10 @@ describe('UserManagement — Delete User outcome', () => {
     fireEvent.click(deleteButtonIn('musa@memetering.com'));
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
 
-    expect(await screen.findByText('Musa Bello was deleted.')).toBeTruthy();
+    // DELETE /users/{id} is a soft delete, so the notice says deactivated —
+    // and offers the reversal, which is the only moment it can be offered.
+    expect(await screen.findByText(/Musa Bello was deactivated/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /restore Musa Bello/i })).toBeTruthy();
     expect(jedApi.getUsers.mock.calls.length).toBeGreaterThan(before);
   });
 

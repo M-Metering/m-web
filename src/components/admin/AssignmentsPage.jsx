@@ -45,7 +45,11 @@ function AssignmentsPage() {
   const { notifyDataChanged } = useDataRefresh();
   const { discos, loading: discosLoading } = useDiscoOptions();
 
-  const [activeTab, setActiveTab] = useState('dispatch');
+  // A Supervisor holds ASSIGNMENTS.VIEW without MANAGE: it reaches this page
+  // for the batch history and never sees the dispatch form, so Batches is its
+  // landing tab.
+  const canDispatch = permissions.canManageAssignments;
+  const [activeTab, setActiveTab] = useState(canDispatch ? 'dispatch' : 'batches');
 
   // --- dispatch form ---
   const [discoCode, setDiscoCode] = useState('');
@@ -117,6 +121,7 @@ function AssignmentsPage() {
   const {
     capacity, capacityLoading, capacityError, reloadCapacity,
     check: dispatchCheck, submit: submitDispatch, submitting, result, error: dispatchError,
+    enforce: capacityEnforced,
   } = useMeterDispatch({ discoCode, installerId, serials, phaseBySerial });
 
   useEffect(() => {
@@ -207,12 +212,12 @@ function AssignmentsPage() {
     }
   };
 
-  if (!permissions.canManageAssignments) {
+  if (!permissions.canViewAssignments) {
     return (
       <div className="p-8 text-center">
         <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
         <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Access Denied</h2>
-        <p className="text-gray-600 dark:text-gray-400">You don't have permission to dispatch meters.</p>
+        <p className="text-gray-600 dark:text-gray-400">You don&apos;t have permission to view assignments.</p>
       </div>
     );
   }
@@ -231,7 +236,7 @@ function AssignmentsPage() {
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white truncate">Assignments</h1>
           <p className="text-gray-600 dark:text-gray-400 text-xs sm:text-sm truncate">
-            Dispatch meters to installers and review every batch
+            {canDispatch ? 'Dispatch meters to installers and review every batch' : 'Review every meter dispatch batch'}
           </p>
         </div>
       </div>
@@ -239,14 +244,14 @@ function AssignmentsPage() {
       <div className="card overflow-hidden">
         <StatusTabs
           tabs={[
-            { id: 'dispatch', label: 'Dispatch meters', icon: Send },
+            ...(canDispatch ? [{ id: 'dispatch', label: 'Dispatch meters', icon: Send }] : []),
             { id: 'batches', label: 'Batches', icon: PackageCheck, count: batches.length || undefined },
           ]}
           activeTab={activeTab}
           onChange={setActiveTab}
         />
 
-        {activeTab === 'dispatch' ? (
+        {canDispatch && activeTab === 'dispatch' ? (
           <div className="p-4 sm:p-6 space-y-4">
             <p className="text-xs text-gray-500 dark:text-gray-400">
               Meters and jobs are dispatched separately. Assign jobs from the Installation Requests page — use the same
@@ -294,6 +299,7 @@ function AssignmentsPage() {
                 error={capacityError}
                 onRetry={reloadCapacity}
                 addMeters={dispatchCheck?.requested || 0}
+                enforced={capacityEnforced}
               />
             )}
 
@@ -311,6 +317,8 @@ function AssignmentsPage() {
                 onChange={(next) => { setSerials(next); setErrors((p) => ({ ...p, serials: undefined })); }}
                 disabled={submitting}
                 invalid={!!errors.serials}
+                capacity={capacity}
+                enforced={capacityEnforced}
               />
               {metersTruncated && (
                 <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">Not every meter could be listed. Search may miss some.</p>

@@ -150,7 +150,13 @@ function ExcelUpload() {
       } else if (err?.status === 401) {
         setError('Your session has expired. Please log in again.');
       } else {
-        setError(getErrorMessage(err, 'An unknown error occurred during upload.'));
+        // POST /meters/upload rejects the WHOLE file (nothing is imported) when
+        // a METER NUMBER or SIM NUMBER cell is stored as a number rather than
+        // text — Excel drops the leading zero and can't hold a 19-digit SIM.
+        // That 400 names the row, the column and the fix, so it is shown as-is;
+        // the wider allowance exists for exactly this message and still passes
+        // every other safety filter in getErrorMessage.
+        setError(getErrorMessage(err, 'An unknown error occurred during upload.', { maxLength: 280 }));
       }
       setMessage(null);
     } finally {
@@ -204,6 +210,16 @@ function ExcelUpload() {
                 Selected: <span className="font-mono">{file.name}</span> ({Math.round(file.size/1024)} KB)
               </p>
             )}
+            {/* Said up front because the server rejects the WHOLE file for
+                this — nothing is imported — and the round-trip is avoidable.
+                Excel stores a Number cell as a number, which drops a meter
+                number's leading zero and can't hold a 19-digit SIM at all. */}
+            <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
+              Format the <strong>METER NUMBER</strong> and <strong>SIM NUMBER</strong> columns as
+              <strong> Text</strong> in Excel before saving. Left as numbers, a leading zero is lost
+              and long SIM serials lose precision, and the upload is refused. The downloaded template
+              is already formatted correctly.
+            </p>
           </div>
 
           <div>

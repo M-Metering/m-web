@@ -1,11 +1,191 @@
 # API Gap Report
 
+> **2026-09-24 (fifth pass) — gaps AB and AC are CLOSED, hours after they were written.** The
+> backend shipped the `SUPERVISOR` role and 8 new endpoints (81 paths, up from 73, verified live).
+> Read the section immediately below first: it records what closed, what the frontend had to change
+> as a result, and the two small new gaps found while integrating it.
+
+## 2026-09-24 (fifth pass): the backend shipped SUPERVISOR, search, undo, restore and finance
+
+Source: the backend team's *Pharez API — Frontend Integration Guide* (2026-09-24), cross-checked
+against the live OpenAPI document the same day (`/api-docs/swagger-ui-init.js`). Every claim below
+was verified against the spec, not taken from the PDF alone.
+
+### CLOSED — Gap AB: `User.role` now includes `SUPERVISOR`
+
+The enum is now `["SUPERADMIN","ADMIN","SUPERVISOR","INSTALLER"]` on `User`, `UserCreate` **and**
+`UserUpdate`. Supervisor accounts can be created, assigned and logged in. The explanatory modal
+that stood in for this has been deleted from `UserManagement.jsx`.
+
+**The role is wider than this app first modelled it, and the app was corrected to match.** The
+backend's description is "an ADMIN whose access has been narrowed to installations and
+assignments" — not the read-only observer the first pass assumed:
+
+| Area | What SUPERVISOR actually gets |
+|---|---|
+| Installations | **Full, same as ADMIN** — create, list, search, view, cancel, statistics, disco export, mark-exported |
+| Assignments | **Full, same as ADMIN** — assign/return meters, assign/unassign jobs, list/view batches |
+| Meters | **Read-only** — list, search, by id, by meter number. No upload, export, statistics or delete |
+| Users | **Read-only installer roster** — list/search/view INSTALLER accounts and itself |
+| Everything else | No access — finance, imports, settings, discos, API keys all 403 |
+
+So `ROLE_PERMISSIONS[SUPERVISOR]` gained `INSTALLATIONS.MANAGE`, `ASSIGNMENTS.MANAGE`,
+`SCHEDULE.VIEW` and `USERS.VIEW`. It still does **not** get `INSTALLATIONS.COMPLETE` (start/report/
+fail are INSTALLER-only), `SCHEDULE.MANAGE`, `UPLOADS.EXCEL`, or any user write.
+
+Because a Supervisor can now dispatch meters, it is subject to the Admin capacity rule — the
+per-meter-type cap applies to every role except `SUPERADMIN`, which is exactly what
+`permissions.enforcesMeterCapacity` already expressed.
+
+### CLOSED — Gap AC: assignment limits… still not enforced server-side
+
+**Partially closed, and stated precisely to avoid over-claiming.** The guide's permission table
+confirms `SUPERADMIN`, `ADMIN` and `SUPERVISOR` may all call `/assignments/*`, but `POST
+/assignments/meters` still documents only `400 User is not an active installer` and `404 Disco or
+installer not found`. There is **no** documented rejection for "installer has no matching
+installation", no meter-type check and no ADMIN/SUPERADMIN distinction.
+
+**Gap AC therefore remains open**, unchanged, for the capacity/meter-type/concurrency rules. The
+frontend cap is still advisory, still applied per meter type from live reads, still re-checked
+against a fresh read immediately before the POST, and still fails closed for capped roles. The
+backend rule set this needs is written out in the fourth-pass entry below.
+
+### New — Gap AD: the `User` schema exposes no "deactivated" flag
+
+`DELETE /users/{id}` is now a working **soft delete** (it previously 500'd on every call), and
+`POST /users/{id}/restore` reverses it. `GET /users/search` takes `includeInactive=true` to include
+soft-deleted accounts.
+
+But the documented `User` schema has **no `isActive` / `is_active` property** — only id, firstName,
+lastName, role, nin, phone, email, homeAddress, officeAddress, createdAt, updatedAt. So a response
+that includes deactivated accounts gives the frontend no way to tell which ones they are, and a
+"Deactivated accounts" screen would have to guess at an undocumented field.
+
+**What the frontend does instead:** Restore is offered inline on the success notice immediately
+after a deactivation, which is the one moment the app knows with certainty which account to
+restore. No list of deactivated users is built, because none can be built honestly.
+
+**Backend change needed:** add `isActive` (or equivalent) to the `User` schema so a deactivated
+account is identifiable in a response.
+
+### New — Gap AE: the `role` filter enum is stale on the user endpoints
+
+`User.role`, `UserCreate.role` and `UserUpdate.role` all list `SUPERVISOR`, but the **`role` query
+parameter** on `GET /users` and `GET /users/search` still documents only
+`["SUPERADMIN","ADMIN","INSTALLER"]`. If that parameter is validated against its documented enum,
+`?role=SUPERVISOR` would be rejected.
+
+**What the frontend does:** never sends `role=SUPERVISOR` as a request parameter; where Supervisors
+need to be distinguished in a list, it filters client-side. `searchUsers` in `api.js` carries this
+note at the call site.
+
+**Backend change needed:** widen the two query-parameter enums to match the schema.
+
+### Also closed / newly available (integrated this pass)
+
+| Endpoint | What it replaced |
+|---|---|
+| `GET /meters/search` | The paged "download the inventory and filter in the browser" scan for a partial serial or SIM. Now server-side and uncapped; the scan survives only for a make/model/SGC term, which nothing covers |
+| `GET /installations/search` | Nothing yet — added to `api.js` as `searchInstallations`. The Installations page deliberately loads its scope once and filters locally (faceted filters depend on having the rows), so it is **not** rewired; it is there for a future server-side search |
+| `GET /users/search` | Added as `searchUsers`. See gaps AD and AE for why it isn't used to build a deactivated-accounts view |
+| `POST /imports/{id}/undo` | Manual cleanup after a wrong import. Wired into the batch detail view, behind a confirmation, with the partial result rendered through `utils/importUndo.js` |
+| `POST /users/{id}/restore` | Nothing — reverses the now-working soft delete |
+| `GET /finance/revenue/{summary,breakdown,transactions}` | Nothing. New Revenue tab on the Payments page; `breakdown` has a service method but no screen yet |
+
+### Fixed by the backend, affecting our error handling
+
+`POST /meters/upload` now rejects the **whole file** with a `400` when a METER NUMBER or SIM NUMBER
+cell is stored as a number rather than text (Excel drops the leading zero and cannot hold a 19-digit
+SIM). The message names the row, the column and the fix.
+
+That message is longer than `getErrorMessage`'s 160-character default cap, so it would have been
+swallowed and replaced by a bare fallback — the exact failure mode this report already documents for
+`"name" is not allowed`. `getErrorMessage` now takes an optional `maxLength`, and the upload call
+site raises it; every other filter (stack traces, SQL, schema internals) still applies. Static help
+text next to the file picker now states the requirement up front, since the rejection is total.
+
 > **2026-09-21 — most of the long-standing gaps below are now CLOSED.** The backend shipped a
 > **multi-disco installation flow** (31 new endpoints, verified live on `api.memetering.com`:
 > `GET /api-docs/swagger.json` now serves **85 operations**, up from 54). Installer assignment,
 > meter assignment, and the GPS/photo/supervisor/installer-name fields all exist now — as a
 > **new resource**, not as changes to the JED endpoints. Read the section directly below before
 > the older gap entries, several of which are now historical.
+
+## 2026-09-24 (fourth pass): the Supervisor role, and server-side assignment limits
+
+Two gaps found while adding the Supervisor role and the Admin meter-assignment rules. Both were
+verified against the **live OpenAPI document** (`https://api.memetering.com/api-docs/swagger-ui-init.js`,
+73 paths) on 2026-09-24, not against memory of it.
+
+### Gap AB — `User.role` has no `SUPERVISOR` value
+
+The role enum in the live spec is exactly:
+
+```json
+["SUPERADMIN", "ADMIN", "INSTALLER"]
+```
+
+The string `SUPERVISOR` appears nowhere in the document (0 occurrences). Consequences:
+
+- **`POST /users` and `PUT /users/{id}` reject `role: "SUPERVISOR"`.** The API validates with Joi, so
+  the value fails validation and `getErrorMessage` drops the wording as backend-internal — the
+  operator would get a bare fallback with no clue why.
+- **`POST /auth/login` can never return a Supervisor session**, because no such account can exist.
+
+**What the frontend does about it.** The Supervisor role is implemented for real everywhere it is the
+frontend's job: `ROLES.SUPERVISOR`, its own explicit permission set, page access, the sidebar item
+set, the route guards, the action-level checks, the role badge/label, the role filter and the idle
+session timeout. The one thing that is *not* faked is account creation: choosing Supervisor in User
+Management opens an explanatory modal instead of sending a request that is guaranteed to fail (the
+pattern CLAUDE.md rule 12 already establishes for JED installer assignment). The moment the enum
+gains the value, remove `SUPERVISOR_UNSUPPORTED_MESSAGE` and its two guards in
+`UserManagement.jsx` — nothing else about the role is a placeholder.
+
+**Backend change needed:** add `SUPERVISOR` to the `User.role` enum, and enforce the same module
+boundaries server-side (see gap AC — a client-side denial is a UX convenience, not a security
+boundary). Concretely, a Supervisor token must be refused by `POST /assignments/meters`,
+`POST /assignments/jobs`-equivalents, `POST /installations/{id}/report`, every `/users` write,
+`/imports/*`, `/meters/*` writes and the disco config endpoints.
+
+### Gap AC — `POST /assignments/meters` enforces no capacity, meter-type or role-difference rule
+
+The documented responses are `201` (assigned), `200` (nothing assigned, see `rejected[]`),
+`400 User is not an active installer` and `404 Disco or installer not found`. There is **no**
+response for "installer has no matching installation", and the request body carries only
+`discoCode`, `installerId`, `meterNumbers`, `note`, `dispatchRef`. So the backend today:
+
+- does not require an installation to be assigned before a meter is;
+- does not compare the meter's `phaseType` against the installer's open jobs' `meterType`;
+- does not cap the number of meters against the number of open jobs;
+- does not distinguish ADMIN from SUPERADMIN for any of the above.
+
+**What the frontend does about it.** All four rules are implemented in one place
+(`utils/meterCapacity.js` + `hooks/useMeterDispatch.js`), computed from live API reads, applied per
+meter type, and **re-checked against a fresh read immediately before the POST**. A capped role
+fails closed: if capacity cannot be verified, no dispatch happens.
+
+**What the frontend cannot do.** This is a read-then-write across two HTTP calls, so it narrows the
+race window but cannot close it: two admins dispatching to the same installer at the same moment can
+still each pass their own re-check and jointly exceed the cap. Nor can it stop a caller who bypasses
+the UI and posts to `/assignments/meters` directly with a valid ADMIN token — from the API's point of
+view that request is perfectly legal today.
+
+**Backend change needed**, in one transaction per dispatch:
+
+1. reject when the target user is not an active `INSTALLER` (already done);
+2. for a non-`SUPERADMIN` caller, reject when the installer has no open (`ASSIGNED`/`IN_PROGRESS`)
+   installation in that disco;
+3. for a non-`SUPERADMIN` caller, reject each meter whose `phaseType` has no matching open
+   installation `meterType`, per meter type;
+4. for a non-`SUPERADMIN` caller, reject the dispatch when
+   `open jobs of that type − meters of that type already held < meters of that type requested`;
+5. hold a row lock (or an equivalent atomic check) over the count so concurrent dispatches cannot
+   both pass;
+6. `SUPERADMIN` skips 2–4 and keeps 1, 5 and the existing meter-integrity checks (meter exists, is
+   `AVAILABLE`, is not already `ASSIGNED`/`USED`/`LOST`).
+
+Until that lands, the limits in this app are **advisory** — accurate, live and consistent across both
+dispatch entry points, but client-side.
 
 ## 2026-09-24 (third pass): live probe of the failing endpoints
 

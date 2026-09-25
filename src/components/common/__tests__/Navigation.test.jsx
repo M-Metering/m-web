@@ -42,6 +42,20 @@ describe('Navigation — role matrix', () => {
     expect(navFor(ROLES.INSTALLER).sort()).toEqual(['/complaints', '/dashboard', '/my-jobs']);
   });
 
+  // Per the backend's own scope for the role: installations and assignments in
+  // full, meters and the installer roster read-only, nothing else.
+  it('gives Supervisor its five items and no more', () => {
+    expect(navFor(ROLES.SUPERVISOR).sort()).toEqual(
+      ['/assignments', '/dashboard', '/installations', '/schedule', '/users']
+    );
+  });
+
+  it('never shows a Supervisor a module the API would 403', () => {
+    const supervisor = navFor(ROLES.SUPERVISOR);
+    ['/uploads', '/payments', '/reports', '/settings', '/imports', '/my-jobs', '/complaints']
+      .forEach((path) => expect(supervisor).not.toContain(path));
+  });
+
   it('never shows an Installer an administrative page', () => {
     const installer = navFor(ROLES.INSTALLER);
     ['/installations', '/imports', '/assignments', '/schedule', '/users', '/reports', '/payments', '/uploads', '/settings']

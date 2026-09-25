@@ -67,8 +67,8 @@ jedc-meter-management/
 
 ## 5. Completed Features
 
-- **Auth & RBAC:** JWT login (`{phone, password}`, token in `localStorage`), profile/password management, OTP-based phone/email verification, three-tier role-based route and UI gating (SUPERADMIN/ADMIN/INSTALLER).
-- **Admin/Super Admin 3-minute idle-session timeout** (`src/hooks/useAdminIdleTimeout.js`): an absolute deadline (`now + 3min`) persisted in `localStorage` alongside `jedAuthToken`/`jedUser` (via new `jedApi.getSessionDeadline()`/`setSessionDeadline()`/`clearSessionDeadline()`), extended (throttled to ≤1/sec) on `mousedown`/`mousemove`/`keydown`/`touchstart`/`wheel`/`scroll`. A page refresh resumes the same deadline rather than granting a fresh 3 minutes. On expiry: logs out, clears all persisted auth state, redirects to `/login`. Installer is explicitly exempt (the hook is only armed when `permissions.isAdmin` is true).
+- **Auth & RBAC:** JWT login (`{phone, password}`, token in `localStorage`), profile/password management, OTP-based phone/email verification, role-based route and UI gating across four roles (SUPERADMIN/ADMIN/SUPERVISOR/INSTALLER — all four are in the API's `User.role` enum; SUPERVISOR was added by the backend on 2026-09-24, see section 8 for its scope). Where a page serves several roles at different depths, the view check and the manage check are separate permissions rather than one flag.
+- **Admin/Super Admin 3-minute idle-session timeout** (`src/hooks/useAdminIdleTimeout.js`): an absolute deadline (`now + 3min`) persisted in `localStorage` alongside `jedAuthToken`/`jedUser` (via new `jedApi.getSessionDeadline()`/`setSessionDeadline()`/`clearSessionDeadline()`), extended (throttled to ≤1/sec) on `mousedown`/`mousemove`/`keydown`/`touchstart`/`wheel`/`scroll`. A page refresh resumes the same deadline rather than granting a fresh 3 minutes. On expiry: logs out, clears all persisted auth state, redirects to `/login`. Installer is explicitly exempt; the hook is armed for every office account (`permissions.isAdmin || permissions.isSupervisor`).
 - **Meter management:** inventory CRUD via **Meter Schedule** (list/filter/search/export/statistics/delete — the single entry point, no duplicate "Meters" page), bulk Excel upload, meter-number template download, meter-type/tariff settings CRUD.
 - **Installation lifecycle:** request submission → RRR generation (from `InstallationDetail.jsx`) → customer pays via Remita → webhook/manual confirmation → installer sees it in the shared "Awaiting Installation" queue → installer completes the job.
 - **Installations page** (`/installations`, Admin/Super Admin only, `AdminInstallations.jsx`): the consolidated admin-facing installation workflow — exactly two tabs matching the real status enum, Awaiting Installation (`PAID`) and Completed (`COMPLETED`), no invented intermediate states. Rows are selectable (single or multi-select) with an "Assign Installer" action per row or for the current selection; since the real API has no installer-assignment field or endpoint (see `API_GAP_REPORT.md`), this opens an explanatory modal rather than persisting a fake assignment. Replaced Payments' old "Requests by Status" tab, which duplicated this same PAID/COMPLETED view. **(2026-09-20)** Both tabs now load every page via `src/utils/fetchAllRequests.js` (previously silently capped at the server's default 10). The Completed tab shows Seal No. and an **Installed** date (`dateCompleted`); an "Installer" cell says "Not recorded". Clicking a completed job opens `InstallationDetail.jsx`, which now includes an "Installation Details" card (`src/components/installation/CompletionDetails.jsx`): Installation Date is real (`dateCompleted`); Installer, Supervisor, GPS and Photos are **not on the real API** and show "Not recorded by the API yet" — GPS-link and photo-preview components are built and validated but inert until the backend supplies data (see `API_GAP_REPORT.md`).
@@ -148,7 +148,80 @@ jedc-meter-management/
   - **The edit form is keyed by target user**, so its `useState`-seeded fields can't show the previously-edited user's values.
   - **Live probe of the failing endpoints** (unauthenticated): `PUT` and `DELETE /users/{id}` both answer **401**, and `PATCH` answers **404** — so the routes and methods the app uses are correct, and a UUID does not cause a routing failure. There is no `.env` override and exactly one HTTP client. See `API_GAP_REPORT.md`, third pass, for the full table and for what remains unobservable without credentials.
 
+- **Supervisor role and role-dependent meter assignment (2026-09-24):**
+  - **New role `SUPERVISOR`**, in the API's `User.role` enum since 2026-09-24. Scope, matching the
+    backend exactly: **full** Installations (create, cancel, assign, unassign, disco export,
+    mark-sent) and Assignments (dispatch and return meters); **read-only** Meter Schedule and the
+    Users page (Installer roster only); the Dashboard without financial figures; no Payments/Finance,
+    Imports, Reports, Settings, API Keys or Uploads. Its permission set is an explicit allow-list,
+    never "admin minus exclusions", so a new admin permission can't leak into it, and it sits
+    **outside** `permissions.isAdmin`, which is what makes every pre-existing `isAdmin` gate deny it
+    untouched. It does not hold `INSTALLATIONS.COMPLETE` — start/report/fail are Installer-only.
+  - **View and manage are separate flags wherever a page serves both.**
+    `canViewAssignments`/`canManageAssignments`, `canViewSchedule`/`canManageSchedule`,
+    `canViewUsers`/`canCreateUsers`/`canUpdateUsers`. Meter Schedule therefore renders for a
+    Supervisor without the statistics cards (the call is skipped, not fired and hidden), without the
+    export button and without delete; the Users page renders without Add User and with View as the
+    only row action; and the JED completion form on `/installations/:accountNumber` is replaced by a
+    read-only "Awaiting installation" panel. On the dashboard it gets the operational KPIs and the
+    installations trend, but not the revenue KPI, the revenue trend, per-row amounts, Quick Actions
+    or the export modal.
+  - **Session handling:** the 3-minute idle timeout now covers Supervisor too (an office account);
+    Installer remains exempt.
+  - **Admin meter-assignment rules enforced per meter type** — and they apply to Supervisor too,
+    since it can dispatch. An Admin (or Supervisor) may dispatch to an installer
+    only against that installer's open installations, matched by meter type: no installation → no
+    meter; only Single Phase jobs → no Three Phase meter (and vice versa); and never more of a type
+    than `open jobs of that type − meters of that type already held`. The two phase capacities are
+    independent, so exhausting Single Phase leaves Three Phase untouched. A **Super Admin** is capped
+    by none of it and may assign meters before, or without, any installation — while meter integrity
+    (exists, `AVAILABLE`, not already assigned/used/lost, real installer) still applies to everyone.
+    One switch decides which: `permissions.enforcesMeterCapacity`, read by `useMeterDispatch`, which
+    both dispatch entry points already share.
+  - **UX.** Selecting an installer shows assigned installations, assigned meters and available
+    capacity **per meter type** (`MeterCapacitySummary`), and the serial picker disables a meter type
+    with no eligible installation — in the phase filter, on each row, and on paste — so the UI
+    refuses exactly what the submit would. Refusals are three distinct sentences, because they need
+    three distinct fixes (assign a job / wrong meter type / that type is full).
+  - **Still client-side.** `POST /assignments/meters` enforces none of these rules and cannot tell
+    ADMIN from SUPERADMIN, so the cap is advisory and the read-then-write leaves a small race
+    window. Capped roles fail closed and the check is re-run against a fresh read immediately before
+    the POST. See `API_GAP_REPORT.md`, gap **AC**, for the exact backend change needed.
+
+- **Eight new endpoints integrated (2026-09-24, second pass — the backend's Frontend Integration
+  Guide of the same day):**
+  - **Meter search is now server-side.** `GET /meters/search` covers a partial serial or SIM across
+    the whole inventory. Meter Schedule uses it for any digits term; the old paged scan survives only
+    for a make/model/SGC term, which nothing covers. A complete meter number still goes to
+    `GET /meters/meter-number/{n}`. An unusable search response falls back to the scan; an empty but
+    well-formed one is a genuine "no matches" and does not.
+  - **Undo an import.** `POST /imports/{id}/undo`, on the batch detail view behind a confirmation
+    that states the limit up front. Partial and idempotent by design: rows already installed,
+    exported, in progress or dispatched are kept and reported through `utils/importUndo.js`, and a
+    non-zero `skippedCount` is presented as the safety rule working, never as a failure.
+  - **User delete is a soft delete, and reversible.** `DELETE /users/{id}` previously 500'd on every
+    call; it now deactivates the account (login blocked, historical records keep the name) and
+    `POST /users/{id}/restore` reverses it. Restore is offered inline on the success notice — see
+    the gap note below for why there is no "deactivated accounts" list.
+  - **Meter upload rejects a whole file** whose METER NUMBER or SIM NUMBER column is stored as a
+    number rather than text. That 400 names the row, the column and the fix, so it is shown verbatim
+    (`getErrorMessage(..., { maxLength })`), and the requirement is stated as help text beside the
+    file picker to avoid the round-trip entirely.
+  - **Revenue tab on the Payments page** (`RevenueTab.jsx`), from `GET /finance/revenue/summary` and
+    `/transactions` — SUPERADMIN/ADMIN only, matching the endpoints' own 403. Totals are **never**
+    shown bare: `utils/financeSummary.js` attaches the estimated-value and unpriced-record counts to
+    every figure, and each disco's recognition basis (JED on payment, Aba Power on installation) is
+    displayed as the API reports it, never re-derived.
+  - **`GET /installations/search` and `GET /users/search`** are in the service layer; see Pending for
+    why neither is wired to a screen yet.
+
 ## 6. Pending / Incomplete Features
+
+- **The meter-assignment limits are still not enforced by the API.** `POST /assignments/meters` checks only that the target is an active installer and that the meters exist — no installation dependency, no meter-type match, no per-type cap, and no ADMIN/SUPERADMIN distinction. The frontend applies all of it from live reads, per meter type, re-checked immediately before the POST, and fails closed for capped roles; but a direct API call with a valid ADMIN or SUPERVISOR token still bypasses it, and two simultaneous dispatches can still jointly exceed the cap. The exact backend change (including the transaction/lock) is in `API_GAP_REPORT.md`, gap **AC**.
+- **The `User` schema exposes no deactivated flag.** `DELETE /users/{id}` is a working soft delete and `POST /users/{id}/restore` reverses it, but nothing in the documented `User` response marks an account as deactivated — so this app offers Restore inline right after a deactivation rather than building a "deactivated accounts" list it would have to guess at. `API_GAP_REPORT.md`, gap **AD**.
+- **The `role` query-parameter enum is stale on `/users` and `/users/search`** — it still lists only SUPERADMIN/ADMIN/INSTALLER even though `User.role` includes SUPERVISOR, so the app never sends `role=SUPERVISOR` and filters client-side instead. `API_GAP_REPORT.md`, gap **AE**.
+- **`GET /installations/search` is integrated in the service layer but not wired to a screen.** The Installations page loads its scope once and filters locally, because its faceted filters need the rows in hand; a server-side search would change that design, so it was left as a deliberate choice rather than a half-migration.
+- **`GET /finance/revenue/breakdown` has a service method but no screen.** The Revenue tab uses `summary` and `transactions`; the grouped/charted view is still to build.
 
 - **No installer-assignment mechanism** — for either customer requests *or* individual meters. The real API has no `installerId`/`assignedTo` field on a customer request or on a `Meter` record, and no assign/unassign endpoint (single or bulk) — `GET /external/jed/requests/installer` only filters by status, not by installer, and there is no equivalent "meters for this installer" endpoint at all. Every installer sees the same shared "Awaiting Installation" queue. The Installations page (`/installations`) has real, working multi-select and an "Assign Installer" action, but it opens an explanatory modal rather than persisting anything — a client-side/localStorage-only version was explicitly considered and declined twice (2026-08-25, re-confirmed 2026-08-27 when an Installer-facing "Assigned Meters" view was requested) since it would violate the requirement that assignment be authoritative and cross-device. See `API_GAP_REPORT.md`.
 - **`Meter.installedAt` is frequently `null` even when `status` is `INSTALLED`** (confirmed live 2026-08-27) — Meter Schedule shows the real value when present and never fabricates one; the Query-tab table says "Installed (date unavailable)" rather than a contradictory "Not Installed" when the status says otherwise. See `API_GAP_REPORT.md`.
@@ -187,7 +260,9 @@ Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`)
 - **Account number:** numeric only (`/^\d+$/`). Seal number is required on installation.
 - **Currency:** NGN only (`src/utils/currency.js`, `formatCurrencyNGN`).
 - **Request status enum (real, only these three):** `INITIATED → PAID → COMPLETED`. Payment/status badges are case-insensitively normalized in `src/utils/statusBadge.js`; `isAwaitingInstallationStatus` (`PAID`) and `isCompletedStatus` (`COMPLETED`) drive the installer queue's two tabs. **Badge colours (2026-08-27):** `PAID`/`PENDING` moved from yellow/amber to blue — yellow/gold is now this app's brand colour (see Brand Identity above), so a status badge no longer uses it, to avoid a status looking like an interactive/brand element; blue was the *previous* brand colour and is now free for exactly this purpose. Meter Schedule's "Single Phase" phase-type badge moved from yellow to cyan for the same reason.
-- **User role enum:** `SUPERADMIN / ADMIN / INSTALLER`, uppercase, used as-is throughout (no case translation). Only `SUPERADMIN` may create/edit `ADMIN`/`SUPERADMIN` accounts.
+- **User role enum:** `SUPERADMIN / ADMIN / SUPERVISOR / INSTALLER`, uppercase, used as-is throughout (no case translation). `SUPERVISOR` was added by the backend on 2026-09-24. Only `SUPERADMIN` may create/edit `ADMIN`, `SUPERADMIN` or `SUPERVISOR` accounts (`isPrivilegedRole`) — note this app is deliberately stricter than the API, which also lets an `ADMIN` create `ADMIN` accounts.
+- **Supervisor scope** (the backend's own definition — "an ADMIN narrowed to installations and assignments"): **full** on Installations (create, cancel, assign, unassign, disco export, mark-sent) and Assignments (dispatch and return meters); **read-only** on Meter Schedule (list/search/view — no upload, export, statistics or delete) and Users (the Installer roster only); the Dashboard without any financial figure; and **no access** to Payments/Finance, Imports, Reports, Settings, API Keys or Uploads. It does not hold `INSTALLATIONS.COMPLETE` — start/report/fail are Installer-only. It is outside `permissions.isAdmin`, so every existing admin gate denies it. Because it can dispatch meters, it is capped by the meter-assignment rules exactly like an Admin.
+- **Meter assignment limits (Admin):** an Admin may dispatch a meter to an installer only when that installer already has an open installation (`ASSIGNED`/`IN_PROGRESS`) **of that meter type**, and only up to `open jobs of that type − meters of that type already held`. Single Phase and Three Phase capacities are independent. A **Super Admin** is capped by none of this and may assign installations and meters independently; meter integrity rules (exists, `AVAILABLE`, not already assigned/used/lost) still apply to both. `permissions.enforcesMeterCapacity` is the single switch. **Client-side only** — `POST /assignments/meters` enforces none of it (`API_GAP_REPORT.md`, gap AC).
 - **Meter inventory status:** `AVAILABLE / INSTALLED / FAULTY / RETIRED`. Phase type: `SINGLE PHASE / THREE PHASE`.
 - **Request retry/timeout policy:** 30s default timeout (60s for export/upload endpoints), max 2 retries with exponential backoff.
 - **Installation lifecycle order is enforced by workflow, not just UI:** request → RRR generated → payment → confirmation (webhook or manual) → installer picks it up from the shared queue → completion.

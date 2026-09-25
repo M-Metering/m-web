@@ -7,6 +7,8 @@
 //
 // There is deliberately no second copy of this logic. Everything that decides
 // whether a dispatch is legal lives here:
+//   - the account must hold ASSIGNMENTS.MANAGE (a Supervisor reads the same
+//     figures and cannot dispatch);
 //   - capacity is read live from the API (useInstallerMeterCapacity), never
 //     from component state;
 //   - evaluateMeterDispatch applies the per-meter-type cap (pending jobs of
@@ -15,16 +17,26 @@
 //   - the check is re-run against a FRESH read immediately before submitting,
 //     so a job or meter that changed in the meantime cannot let an
 //     over-dispatch through;
-//   - it fails closed: no verified capacity means no dispatch.
+//   - while the cap applies it fails closed: no verified capacity, no dispatch.
+//
+// ROLES. The cap is an ADMIN rule. A Super Admin assigns installations and
+// meters independently, so `permissions.enforcesMeterCapacity` is false for it
+// and no capacity gate is applied — the meter's own integrity rules (exists,
+// AVAILABLE, not already assigned/used/lost, real installer) still are, both
+// here via the inventory helpers and server-side.
 //
 // This is still a client-side cap — POST /assignments/meters does not enforce
-// it (API_GAP_REPORT.md, gaps D and O). The backend remains authoritative for
-// authorization and for per-serial rejection.
+// it (API_GAP_REPORT.md, gaps D, O and AC). The backend remains authoritative
+// for authorization and for per-serial rejection.
 import { useState, useCallback, useMemo } from 'react';
 import jedApi from '../components/services/api';
 import { useInstallerMeterCapacity, loadInstallerMeterCapacity } from './useInstallerMeterCapacity';
 import { evaluateMeterDispatch } from '../utils/meterCapacity';
 import { getErrorMessage } from '../utils/errorMessage';
+// The capacity cap is an Admin rule, not a Super Admin one, and dispatching
+// at all needs ASSIGNMENTS.MANAGE. Both come from the one permission model so
+// this hook, its two call sites and the route guards can't disagree.
+import { usePermissions } from '../components/auth/usePermissions';
 
 /** Serials the API named in `rejected`, as a Set of strings. */
 export function rejectedSerialsOf(data) {
@@ -45,6 +57,12 @@ export function rejectedSerialsOf(data) {
  * @param {boolean} [input.enabled] - false pauses the capacity read (e.g. modal closed)
  */
 export function useMeterDispatch({ discoCode, installerId, serials = [], phaseBySerial, enabled = true }) {
+  // enforce === false only for a Super Admin, who may hand an installer
+  // meters before (or without) any installation being assigned. Every other
+  // role is capped per meter type. canManageAssignments is the separate
+  // question of whether this account may dispatch at all — a Supervisor can
+  // read these figures and cannot act on them.
+  const { enforcesMeterCapacity: enforce, canManageAssignments } = usePermissions();
   const [capacityRefresh, setCapacityRefresh] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
@@ -59,8 +77,8 @@ export function useMeterDispatch({ discoCode, installerId, serials = [], phaseBy
   });
 
   const check = useMemo(
-    () => (capacity ? evaluateMeterDispatch(capacity, serials, { phaseBySerial }) : null),
-    [capacity, serials, phaseBySerial]
+    () => (capacity ? evaluateMeterDispatch(capacity, serials, { phaseBySerial, enforce }) : null),
+    [capacity, serials, phaseBySerial, enforce]
   );
 
   const reset = useCallback(() => {
@@ -73,15 +91,23 @@ export function useMeterDispatch({ discoCode, installerId, serials = [], phaseBy
    * the submit uses, so the button's inline error and the submit agree.
    */
   const blockingReason = useCallback(() => {
+    // Authorization first: no permission, no dispatch, whatever the figures say.
+    if (!canManageAssignments) return 'You do not have permission to dispatch meters.';
     if (!discoCode) return 'Select a disco.';
     if (!installerId) return 'Select the installer receiving these meters.';
     if (serials.length === 0) return 'Select at least one meter.';
     if (capacityLoading) return 'Still checking meter needs. Try again in a moment.';
-    if (capacityError || !capacity) return "Couldn't check meter needs. Please retry.";
-    if (!check.allowed) return check.message;
-    if (check.requested === 0) return 'These meters are already with this installer.';
+    // Fails closed while the cap applies — an unverifiable capacity must not
+    // become an unlimited one. A Super Admin isn't capped, so a failed read is
+    // only a missing read-out for them, not a reason to refuse the dispatch.
+    if (enforce && (capacityError || !capacity)) return "Couldn't check meter needs. Please retry.";
+    // "Nothing new to send" before "not allowed": when the cap doesn't apply,
+    // a selection of serials the installer already holds is the only way
+    // `allowed` is false, and it carries no message of its own.
+    if (check && check.requested === 0) return 'These meters are already with this installer.';
+    if (check && !check.allowed) return check.message;
     return null;
-  }, [discoCode, installerId, serials.length, capacityLoading, capacityError, capacity, check]);
+  }, [canManageAssignments, discoCode, installerId, serials.length, capacityLoading, capacityError, capacity, check, enforce]);
 
   /**
    * Dispatch. Returns { ok, reason?, data?, accepted?, rejected? } and never
@@ -98,11 +124,23 @@ export function useMeterDispatch({ discoCode, installerId, serials = [], phaseBy
     setError(null);
     setResult(null);
     try {
-      // Re-check against a fresh read, not the figures loaded when the
-      // installer was picked.
+      // Re-check against a FRESH read, not the figures loaded when the
+      // installer was picked — this is what stops two admins dispatching
+      // past the same remaining capacity at the same time. It is still a
+      // read-then-write, so it narrows the window rather than closing it;
+      // only the backend can close it (API_GAP_REPORT.md, gap AC).
       jedApi.clearCache();
-      const fresh = await loadInstallerMeterCapacity({ installerId, discoCode });
-      const recheck = evaluateMeterDispatch(fresh, serials, { phaseBySerial });
+      let fresh = null;
+      try {
+        fresh = await loadInstallerMeterCapacity({ installerId, discoCode });
+      } catch (capacityErr) {
+        // Capped roles fail closed; an uncapped one loses only the read-out.
+        if (enforce) throw capacityErr;
+        console.warn('[useMeterDispatch] Capacity re-read failed; not capped for this role.', capacityErr);
+      }
+      const recheck = fresh
+        ? evaluateMeterDispatch(fresh, serials, { phaseBySerial, enforce })
+        : { allowed: true, requested: serials.length, alreadyHeld: [], message: null };
       if (!recheck.allowed || recheck.requested === 0) {
         setCapacityRefresh((k) => k + 1);
         return {
@@ -138,7 +176,7 @@ export function useMeterDispatch({ discoCode, installerId, serials = [], phaseBy
     } finally {
       setSubmitting(false);
     }
-  }, [blockingReason, submitting, installerId, discoCode, serials, phaseBySerial]);
+  }, [blockingReason, submitting, installerId, discoCode, serials, phaseBySerial, enforce]);
 
   return {
     capacity,
@@ -152,6 +190,10 @@ export function useMeterDispatch({ discoCode, installerId, serials = [], phaseBy
     result,
     error,
     reset,
+    // Surfaced so the form can label and disable itself the same way the
+    // check behaves, instead of re-deriving the role.
+    enforce,
+    canDispatch: canManageAssignments,
   };
 }
 

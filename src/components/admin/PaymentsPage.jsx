@@ -19,6 +19,7 @@ import { useDataRefresh } from '../contexts/DataRefreshContext';
 import { formatCurrencyNGN } from '../../utils/currency';
 import ConfirmPaymentTab from './ConfirmPaymentTab';
 import BulkConfirmPaymentsTab from './BulkConfirmPaymentsTab';
+import RevenueTab from './RevenueTab';
 import StatusBadge from '../common/StatusBadge';
 import {
   CreditCard, RefreshCw, AlertCircle, Loader2, Calendar
@@ -29,6 +30,13 @@ import { getErrorMessage } from '../../utils/errorMessage';
 
 const TABS = [
   { id: 'payments', label: 'Payments' },
+  // Recognised revenue across both discos (GET /finance/revenue/*, added
+  // 2026-09-24). It lives here because /finance/* is SUPERADMIN/ADMIN only —
+  // the same audience as this page — and because it is a different question
+  // from the Payments tab: that lists Remita payment records, this is revenue
+  // the business has recognised, which for Aba Power happens on installation
+  // rather than on payment.
+  { id: 'revenue', label: 'Revenue' },
   { id: 'confirm', label: 'Confirm Payment' },
   { id: 'bulkImport', label: 'Upload Paid Customers' },
 ];
@@ -257,6 +265,7 @@ function PaymentsPage() {
       </div>
 
       {activeTab === 'payments' && <PaymentsTab />}
+      {activeTab === 'revenue' && <RevenueTab />}
       {activeTab === 'confirm' && <ConfirmPaymentTab />}
       {activeTab === 'bulkImport' && <BulkConfirmPaymentsTab />}
     </div>

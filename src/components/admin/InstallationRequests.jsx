@@ -110,7 +110,7 @@ const attributeLine = (row) =>
     row.installationPosition,
   ].filter(Boolean).join(' · ');
 
-function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign, busy }) {
+function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign, busy, canCancel = true, canUnassign = true }) {
   const job = row.raw;
   const actions = getAvailableActions(row.status);
   const coords = getCoordinates(job);
@@ -178,15 +178,17 @@ function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign,
           </div>
         </div>
 
-        {(actions.cancel || actions.unassign) && (
+        {/* Read-only roles (Supervisor) see the row and its status, never the
+            actions that would change it. */}
+        {((canUnassign && actions.unassign) || (canCancel && actions.cancel)) && (
           <div className="flex flex-wrap gap-2 mt-2">
-            {actions.unassign && (
+            {canUnassign && actions.unassign && (
               <button type="button" onClick={() => onUnassign(job)} disabled={busy}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50">
                 <Undo2 className="w-3.5 h-3.5" /> Unassign
               </button>
             )}
-            {actions.cancel && (
+            {canCancel && actions.cancel && (
               <button type="button" onClick={() => onCancel(job)} disabled={busy}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50">
                 <Ban className="w-3.5 h-3.5" /> Cancel
@@ -199,7 +201,7 @@ function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign,
   );
 }
 
-function JedRequestRow({ row, onAssign }) {
+function JedRequestRow({ row, onAssign, canAssign = true }) {
   const job = row.raw;
   return (
     <div className="p-4 flex items-start gap-3">
@@ -230,7 +232,7 @@ function JedRequestRow({ row, onAssign }) {
           {job.meterNo && <p className="font-mono">Meter {job.meterNo}{job.sealNo ? ` · seal ${job.sealNo}` : ''}</p>}
         </div>
         <div className="flex flex-wrap gap-2 mt-2">
-          {isAwaitingInstallationStatus(row.status) && (
+          {canAssign && isAwaitingInstallationStatus(row.status) && (
             <button type="button" onClick={() => onAssign(row)}
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600">
               <UserPlus className="w-3.5 h-3.5" /> Assign installer
@@ -250,6 +252,11 @@ function JedRequestRow({ row, onAssign }) {
 
 function InstallationRequests() {
   const permissions = usePermissions();
+  // Dispatching jobs and taking them back are ASSIGNMENTS.MANAGE; cancelling a
+  // request and exporting-and-marking-sent are INSTALLATIONS.MANAGE. A
+  // Supervisor holds neither, so it gets this page's full read-only view.
+  const canAssign = permissions.canManageAssignments;
+  const canManageJobs = permissions.canManageInstallations;
   const { refreshSignal, notifyDataChanged } = useDataRefresh();
   const { discos, loading: discosLoading } = useDiscoOptions();
 
@@ -972,8 +979,10 @@ function InstallationRequests() {
               </button>
             )}
           </div>
-
-          {/* Export — only meaningful for a single registered disco */}
+          {/* Export — only meaningful for a single registered disco. Hidden
+              from read-only roles because "Export & mark sent" moves rows to
+              EXPORTED: this panel is a handoff to the disco, not a report. */}
+          {canManageJobs && (
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 pt-1">
             <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
               <input
@@ -995,6 +1004,7 @@ function InstallationRequests() {
               {markExported ? 'Export & mark sent' : 'Export preview'}
             </button>
           </div>
+          )}
 
           {/* Completed installations workbook — current disco scope, filters and search */}
           <fieldset className="pt-3 border-t border-gray-200 dark:border-gray-700">
@@ -1031,7 +1041,7 @@ function InstallationRequests() {
           </fieldset>
         </div>
 
-        {assignableVisible.length > 0 && (
+        {canAssign && assignableVisible.length > 0 && (
           <div className="px-3 sm:px-4 py-2 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3">
             <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
               <input
@@ -1045,7 +1055,7 @@ function InstallationRequests() {
           </div>
         )}
 
-        {selectedRows.length > 0 && (
+        {canAssign && selectedRows.length > 0 && (
           <div className="px-3 sm:px-4 py-2.5 bg-brand-50 dark:bg-brand-900/20 border-b border-brand-200 dark:border-brand-800 flex items-center justify-between gap-3">
             <p className="text-sm font-medium text-brand-800 dark:text-brand-300">
               {selectedRows.length} selected
@@ -1088,17 +1098,19 @@ function InstallationRequests() {
             <div className="divide-y divide-gray-200 dark:divide-gray-700">
               {visibleRows.slice(0, visibleCount).map((row) => (
                 row.source === ROW_SOURCE.JED ? (
-                  <JedRequestRow key={row.key} row={row} onAssign={setJedAssignTarget} />
+                  <JedRequestRow key={row.key} row={row} onAssign={setJedAssignTarget} canAssign={canAssign} />
                 ) : (
                   <RequestRow
                     key={row.key}
                     row={row}
-                    selectable={getAvailableActions(row.status).assign}
+                    selectable={canAssign && getAvailableActions(row.status).assign}
                     selected={selected.has(row.key)}
                     onToggle={toggleRow}
                     onCancel={setCancelTarget}
                     onUnassign={handleUnassign}
                     busy={actionBusy}
+                    canCancel={canManageJobs}
+                    canUnassign={canAssign}
                   />
                 )
               ))}
@@ -1119,7 +1131,7 @@ function InstallationRequests() {
       </div>
 
       {/* Assign modal */}
-      {assignOpen && (
+      {canAssign && assignOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div role="dialog" aria-modal="true" aria-labelledby="assign-title"
             className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90vh] flex flex-col">
