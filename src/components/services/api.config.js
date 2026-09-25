@@ -159,6 +159,11 @@ export const ENDPOINTS = {
     TEMPLATE: '/meters/template',
     EXPORT: '/meters/export',
     STATISTICS: '/meters/statistics',
+    // Added 2026-09-24. A real server-side search over meter_number and
+    // sim_number, paginated like the list endpoint. This is what the old
+    // "page through GET /meters and filter locally" fallback existed for —
+    // see getMeters/searchMeters in api.js.
+    SEARCH: '/meters/search',
     BY_NUMBER: (meterNumber) => `/meters/meter-number/${encodeURIComponent(meterNumber)}`,
     BY_ID: (id) => `/meters/${encodeURIComponent(id)}`,
     CUSTOMER_REQUESTS_EXPORT: '/meters/customer-requests/export',
@@ -170,9 +175,31 @@ export const ENDPOINTS = {
   // real API — status changes and role updates go through PUT /users/{id}
   // (see updateUser in api.js). The previous ADMIN.USERS group duplicated
   // this at the wrong path (/auth/users) and has been removed.
+  //
+  // DELETE /users/{id} is a SOFT delete (sets is_active = false): the account
+  // stops appearing in lists and can't log in, but its historical records keep
+  // showing its name. RESTORE reverses it. Added 2026-09-24 along with SEARCH,
+  // whose `includeInactive` flag is the only way to list soft-deleted accounts
+  // — plain GET /users never returns them.
   USERS: {
     BASE: '/users',
+    SEARCH: '/users/search',
     BY_ID: (userId) => `/users/${encodeURIComponent(userId)}`,
+    RESTORE: (userId) => `/users/${encodeURIComponent(userId)}/restore`,
+  },
+
+  // ==================== FINANCE ENDPOINTS ====================
+  // Added 2026-09-24. Read-only recognised-revenue reporting across both
+  // discos, SUPERADMIN/ADMIN only (SUPERVISOR and INSTALLER get 403).
+  // Recognition timing is fixed server-side and differs per disco: JED counts
+  // revenue once Remita confirms payment, Aba Power once the installation is
+  // completed. Never present these totals as exact — every response carries
+  // estimated/missing-amount counts that must be shown with the figure
+  // (see utils/financeSummary.js).
+  FINANCE: {
+    REVENUE_SUMMARY: '/finance/revenue/summary',
+    REVENUE_BREAKDOWN: '/finance/revenue/breakdown',
+    REVENUE_TRANSACTIONS: '/finance/revenue/transactions',
   },
 
   // ==================== ADMIN ENDPOINTS ====================
@@ -219,6 +246,12 @@ export const ENDPOINTS = {
   IMPORTS: {
     BASE: '/imports',
     BY_ID: (id) => `/imports/${encodeURIComponent(id)}`,
+    // Added 2026-09-24. Reverses an import batch, removing only the rows
+    // nothing real depends on yet; it is idempotent and PARTIAL by design —
+    // INSTALLED/EXPORTED/IN_PROGRESS installations and dispatched/installed
+    // meters are kept and reported as skipped, not deleted. A non-zero
+    // skippedCount is the safety behaviour, not a failure.
+    UNDO: (id) => `/imports/${encodeURIComponent(id)}/undo`,
     PENDING_INSTALLATIONS: (discoCode) => `/imports/${encodeURIComponent(discoCode)}/pending-installations`,
     PENDING_INSTALLATIONS_TEMPLATE: (discoCode) => `/imports/${encodeURIComponent(discoCode)}/pending-installations/template`,
     METERS: (discoCode) => `/imports/${encodeURIComponent(discoCode)}/meters`,
@@ -238,6 +271,11 @@ export const ENDPOINTS = {
     BASE: '/installations',
     BY_ID: (id) => `/installations/${encodeURIComponent(id)}`,
     STATISTICS: '/installations/statistics',
+    // Added 2026-09-24. Server-side search over account_number and
+    // customer_name, scoped by the caller's role. Covers InstallationRequest
+    // only — JED's Remita requests are a different resource with no search
+    // endpoint of its own.
+    SEARCH: '/installations/search',
     // Installer-scoped by the caller's JWT — there is no installer id to pass.
     MY_JOBS: '/installations/me/jobs',
     MY_METERS: '/installations/me/meters',

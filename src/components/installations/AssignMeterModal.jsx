@@ -46,7 +46,7 @@ function AssignMeterModal({ meters = [], isOpen, onClose, onAssigned }) {
 
   const {
     capacity, capacityLoading, capacityError, reloadCapacity,
-    check, submit, submitting, result, error, reset,
+    check, submit, submitting, result, error, reset, enforce: capacityEnforced,
   } = useMeterDispatch({ discoCode, installerId, serials, phaseBySerial, enabled: isOpen });
 
   // A fresh dispatch every time the modal opens — never a stale result or a
@@ -159,6 +159,7 @@ function AssignMeterModal({ meters = [], isOpen, onClose, onAssigned }) {
                   error={capacityError}
                   onRetry={reloadCapacity}
                   addMeters={check?.requested || 0}
+                  enforced={capacityEnforced}
                 />
               )}
 

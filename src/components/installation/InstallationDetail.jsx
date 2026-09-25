@@ -390,6 +390,17 @@ function InstallationDetail() {
             </p>
           </div>
         </div>
+      ) : !permissions.canCompleteInstallations ? (
+        // ---- Paid, but this role only watches the queue (Supervisor) ----
+        <div className="bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-700 rounded-lg p-4 sm:p-6 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-slate-500 dark:text-slate-400 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold text-gray-900 dark:text-white">Awaiting installation</p>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+              This request is paid and waiting for an installer. Your role can view it but not submit the installation.
+            </p>
+          </div>
+        </div>
       ) : (
         // ---- Pending: the actual "execute and mark complete" form ----
         <div className="card p-4 sm:p-6">

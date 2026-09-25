@@ -8,20 +8,29 @@
 // a 201 can still carry rejected rows and a 200 means nothing landed — so the
 // result is always rendered through BatchResultSummary, which surfaces the
 // per-row errors with their 1-based spreadsheet row numbers.
+//
+// An import can also be REVERSED — POST /imports/{id}/undo (2026-09-24). That
+// is partial by design and idempotent: it removes only rows nothing depends on
+// yet, keeping anything already installed, exported, in progress or dispatched
+// and reporting them as skipped. See utils/importUndo.js; a non-zero
+// skippedCount is the safety rule working and is never shown as a failure.
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Upload, FileDown, AlertCircle, Loader2, RefreshCw, FileSpreadsheet, ChevronRight, X,
+  Upload, FileDown, AlertCircle, Loader2, RefreshCw, FileSpreadsheet, ChevronRight, X, Undo2,
 } from 'lucide-react';
 import jedApi from '../services/api';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import { usePermissions } from '../auth/usePermissions';
 import StatusTabs from '../common/StatusTabs';
+import ConfirmationModal from '../common/ConfirmationModal';
 import BatchResultSummary from '../installations/BatchResultSummary';
 import { useDiscoOptions } from '../../hooks/useDiscoOptions';
 import { fetchAllPages } from '../../utils/fetchAllPages';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { validateUploadFile } from '../../utils/fileValidation';
 import { downloadBlob } from '../../utils/downloadBlob';
+import { summarizeUndoResult, undoConfirmationMessage } from '../../utils/importUndo';
+import { assertApiSuccess } from '../../utils/apiResult';
 import { formatDateTime } from '../../utils/date';
 
 const IMPORT_TYPES = {
@@ -64,6 +73,14 @@ function ImportsPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // Undo (POST /imports/{id}/undo). Partial by design: `undoResult` carries
+  // how many rows were kept and why, and that is reported as the safety rule
+  // working, not as a failure.
+  const [undoTarget, setUndoTarget] = useState(null);
+  const [undoing, setUndoing] = useState(false);
+  const [undoError, setUndoError] = useState(null);
+  const [undoResult, setUndoResult] = useState(null);
 
   // Default to the first disco once the list arrives.
   useEffect(() => {
@@ -150,6 +167,8 @@ function ImportsPage() {
   const openDetail = useCallback(async (batch) => {
     setDetail(batch);
     setDetailLoading(true);
+    setUndoError(null);
+    setUndoResult(null);
     try {
       // The list endpoint omits per-row errors; the single-batch one has them.
       const response = await jedApi.getImportBatch(batch.id);
@@ -160,6 +179,32 @@ function ImportsPage() {
       setDetailLoading(false);
     }
   }, []);
+
+  // Undo an import. A 2xx here is not automatically a success (this API can
+  // answer 200 with success:false), so the response goes through
+  // assertApiSuccess before anything is reported.
+  const handleUndo = useCallback(async () => {
+    if (!undoTarget || undoing) return;
+    setUndoing(true);
+    setUndoError(null);
+    setUndoResult(null);
+    try {
+      const response = await jedApi.undoImportBatch(undoTarget.id);
+      assertApiSuccess(response, 'The server did not confirm the undo.');
+      setUndoResult(summarizeUndoResult(response?.data ?? response));
+      setUndoTarget(null);
+      // Rows disappeared from installations/meters, so every other mounted
+      // page needs to re-read rather than keep showing them.
+      notifyDataChanged();
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      console.error('[Imports] Undo failed:', err);
+      setUndoError(getErrorMessage(err, 'This import could not be undone.'));
+      setUndoTarget(null);
+    } finally {
+      setUndoing(false);
+    }
+  }, [undoTarget, undoing, notifyDataChanged]);
 
   if (!permissions.canRunImports) {
     return (
@@ -380,10 +425,53 @@ function ImportsPage() {
               ) : (
                 <BatchResultSummary data={detail} acceptedLabel="Created" />
               )}
+
+              {undoError && (
+                <div role="alert" className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-3 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                  <p className="text-sm text-red-800 dark:text-red-300">{undoError}</p>
+                </div>
+              )}
+
+              {/* A partial undo is the safety rule working, so this is a
+                  neutral/positive panel with the detail beneath it — never an
+                  error, however many rows were kept. */}
+              {undoResult && (
+                <div role="status" className="rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3">
+                  <p className="text-sm font-medium text-green-800 dark:text-green-300">{undoResult.headline}</p>
+                  {undoResult.detail && (
+                    <p className="text-xs text-green-700 dark:text-green-400 mt-1">{undoResult.detail}</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Undo — only rows nothing depends on are removed; the
+                confirmation says so before anything happens. */}
+            <div className="p-4 sm:p-6 border-t border-gray-200 dark:border-gray-700 flex justify-end">
+              <button
+                type="button"
+                onClick={() => { setUndoError(null); setUndoResult(null); setUndoTarget(detail); }}
+                disabled={undoing || detailLoading}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
+              >
+                {undoing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />}
+                {undoing ? 'Undoing…' : 'Undo this import'}
+              </button>
             </div>
           </div>
         </div>
       )}
+
+      <ConfirmationModal
+        isOpen={!!undoTarget}
+        onClose={() => setUndoTarget(null)}
+        onConfirm={handleUndo}
+        title="Undo this import?"
+        message={undoTarget ? undoConfirmationMessage(undoTarget) : ''}
+        confirmText="Undo import"
+        loading={undoing}
+      />
     </div>
   );
 }

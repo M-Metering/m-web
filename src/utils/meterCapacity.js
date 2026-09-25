@@ -22,6 +22,15 @@
 // room for 1-4 more three-phase meters, whatever the single-phase figures say.
 // evaluateMeterDispatch reports which meter type blocked it and how many of
 // that type are still needed, so the message can say so exactly.
+//
+// WHO IS CAPPED. This whole requirement — an installation must exist first,
+// and of the matching meter type — is an ADMIN rule. A Super Admin assigns
+// installations and meters independently, so its dispatches pass `enforce:
+// false` and are not capped here. Callers never decide that for themselves:
+// `permissions.enforcesMeterCapacity` (auth/usePermissions.jsx) is the single
+// source of it, and useMeterDispatch reads it. What `enforce: false` does NOT
+// relax is meter integrity — exists, AVAILABLE, not already assigned/used/lost
+// — which is utils/meterInventory.js' job and applies to every role.
 import { isOpenJob, METER_ASSIGNMENT_STATUS } from './installationStatus';
 import { normalizePhase, formatPhaseLabel } from './installationScope';
 import { normalizeStatus } from './statusBadge';
@@ -63,49 +72,103 @@ export function computeMeterCapacity({ openJobs = [], heldMeters = [] } = {}) {
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/** The per-meter-type figures, with a zeroed default for a type with no jobs. */
+export function phaseCapacity(capacity, phase) {
+  const key = normalizePhase(phase) || UNSPECIFIED;
+  return capacity?.byPhase?.[key] || { required: 0, assigned: 0, remaining: 0 };
+}
+
 /**
- * The message an over-dispatch gets. It names the real constraint (the
- * installer's pending installations for that meter type) and the real number
- * still needed, both computed — never a hardcoded figure.
+ * Whether a meter of this phase may be dispatched to this installer at all.
+ * `enforce` is false for a Super Admin, who may dispatch meters independently
+ * of any installation assignment (see the WHO IS CAPPED note in the header).
  */
-export function overCapacityMessage(remaining, phaseKey = null) {
+export function canDispatchPhase(capacity, phase, { enforce = true } = {}) {
+  if (!enforce) return true;
+  return phaseCapacity(capacity, phase).remaining > 0;
+}
+
+/**
+ * Why a dispatch is refused, in the operator's words.
+ *
+ * Three distinct situations, because they need three distinct fixes:
+ *   1. the installer holds no open installation at all  -> assign a job first;
+ *   2. they hold jobs, but none of this meter type      -> wrong meter type;
+ *   3. they hold jobs of this type, all already covered -> no room left.
+ * Nothing here names an endpoint, a field or a status code.
+ *
+ * @param {object} input
+ * @param {number} input.remaining - meters of this type still needed
+ * @param {string|null} [input.phaseKey] - normalised phase, or null/UNSPECIFIED
+ * @param {number} [input.phaseRequired] - open jobs of this type
+ * @param {number} [input.totalRequired] - open jobs of every type
+ */
+export function overCapacityMessage({ remaining, phaseKey = null, phaseRequired = 0, totalRequired = 0 }) {
   const named = phaseKey && phaseKey !== UNSPECIFIED;
   const phase = named ? `${formatPhaseLabel(phaseKey)} ` : '';
-  const constraint = named
-    ? 'The meter assignment exceeds the pending installations assigned to this installer for the selected meter type.'
-    : 'The meter assignment exceeds the pending installations assigned to this installer.';
+
+  // 1. Nothing assigned to this installer at all.
+  if (totalRequired <= 0) {
+    return 'An installation must be assigned to this installer before assigning a meter.';
+  }
+  // 2. Jobs, but none that need this meter type.
+  if (named && phaseRequired <= 0) {
+    return `No pending ${formatPhaseLabel(phaseKey)} installation is assigned to this installer.`;
+  }
+  // 3. Jobs of this type, but every one of them is already covered.
   if (remaining <= 0) {
     return named
-      ? `${constraint} No more ${phase}meters are needed.`
-      : "This installer doesn't need more meters.";
+      ? 'Cannot assign this meter. The installer has no remaining installation capacity for this meter type.'
+      : 'Cannot assign these meters. The installer has no remaining installation capacity.';
   }
-  return `${constraint} Only ${plural(remaining, `more ${phase}meter`)} ${remaining === 1 ? 'is' : 'are'} needed.`;
+  // 4. Room, but less than was asked for.
+  return `Only ${plural(remaining, `more ${phase}meter`)} can be assigned to this installer.`;
 }
 
 /**
  * Check a proposed dispatch against the capacity.
  *
- * The rule is per meter type (requirement: pending installations for this
- * installer AND meter type, minus the meters of that type they already hold),
- * with the overall total as a backstop for serials whose phase isn't known.
- * A dispatch smaller than what's needed is always allowed; a larger one never
- * is. `byPhase` comes from computeMeterCapacity, so the numbers in the
- * message are the live ones.
+ * The rule is per meter type (pending installations for this installer AND
+ * meter type, minus the meters of that type they already hold), with the
+ * overall total as a backstop for serials whose phase isn't known. Single
+ * Phase and Three Phase capacities are therefore independent: exhausting one
+ * never consumes the other. A dispatch smaller than what's needed is always
+ * allowed; a larger one never is. `byPhase` comes from computeMeterCapacity,
+ * so the numbers in the message are the live ones.
  *
  * @param {ReturnType<typeof computeMeterCapacity>} capacity
  * @param {string[]} serials - de-duplicated serials being dispatched
- * @param {{ phaseBySerial?: Map<string,string>|Record<string,string> }} [options]
- *   phaseBySerial: serial → phase type, from the meter records being
- *   dispatched. Omit it and only the overall total is checked.
+ * @param {object} [options]
+ * @param {Map<string,string>|Record<string,string>} [options.phaseBySerial]
+ *   serial -> phase type, from the meter records being dispatched. Omit it and
+ *   only the overall total is checked.
+ * @param {boolean} [options.enforce=true] - false skips the installation
+ *   dependency entirely (Super Admin). The meter's own integrity rules —
+ *   exists, available, not already assigned/used/lost — are NOT part of this
+ *   check and still apply to everyone; they live in utils/meterInventory.js.
  * @returns {{ requested: number, alreadyHeld: string[], remainingAfter: number,
- *   allowed: boolean, message: string|null, phase: string|null }}
+ *   allowed: boolean, message: string|null, phase: string|null, enforced: boolean }}
  */
-export function evaluateMeterDispatch(capacity, serials = [], { phaseBySerial } = {}) {
+export function evaluateMeterDispatch(capacity, serials = [], { phaseBySerial, enforce = true } = {}) {
   const held = new Set(capacity?.heldSerials || []);
   const alreadyHeld = serials.filter((s) => held.has(s));
   const fresh = serials.filter((s) => !held.has(s));
   const requested = fresh.length;
   const remaining = capacity?.remaining ?? 0;
+
+  // Super Admin: installations and meters are assigned independently, so the
+  // figures are still reported (the summary shows them) but nothing is capped.
+  if (!enforce) {
+    return {
+      requested,
+      alreadyHeld,
+      remainingAfter: remaining - requested,
+      allowed: requested > 0,
+      message: null,
+      phase: null,
+      enforced: false,
+    };
+  }
 
   const lookup = (serial) => {
     if (!phaseBySerial) return null;
@@ -117,24 +180,33 @@ export function evaluateMeterDispatch(capacity, serials = [], { phaseBySerial } 
   // Per meter type first — that is the constraint the operator needs to hear.
   let phase = null;
   let phaseRemaining = null;
+  let phaseRequired = 0;
   if (phaseBySerial) {
-    const byPhase = capacity?.byPhase || {};
     const counts = new Map();
     fresh.forEach((s) => {
       const key = lookup(s);
       if (key) counts.set(key, (counts.get(key) || 0) + 1);
     });
     for (const [key, count] of counts) {
-      const left = byPhase[key]?.remaining ?? 0;
-      if (count > left) { phase = key; phaseRemaining = left; break; }
+      const bucket = phaseCapacity(capacity, key);
+      if (count > bucket.remaining) {
+        phase = key;
+        phaseRemaining = bucket.remaining;
+        phaseRequired = bucket.required;
+        break;
+      }
     }
   }
 
   const allowed = phase === null && requested <= remaining;
+  const totalRequired = capacity?.required ?? 0;
 
   let message = null;
-  if (phase !== null) message = overCapacityMessage(phaseRemaining, phase);
-  else if (!allowed) message = overCapacityMessage(remaining);
+  if (phase !== null) {
+    message = overCapacityMessage({ remaining: phaseRemaining, phaseKey: phase, phaseRequired, totalRequired });
+  } else if (!allowed) {
+    message = overCapacityMessage({ remaining, totalRequired });
+  }
 
-  return { requested, alreadyHeld, remainingAfter: remaining - requested, allowed, message, phase };
+  return { requested, alreadyHeld, remainingAfter: remaining - requested, allowed, message, phase, enforced: true };
 }

@@ -8,7 +8,7 @@ import { DataRefreshProvider } from '../../contexts/DataRefreshContext';
 import MeterSchedule from '../MeterSchedule';
 import jedApi from '../../services/api';
 
-let permissions = { canManageAssignments: true, isSuperAdmin: true, isAdmin: true };
+let permissions = { canManageAssignments: true, isSuperAdmin: true, isAdmin: true, enforcesMeterCapacity: false };
 
 vi.mock('../../auth/usePermissions', () => ({
   usePermissions: () => permissions,
@@ -62,7 +62,7 @@ const METERS = [
 
 beforeEach(() => {
   vi.clearAllMocks();
-  permissions = { canManageAssignments: true, isSuperAdmin: true, isAdmin: true };
+  permissions = { canManageAssignments: true, isSuperAdmin: true, isAdmin: true, enforcesMeterCapacity: false };
   jedApi.getMeters.mockResolvedValue(page(METERS));
   jedApi.getMeterStatistics.mockResolvedValue({
     success: true,
@@ -123,7 +123,7 @@ describe('MeterSchedule — assign', () => {
   });
 
   it('hides Assign from a role that cannot manage assignments', async () => {
-    permissions = { canManageAssignments: false, isSuperAdmin: true, isAdmin: true };
+    permissions = { canManageAssignments: false, isSuperAdmin: true, isAdmin: true, enforcesMeterCapacity: false };
     await renderPage();
     expect(within(cardFor('0239110006909')).queryByRole('button', { name: 'Assign' })).toBeNull();
   });
@@ -165,7 +165,7 @@ describe('MeterSchedule — Super Admin deletion of imported meters', () => {
   });
 
   it('offers no deletion at all to an Admin who is not a Super Admin', async () => {
-    permissions = { canManageAssignments: true, isSuperAdmin: false, isAdmin: true };
+    permissions = { canManageAssignments: true, isSuperAdmin: false, isAdmin: true, enforcesMeterCapacity: true };
     await renderPage();
     expect(buttonIn('0239110006909', 'Delete meter')).toBeUndefined();
     expect(screen.queryByLabelText(/Select meter/)).toBeNull();

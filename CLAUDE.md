@@ -25,7 +25,7 @@ Versions below are read directly from `package.json` — verify there before ass
 | Icons | lucide-react 0.548.0 |
 | PWA | vite-plugin-pwa 1.3.0 (Workbox-generated service worker) |
 | Linting | ESLint 9.36.0, flat config (`eslint.config.js`), React Hooks + React Refresh plugins |
-| Testing | Vitest 3 + React Testing Library + jsdom (dev-only, added 2026-09-21). `npm test` runs `src/**/__tests__/*.test.{js,jsx}`: unit tests for the installation-scope, installer-queue, status-badge, api-result, user-account, installer-job-filter, meter-capacity, meter-inventory, meter-display, meter-number, seal-number, user-account, payment-summary, error-message, xlsx, completed-report and pagination utils, plus component tests for Installation Requests, Assignments, Meter Schedule (inventory, search), User Management (edit/delete payloads), Navigation (the role matrix), Installer Dashboard, My Jobs, InstallationDetail, Report Installation and the installer job summary, all against a mocked `jedApi`. `scripts/excel-check/` generates sample workbooks with the real export code and checks them in Microsoft Excel over COM (Windows with Excel only). Coverage is still narrow; see `CodeBaseAudit.md` for the untested high-risk areas |
+| Testing | Vitest 3 + React Testing Library + jsdom (dev-only, added 2026-09-21). `npm test` runs `src/**/__tests__/*.test.{js,jsx}`: unit tests for the permission model (the per-role module matrix, including Supervisor), the installation-scope, installer-queue, status-badge, api-result, user-account, installer-job-filter, meter-capacity (the Admin assignment rules and the Super Admin bypass, case by case), meter-inventory, meter-display, meter-number, seal-number, payment-summary, error-message, xlsx, completed-report and pagination utils, plus component tests for Installation Requests (including its read-only Supervisor rendering), Assignments (including the role differences), Meter Schedule (inventory, search), User Management (edit/delete payloads), Navigation (the role matrix), Installer Dashboard, My Jobs, InstallationDetail, Report Installation and the installer job summary, all against a mocked `jedApi`. `scripts/excel-check/` generates sample workbooks with the real export code and checks them in Microsoft Excel over COM (Windows with Excel only). Coverage is still narrow; see `CodeBaseAudit.md` for the untested high-risk areas |
 | Spreadsheets | ExcelJS 4 (lazy-loaded chunk, excluded from the PWA precache), with an npm `overrides` pin of `uuid` ≥ 11.1.1 for a moderate advisory in ExcelJS's own `uuid` dependency |
 | Other | `sharp` (dev-only, PWA icon generation script) |
 
@@ -34,7 +34,7 @@ Versions below are read directly from `package.json` — verify there before ass
 - **Application structure:** `src/App.jsx` owns the route table and top-level layout (Header + Navigation sidebar + `<Suspense>`-wrapped route content). Every route component is `React.lazy`-loaded. Pages are organized by role/feature under `src/components/{admin,auth,common,contexts,dashboard,installation,schedule,services,settings,uploads}/` plus one root-level page (none currently — `SubmissionPage.jsx` was the only one and has been removed).
 - **Routing:** `react-router-dom` v7 `<Routes>`/`<Route>` (not `createBrowserRouter`). Every protected route is gated **inline** in `App.jsx` with a ternary against `usePermissions()` output (e.g. `permissions.isAdmin ? <InstallationsPage /> : <AccessDenied />`), not a wrapper `<ProtectedRoute>` component. `AccessDenied` renders in place at the same URL rather than redirecting.
 - **Authentication:** JWT login (`POST /auth/login`, body exactly `{ phone, password }`). Token + user object persisted in `localStorage` (`jedAuthToken`, `jedUser`) via `jedApi`'s own storage methods (`storeTokens`/`storeUser`/`getAuthToken`/`getStoredUser`/`clearTokens`); `AuthContext.jsx` wraps this in React state and normalizes the role to uppercase. A 401 from any API call clears tokens automatically (`handleErrorResponse` in `api.js`). There is no `/auth/refresh-token` endpoint on the real API — a lapsed JWT just requires a fresh login.
-- **Authorization:** three real roles from the API's `User.role` enum — `SUPERADMIN`, `ADMIN`, `INSTALLER` — used uppercase, as-is, throughout (no case translation, no role renaming). `src/components/auth/permissions.js` defines the permission model (`PERMISSIONS`, `ROLE_PERMISSIONS`, `PAGE_ACCESS`); `usePermissions.jsx` is the hook every component actually consumes (`isAdmin`, `isSuperAdmin`, `isInstaller`, `canViewInstallations`, etc.). **Client-side checks are a UX convenience, not the security boundary** — the real API enforces the same rules server-side (e.g. only `SUPERADMIN` can create `ADMIN`/`SUPERADMIN` accounts, per the documented `UserCreate` rule) and must continue to.
+- **Authorization:** four roles, all four from the API's `User.role` enum — `SUPERADMIN`, `ADMIN`, `SUPERVISOR`, `INSTALLER` — used uppercase, as-is, throughout (no case translation, no role renaming). `src/components/auth/permissions.js` defines the permission model (`PERMISSIONS`, `ROLE_PERMISSIONS`, `PAGE_ACCESS`, `isPrivilegedRole`); `usePermissions.jsx` is the hook every component actually consumes (`isAdmin`, `isSuperAdmin`, `isSupervisor`, `isInstaller`, `canViewInstallations`, `canViewAssignments` vs `canManageAssignments`, `canViewSchedule` vs `canManageSchedule`, `canViewUsers` vs `canCreateUsers`/`canUpdateUsers`, `enforcesMeterCapacity`, etc.). **`isAdmin` means the ADMIN/SUPERADMIN tier and deliberately excludes `SUPERVISOR`**, so every pre-existing `isAdmin` gate denies the new role without being touched; what a Supervisor may reach is granted explicitly in `ROLE_PERMISSIONS[SUPERVISOR]`, an allow-list. Note the pattern this created: wherever a page is reachable by more than one role at different depths, the *view* check and the *manage* check are separate `usePermissions` flags, never one flag doing both. **Client-side checks are a UX convenience, not the security boundary** — the real API enforces the same rules server-side and must continue to.
 - **State management:** Context API for cross-cutting concerns (`AuthContext` — session; `ThemeContext` — light/dark, persisted to `localStorage` under `theme`; `DataRefreshContext` — a lightweight `refreshSignal` counter that mutations bump via `notifyDataChanged()` so other mounted pages re-fetch without a full reload). Everything else — form state, tab state, fetched-list state — is local to the component that needs it. There is no Redux/Zustand/Jotai and none should be introduced without a real, demonstrated need.
 - **API/service layer:** `src/components/services/api.js` exports a singleton `JEDApiService` instance (`jedApi`). It owns retry/backoff, `AbortController` timeouts, in-memory response caching (`Map`, 30s TTL), auth-header attachment, and localStorage-backed token/session-deadline storage. `api.config.js` holds the endpoint path map (`ENDPOINTS`) and shared config (`API_CONFIG`, `API_UTILS`). **This is the only place that talks to the network** — components never call `fetch` directly.
 - **Component architecture:** mostly one file per page/feature, each managing its own fetch/loading/error state (no shared data-fetching hook layer, no query cache beyond `jedApi`'s own 30s in-memory cache). Some files (`MeterSchedule.jsx`, `Header.jsx`) bundle several concerns into one large file — see `CodeBaseAudit.md` for specifics before assuming a refactor is risk-free.
@@ -78,13 +78,30 @@ jobs can be assigned. JED rows open the explanatory modal instead.
 skipped). Only Remita requests carry `amount`; imported jobs have none. `utils/meterCapacity.js`: one
 meter per open job, minus meters the installer holds, **checked per meter type** (`byPhase`), not only
 on the total — 10 pending three-phase jobs with 6 three-phase meters out leaves room for 1–4 more
-three-phase meters. Dispatch may be partial but never over, and `overCapacityMessage` names the meter
-type and the live remaining count. This is enforced client-side only, because the API doesn't cap it.
+three-phase meters. Single Phase and Three Phase capacities are **independent**: exhausting one never
+consumes the other. Dispatch may be partial but never over.
 `utils/meterInventory.js` decides which
 meters are dispatchable: `status` AVAILABLE and `assignmentStatus` not ASSIGNED/USED/LOST. The
 Assignments picker offers only those. Installer job counts (Installer Dashboard cards, My Jobs
 filters) both come from `summarizeInstallerJobs` in `utils/installationStatus.js`:
 awaiting = ASSIGNED+IN_PROGRESS, completed = INSTALLED+EXPORTED.
+
+**Meter assignment is role-dependent — and `permissions.enforcesMeterCapacity` is the only place
+that says so.** An **Admin** may only hand an installer meters that installer has matching open
+installations for: an installation must exist first, the meter type must match one, and the count may
+not exceed `open jobs of that type − meters of that type already held`. A **Super Admin** assigns
+installations and meters independently and is capped by none of that (`evaluateMeterDispatch(…,
+{ enforce: false })`). What `enforce: false` does **not** relax is meter integrity — exists,
+`AVAILABLE`, not already assigned/used/lost, real installer — which is `utils/meterInventory.js`'
+job and applies to every role. Never re-derive the role at a call site: read
+`enforcesMeterCapacity`, which `useMeterDispatch` already does for both entry points.
+`overCapacityMessage` produces the three distinct refusals, because they need three distinct fixes:
+no installation at all → "An installation must be assigned to this installer before assigning a
+meter."; jobs but none of that type → "No pending Three Phase installation is assigned to this
+installer."; that type full → "Cannot assign this meter. The installer has no remaining installation
+capacity for this meter type." **All of this is client-side only** — `POST /assignments/meters`
+enforces none of it (API_GAP_REPORT.md, gap AC), so a capped role fails closed and the check is
+re-run against a fresh read immediately before the POST.
 
 **Three dates, never interchangeable:** `importedAt` (when a record entered ME Metering — the
 `InstallationRequest`'s own `createdAt`, since an imported row is created by the import; the API has no
@@ -93,7 +110,11 @@ separate `importedAt`), `assignedAt` (dispatch to an installer) and `installatio
 read **only** `importedAt`. JED's Remita requests are never imported — `importedAt` is `null` for them
 and `dateRequested` must never stand in for it.
 
-**Meter-number search uses `GET /meters/meter-number/{n}`** (`getMeterByNumber`) — one request, whole inventory, exact match. Only a PARTIAL term falls back to paging `GET /meters`, which has no search parameter. Never "solve" search by raising a page cap: that is slower and still wrong.
+**Meter search has three paths, in order of precision.** A COMPLETE meter number → `GET /meters/meter-number/{n}` (`getMeterByNumber`): one request, whole inventory, exact match. A digits-only PARTIAL (serial or SIM fragment) → `GET /meters/search?q=` (`searchMeters`, added 2026-09-24): server-side, whole inventory, paginated. Anything else (a make, model or SGC term) → the paged `GET /meters` scan, because nothing covers those. `GET /meters` itself still has no search parameter. **Never "solve" search by raising a page cap**: that is slower and still wrong — add the endpoint the term needs. Note that an empty *envelope* from the search means the search didn't happen (fall back); an envelope with an empty list means no matches (don't).
+
+**There are now three `*/search` endpoints** — `/meters/search`, `/installations/search`, `/users/search` — all `q`-based, all paginated, all with the same envelope as their list counterparts. `searchInstallations` exists in `api.js` but is deliberately **not** wired into the Installations page: that page loads its scope once and filters locally because its faceted filters need the rows in hand. Wire it up only if that design changes.
+
+**Recognised revenue has its own endpoints and its own honesty rule.** `GET /finance/revenue/{summary,breakdown,transactions}` (2026-09-24, SUPERADMIN/ADMIN only — Supervisor and Installer get 403) is the authoritative revenue figure, and **it is never exact**: some rows are valued at today's price rather than the price when the work completed (`estimatedAmount`/`estimatedCount`), and some completed work has no price at all (`missingAmountCount`, arriving as `amount: 0, amountMissing: true`, which silently drags the total down). Render every total through `utils/financeSummary.js` so the caveat travels with the figure — **never a bare currency number**. Recognition timing is the backend's and differs per disco (JED on Remita confirmation, Aba Power on installation completion); read it off `recognition`, never re-derive it. This is separate from `utils/paymentSummary.js`, which summarises Remita *payment records* — a different question.
 
 **A 2xx is not a success.** This API can answer 200 with `{ success: false, message }`. Every mutation
 must pass its response through `assertApiSuccess` (`utils/apiResult.js`) before reporting success —
@@ -127,25 +148,41 @@ their rows into one table: they are two resources whose status enums don't overl
 `JedAssignmentNotice` is the one explanation of why a JED request can't be dispatched.
 
 **One dispatch implementation:** `hooks/useMeterDispatch.js` owns "give these meter serials to this
-installer" — the live capacity read, the per-meter-type cap, the fresh re-check at submit, the
-`POST /assignments/meters` call and its partial-success parsing. Both entry points use it
+installer" — the ASSIGNMENTS.MANAGE check, the role's capacity rule, the live capacity read, the
+per-meter-type cap, the fresh re-check at submit, the `POST /assignments/meters` call and its
+partial-success parsing. Both entry points use it
 (Assignments → Dispatch meters, and Meter Schedule → Assign via
 `components/installations/AssignMeterModal.jsx`). Never add a second assignment calculation or a
 second call site; add a caller of the hook. Eligibility is `isAssignableMeter` from
-`utils/meterInventory.js`, everywhere.
+`utils/meterInventory.js`, everywhere. `MeterCapacitySummary` shows assigned installations, assigned
+meters and available capacity **per meter type** from those same figures, and `MeterSerialPicker`
+disables a meter type the installer has no eligible installation for (including via paste) — so the
+UI and the submit refuse the same things for the same reasons.
 
 **Meter make/model:** the API has **no `manufacturer` field** — `meterMake` is the only make field,
 `model` is separate, and `manufacturedDate` is a build DATE, not a manufacturer. Read them through
 `utils/meterDisplay.js`, which shows a missing value as "Not recorded" and never derives one field
 from another. A blank make means the upload didn't carry that column; don't paper over it.
 
-**Deleting imported data:** `DELETE /meters/{meterNumber}` is the only delete the API offers for
-anything an upload/import created — there is none for import batches, imported installation requests
-or JED requests, so don't build UI that implies otherwise. It is **Super Admin only** (matching
-User Management's rule that destructive actions aren't an Admin capability), always behind a
-confirmation naming the exact count, and `meterDeletionBlockReason` refuses anything installed, out
-with an installer, used or lost. After a delete, re-read from the server — never just drop the row
-from React state.
+**Deleting imported data:** `DELETE /meters/{meterNumber}` deletes one meter. It is **Super Admin
+only** (matching User Management's rule that destructive actions aren't an Admin capability), always
+behind a confirmation naming the exact count, and `meterDeletionBlockReason` refuses anything
+installed, out with an installer, used or lost. There is still no delete for an imported
+installation request or a JED request — don't build UI that implies otherwise. After a delete,
+re-read from the server, never just drop the row from React state.
+
+**Undoing an import** is `POST /imports/{id}/undo` (2026-09-24) and is a different thing from a
+delete: it reverses a whole batch, it is **idempotent**, and it is **partial by design** — it removes
+only rows nothing depends on yet and keeps anything INSTALLED/EXPORTED/IN_PROGRESS or already
+dispatched, reporting them in `skippedByReason`. Read it through `utils/importUndo.js`. **A non-zero
+`skippedCount` is the safety rule working — never render it as a failure.**
+
+**Deleting a user is a SOFT delete.** `DELETE /users/{id}` sets the account inactive (it stops the
+login, keeps the name on historical records) and `POST /users/{id}/restore` reverses it. The
+documented `User` schema carries **no** active/inactive flag, so the app cannot identify a
+deactivated account in a response and does not build a "deactivated accounts" list — Restore is
+offered inline right after a deactivation, the one moment the target is known for certain
+(API_GAP_REPORT.md, gap AD).
 
 **Identifier rules that apply everywhere:** meter numbers and seal numbers are identifiers.
 `utils/meterNumber.js` owns meter-number handling (10–13 digits, exact string, no padding);
@@ -193,17 +230,30 @@ Only these statuses exist on the real backend — do not invent intermediate one
 
 ## Roles
 
-Exactly three, matching the real API's `User.role` enum (uppercase, used as-is):
+Four, all of them in the real API's `User.role` enum (uppercase, used as-is):
+`SUPERADMIN`, `ADMIN`, `SUPERVISOR`, `INSTALLER`.
 
-- **SUPERADMIN** — everything `ADMIN` has, plus the only role permitted to create/edit `ADMIN` or `SUPERADMIN` accounts (enforced client-side in `UserManagement.jsx` **and** by the real backend).
-- **ADMIN** — manages users (except privileged roles), confirms/reconciles payments, runs reports, configures meter types/settings/API keys, manages meter inventory, manages installations.
-- **INSTALLER** — sees the shared "Awaiting Installation"/"Completed" queue (`InstallerDashboard.jsx`, mounted at `/dashboard` for this role), completes installs, and reports problems through the Complaint Form (`/complaints`, Installer-only — see "Pending" in `PROJECT_CONTEXT.md`: the backend has no complaints API yet, so it validates and produces a copyable summary but cannot record anything). **Installer does NOT have Uploads** (removed 2026-09-21: `UPLOADS.EXCEL` is no longer in the Installer permission set, so the sidebar item, the `/uploads` route guard and `ExcelUpload`'s own check all deny it). Cannot reach `/installations`, `/schedule`, `/uploads`, `/users`, `/reports`, `/payments`, `/settings` — gated in `App.jsx` (`permissions.isAdmin`, or `canUploadExcel`/`canViewSchedule`, which only admin-tier holds). The session's role is **verified server-side on every load** (`AuthContext` calls `GET /auth/profile` and trusts only that response — never the client-editable `localStorage.jedUser`). The Admin/Super Admin 3-minute idle-session timeout (`src/hooks/useAdminIdleTimeout.js`) explicitly does **not** apply to Installer.
+- **SUPERADMIN** — everything `ADMIN` has, plus the only role permitted to create/edit `ADMIN`, `SUPERADMIN` or `SUPERVISOR` accounts (enforced client-side in `UserManagement.jsx` via `isPrivilegedRole` **and** by the real backend). It is also the only role **not** capped by the meter-assignment rules — it assigns installations and meters independently (see "Meter assignment is role-dependent" below).
+- **ADMIN** — manages users (except privileged roles), confirms/reconciles payments, runs reports, configures meter types/settings/API keys, manages meter inventory, manages installations. Its meter dispatches **are** capped, per meter type, by the installer's open installations.
+- **SUPERVISOR** — the backend's own description is "an ADMIN whose access has been narrowed to installations and assignments", and this app's permission set mirrors it exactly. **Full** on `/installations` (create, cancel, assign, unassign, disco export and mark-sent) and on `/assignments` (dispatch and return meters). **Read-only** on `/schedule` (list, search, view — no upload, export, statistics or delete) and on `/users` (the Installer roster only — no create, edit, delete or restore). `/dashboard` shows it the pipeline view **without** the revenue KPI, the revenue trend or per-row amounts (money is `PAYMENTS.VIEW`). **No access at all** to Payments/Finance, Imports, Reports, Settings, API Keys or Uploads. It does **not** hold `INSTALLATIONS.COMPLETE` — starting, reporting and failing a job are Installer-only on the API. It is deliberately **outside** `permissions.isAdmin`, which is why every existing `isAdmin` gate denies it without that call site having to learn the new role; what it *may* reach is granted explicitly in `ROLE_PERMISSIONS[SUPERVISOR]`, an allow-list, never an admin set minus exclusions. Because it **can** dispatch meters, it is capped by the meter-assignment rules exactly like an Admin. It gets the 3-minute idle-session timeout (it's an office account).
+- **INSTALLER** — sees the shared "Awaiting Installation"/"Completed" queue (`InstallerDashboard.jsx`, mounted at `/dashboard` for this role), completes installs, and reports problems through the Complaint Form (`/complaints`, Installer-only — see "Pending" in `PROJECT_CONTEXT.md`: the backend has no complaints API yet, so it validates and produces a copyable summary but cannot record anything). **Installer does NOT have Uploads** (removed 2026-09-21: `UPLOADS.EXCEL` is no longer in the Installer permission set, so the sidebar item, the `/uploads` route guard and `ExcelUpload`'s own check all deny it). Cannot reach `/installations`, `/schedule`, `/uploads`, `/users`, `/reports`, `/payments`, `/settings` — gated in `App.jsx`. The idle-session timeout explicitly does **not** apply to Installer.
+
+The session's role is **verified server-side on every load** (`AuthContext` calls `GET /auth/profile`
+and trusts only that response — never the client-editable `localStorage.jedUser`). **Client-side role
+checks are a UX convenience, not the security boundary**: the API enforces the same module boundaries
+independently, and every restriction above corresponds to a real 403.
+
+**Where this app is deliberately STRICTER than the API.** The backend permits an `ADMIN` to create
+`INSTALLER` *and* `ADMIN` accounts, and to edit any non-Super-Admin. This app keeps an Admin's user
+scope to Installers only (it also requests `role=INSTALLER`, so an Admin's browser never receives the
+other records). That is a product decision, not a bug — but it means `UserManagement.jsx` refuses
+things the API would allow. Loosen it only deliberately, and update this paragraph if you do.
 
 ## Development rules
 
 1. **Read `PROJECT_CONTEXT.md` before starting any non-trivial task.** It documents what's actually implemented, what's a real API gap vs. a frontend bug already fixed, and why specific design decisions were made.
 2. **Inspect existing code before creating a new component, hook, or service method.** This app has already had multiple duplicate-removal passes (see `API_GAP_REPORT.md`'s "Cleaned up" sections) — check `Grep` for an existing implementation before writing a new one.
-3. **Reuse existing components** — `ConfirmationModal`/`InfoModal` for modals, the shared tab pattern, `statusBadge.js` for any status-to-color mapping, `currency.js`/`date.js` for formatting, `xlsx.js` (`downloadXlsx` with typed columns, `downloadServerXlsx` for files the API returns) for **every** spreadsheet export, `errorMessage.js` (`getErrorMessage`) for every error shown to a user, `fileValidation.js` (`validateUploadFile`) for any file-picker upload. Don't reinvent formatting, badge logic, export building, error text or upload validation per-page. **Exports are `.xlsx`, never CSV** (since 2026-09-21; `csv.js` was removed). Excel reads CSV cells untyped, dropping leading zeros from meter/account numbers and showing SIM serials in scientific notation. Identifier columns must use `COLUMN_TYPES.TEXT`; amounts use `CURRENCY` and GPS uses `COORDINATE`. Show users `getErrorMessage(err, 'Short fallback.')`, never `err.message`: it drops server 500 bodies, validation internals and technical text, and callers still `console.error` the full error.
+3. **Reuse existing components** — `ConfirmationModal`/`InfoModal` for modals, the shared tab pattern, `statusBadge.js` for any status-to-color mapping, `currency.js`/`date.js` for formatting, `xlsx.js` (`downloadXlsx` with typed columns, `downloadServerXlsx` for files the API returns) for **every** spreadsheet export, `errorMessage.js` (`getErrorMessage`) for every error shown to a user, `fileValidation.js` (`validateUploadFile`) for any file-picker upload. Don't reinvent formatting, badge logic, export building, error text or upload validation per-page. **Exports are `.xlsx`, never CSV** (since 2026-09-21; `csv.js` was removed). Excel reads CSV cells untyped, dropping leading zeros from meter/account numbers and showing SIM serials in scientific notation. Identifier columns must use `COLUMN_TYPES.TEXT`; amounts use `CURRENCY` and GPS uses `COORDINATE`. Show users `getErrorMessage(err, 'Short fallback.')`, never `err.message`: it drops server 500 bodies, validation internals and technical text, and callers still `console.error` the full error. Its 160-character cap can be raised per call site with `{ maxLength }` — do that **only** where the endpoint returns a long message that is genuinely for the user. `POST /meters/upload` is the one such case today: it 400s with the exact row, the exact column and the fix ("Format the METER NUMBER column as Text in Excel and re-upload"), which beats any fallback. Every other filter still applies, so this never lets stack traces or schema internals through.
 4. **Do not invent API endpoints.** Every endpoint this app calls is listed in `src/components/services/api.config.js` and cross-referenced against the live OpenAPI spec (`https://api.memetering.com/api-docs`, embedded JSON at `/api-docs/swagger-ui-init.js` — there's no separate `/api-docs.json`). If a feature needs an endpoint that doesn't exist, that's an API gap — document it in `API_GAP_REPORT.md`, don't fabricate a plausible-looking path.
 5. **Do not fabricate API data.** Every stat, badge, or field shown must trace back to a real API response field. If a field the UI wants doesn't exist on the real schema, either drop it or clearly mark it as unavailable — don't compute a fake percentage or invent a plausible-looking value.
 6. **Do not duplicate business logic.** Status-to-label mapping lives in `statusBadge.js`. Currency formatting lives in `utils/currency.js`. Role/permission checks go through `usePermissions()`, never a re-derived `user.role === 'ADMIN'` check scattered across components.

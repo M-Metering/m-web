@@ -91,6 +91,91 @@ the JED-era API had no assignment endpoint). It is now a real dispatch through
   no customer request. Serials the installer already holds are removed from the payload rather than
   re-sent, so a duplicate assignment record can't be created by a double submission.
 
+
+## Supervisor Role and Role-Dependent Meter Assignment (2026-09-24)
+
+> Reviewed twice on 2026-09-24: once when the role existed only in this app, and again after the
+> backend shipped it the same day. The second pass is folded in below — including a correction, since
+> the real role is considerably wider than the first pass assumed.
+
+### The Supervisor role, and where its boundary actually lives
+
+`SUPERVISOR` is a real role on the API as of 2026-09-24. This app's model mirrors the backend's
+published permission table: full Installations and Assignments, read-only Meters and the Installer
+roster, nothing else. The client-side implementation is layered the way the rest of this app is:
+
+- **Route level** (`App.jsx`): `/installations` reads `canViewAllInstallations`, `/assignments`
+  reads `canViewAssignments`, `/schedule` reads `canViewSchedule`, `/users` reads `canViewUsers`.
+  `/reports`, `/payments`, `/settings`, `/uploads`, `/imports` still read `permissions.isAdmin` or an
+  admin-only permission, and **`isAdmin` deliberately excludes `SUPERVISOR`** — so every one of those
+  routes denied the new role the moment it existed, with no edit to those guards. A manually typed
+  URL renders `AccessDenied` in place (a plain ternary, so the page component never mounts or
+  flashes).
+- **Navigation** (`Navigation.jsx`): the item set is permission-driven (`canAccessPage`), pinned by
+  `Navigation.test.jsx`'s role matrix, which asserts the Supervisor's exact five items and
+  explicitly asserts the absence of each restricted one.
+- **Page level**: `AssignmentsPage` refuses outright without `canViewAssignments` and hides the
+  Dispatch tab without `canManageAssignments`; `MeterSchedule` **skips** the statistics call rather
+  than firing one the API will 403, and hides export and delete; `UserManagement` hides Add User and
+  every row action but View without the matching write permission; `InstallationDetail` replaces the
+  JED completion form with a read-only panel without `canCompleteInstallations`; `AdminDashboard`
+  hides the revenue KPI, the revenue trend, per-row amounts, Quick Actions and the export modal.
+- **Hook level**: `useMeterDispatch` refuses before any network call without `canManageAssignments`,
+  so a dispatch cannot be triggered from a call site that forgot to hide its button.
+- **Permission model itself**: `ROLE_PERMISSIONS[SUPERVISOR]` is an allow-list, not the admin set
+  minus exclusions, so a future admin permission cannot leak into it. `permissions.test.js` asserts
+  the exact set, asserts each restricted page is unreachable, and asserts directly that Supervisor
+  is *not* in the `hasPermission()` admin-tier bypass — because if it ever were, every other
+  assertion in that file would silently pass.
+
+**Resolved the same day: the backend shipped the role WITH its authorization.** An earlier version of
+this section warned that adding the enum value without server-side enforcement would leave a
+Supervisor token accepted by every admin endpoint, with only client-side JavaScript in the way. That
+risk did not materialise. The backend shipped both together on 2026-09-24: `User.role` now carries
+`SUPERVISOR`, and the guide's permission table specifies a 403 for a Supervisor token on finance,
+imports, settings, disco management, API keys, every `/users` write, and the meter upload/export/
+statistics/delete routes. The client-side model above mirrors that table rather than inventing it, so
+the two agree — and the API, not this app, is the boundary.
+
+**What the frontend had to correct, which is itself a security-relevant lesson.** The first pass
+modelled Supervisor as read-only across the board. The real role is wider: full Installations and
+Assignments, including dispatching meters. Guessing a role's scope and guessing *narrow* is the safe
+direction to be wrong in — it denied things the API allows, which is a usability bug, not a hole. The
+model is now taken from the published permission table, and `permissions.test.js` asserts the exact
+set so a future widening has to be deliberate.
+
+**Still true, and worth keeping in view:** a client-side denial remains a UX convenience. Every
+restriction listed above must correspond to a real 403, and the ones that matter most for this role
+are the write routes it is *not* given — they are the difference between an oversight account and an
+administrator.
+
+### The Admin meter-assignment limits are client-side, and one of them is racy
+
+The Admin rules added this pass — an installation must exist before a meter is assigned, the meter
+type must match one of that installer's open installations, and no more meters of a type than
+`open jobs of that type − meters of that type already held` — are enforced in one place
+(`utils/meterCapacity.js` via `hooks/useMeterDispatch.js`), computed from live API reads rather than
+component state, applied per meter type, and re-checked against a fresh read immediately before the
+POST. Capped roles fail closed: an unverifiable capacity is never treated as an unlimited one. The
+Super Admin exemption is expressed once, as `permissions.enforcesMeterCapacity`, so no call site
+decides for itself which role it is serving.
+
+Two limits remain, and the frontend does not claim otherwise:
+
+1. **Bypassable by any other client.** `POST /assignments/meters` validates only that the target is
+   an active installer and that the meters exist; it applies no capacity, no meter-type match and no
+   ADMIN/SUPERADMIN distinction. A valid ADMIN **or SUPERVISOR** token posting directly to that
+   endpoint is, from the API's point of view, making a perfectly legal request. The 2026-09-24
+   backend release confirmed all three roles may call `/assignments/*` and did **not** add these
+   checks, so this is unchanged.
+2. **Racy even through the UI.** The re-check is a read-then-write across two HTTP calls. Two admins
+   dispatching to the same installer at the same moment can each pass their own re-check and jointly
+   exceed the cap. Closing this needs a server-side check inside the same transaction as the write
+   (or an equivalent lock on the count).
+
+`API_GAP_REPORT.md`, gap **AC**, specifies the server-side rule set, including which checks a
+`SUPERADMIN` skips and which it keeps.
+
 ## Deleting Imported Meter Records (2026-09-23)
 
 - **Super Admin only.** Deletion moved from the whole admin tier to `isSuperAdmin`, matching the rule
