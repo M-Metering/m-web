@@ -10,7 +10,7 @@ import MeterSchedule from '../MeterSchedule';
 import jedApi from '../../services/api';
 
 vi.mock('../../auth/usePermissions', () => ({
-  usePermissions: () => ({ canManageAssignments: true, isSuperAdmin: true, isAdmin: true }),
+  usePermissions: () => ({ canManageAssignments: true, isSuperAdmin: true, isAdmin: true, enforcesMeterCapacity: false }),
 }));
 
 vi.mock('../../services/api', () => ({
@@ -18,6 +18,7 @@ vi.mock('../../services/api', () => ({
     clearCache: vi.fn(),
     getMeters: vi.fn(),
     getMeterByNumber: vi.fn(),
+    searchMeters: vi.fn(),
     getMeterStatistics: vi.fn(),
     deleteMeter: vi.fn(),
     exportMeters: vi.fn(),
@@ -105,6 +106,24 @@ const search = (term) => {
 
 const exactCalls = () => jedApi.getMeterByNumber.mock.calls.map(([n]) => n);
 const listCalls = () => jedApi.getMeters.mock.calls.filter(([p]) => p.limit === PAGE);
+const searchCalls = () => jedApi.searchMeters.mock.calls.map(([p]) => p);
+
+// GET /meters/search: server-side, over meter_number and sim_number, paginated.
+const serveSearch = (rows) => {
+  jedApi.searchMeters.mockImplementation(async ({ q, limit = 20, status, phaseType }) => {
+    let data = rows.filter(
+      (m) => String(m.meterNumber).includes(q) || String(m.simNumber).includes(q)
+    );
+    if (status) data = data.filter((m) => m.status === status);
+    if (phaseType) data = data.filter((m) => m.phaseType === phaseType);
+    const page = data.slice(0, limit);
+    return {
+      success: true,
+      data: page,
+      pagination: { currentPage: 1, totalPages: Math.ceil(data.length / limit), totalCount: data.length, hasNext: data.length > limit },
+    };
+  });
+};
 
 describe('Meter Schedule — a complete meter number is one server-side lookup', () => {
   it('asks the API for that exact meter, and does not page the inventory', async () => {
@@ -179,13 +198,49 @@ describe('Meter Schedule — a complete meter number is one server-side lookup',
   }, 20000);
 });
 
-describe('Meter Schedule — a partial term still scans, because no endpoint exists', () => {
-  it('pages the inventory for a partial serial, and never invents a query param', async () => {
+// GET /meters/search (2026-09-24) replaced the paged scan for a digits
+// partial. The scan survives only for a term no endpoint covers.
+describe('Meter Schedule — a partial serial is a server-side search', () => {
+  it('searches the whole inventory in one request instead of paging it', async () => {
+    serveSearch(INVENTORY);
     await renderPage();
+    const before = listCalls().length;
     search('006909'); // too short to be a meter number
 
+    await waitFor(() => expect(searchCalls().length).toBe(1), { timeout: 8000 });
+    expect(searchCalls()[0]).toMatchObject({ q: '006909' });
+    // Neither the exact-lookup route nor the scan is used for this.
+    expect(exactCalls()).toEqual([]);
+    expect(listCalls().length).toBe(before);
+  }, 25000);
+
+  it('passes the active status/phase filters to the search rather than refiltering locally', async () => {
+    serveSearch(INVENTORY);
+    await renderPage();
+    fireEvent.change(screen.getByLabelText(/Status/i), { target: { value: 'AVAILABLE' } });
+    search('00690');
+
+    await waitFor(() => expect(searchCalls().length).toBeGreaterThan(0), { timeout: 8000 });
+    expect(searchCalls().at(-1)).toMatchObject({ q: '00690', status: 'AVAILABLE' });
+  }, 25000);
+
+  it('says the list is partial when there are more matches than one page', async () => {
+    // 5,000 meters all sharing this prefix — far more than the search page.
+    serveSearch(Array.from({ length: 5000 }, (_, i) => ({
+      ...INVENTORY[0], id: i + 1, meterNumber: String(3390000000000 + i), simNumber: String(8923401000012345678n + BigInt(i)),
+    })));
+    await renderPage();
+    search('33900000');
+    expect(await screen.findByText(/some meters may be missing/, {}, { timeout: 10000 })).toBeTruthy();
+  }, 30000);
+
+  it('still scans for a make/model term, which no endpoint covers', async () => {
+    serveSearch(INVENTORY);
+    await renderPage();
+    search('Hexing'); // not digits — no server-side search for this
+
     await waitFor(() => expect(listCalls().length).toBeGreaterThan(1), { timeout: 8000 });
-    // The exact-lookup route is not for partials.
+    expect(searchCalls()).toEqual([]);
     expect(exactCalls()).toEqual([]);
     jedApi.getMeters.mock.calls.forEach(([params]) => {
       expect(params).not.toHaveProperty('search');
@@ -193,13 +248,4 @@ describe('Meter Schedule — a partial term still scans, because no endpoint exi
       expect(Object.keys(params).every((k) => ['page', 'limit', 'status', 'phaseType'].includes(k))).toBe(true);
     });
   }, 25000);
-
-  it('warns rather than reporting a confident "not found" when the scan is capped', async () => {
-    serveInventory(Array.from({ length: 10001 }, (_, i) => ({
-      ...INVENTORY[0], id: i + 1, meterNumber: String(3390000000000 + i),
-    })));
-    await renderPage();
-    search('33900000'); // partial → scan path
-    expect(await screen.findByText(/some meters may be missing/, {}, { timeout: 10000 })).toBeTruthy();
-  }, 30000);
 });

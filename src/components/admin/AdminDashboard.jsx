@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermissions } from '../auth/usePermissions';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import JEDApiService from '../services/api';
 import { useNavigate } from 'react-router-dom';
@@ -83,7 +84,7 @@ const getInstallDate = (install) => {
 };
 
 // Recent Installations Table - Mobile Optimized
-const RecentInstallations = ({ installations, totalCount, onViewAll, onItemClick }) => (
+const RecentInstallations = ({ installations, totalCount, onViewAll, onItemClick, showAmounts = true }) => (
   <div className="card overflow-hidden">
     <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-200 dark:border-gray-700">
       <h3 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white">Recent Installations</h3>
@@ -123,9 +124,11 @@ const RecentInstallations = ({ installations, totalCount, onViewAll, onItemClick
                 <span className="text-xs text-gray-500 dark:text-gray-400">
                   {getInstallDate(install)}
                 </span>
-                <span className="font-semibold text-gray-900 dark:text-white text-sm">
-                  {formatCurrencyNGN(install.amount)}
-                </span>
+                {showAmounts && (
+                  <span className="font-semibold text-gray-900 dark:text-white text-sm">
+                    {formatCurrencyNGN(install.amount)}
+                  </span>
+                )}
               </div>
               {install.email && (
                 <div className="text-xs text-gray-600 dark:text-gray-400">
@@ -151,14 +154,14 @@ const RecentInstallations = ({ installations, totalCount, onViewAll, onItemClick
             <th className="px-4 py-3 font-semibold">Account</th>
             <th className="px-4 py-3 font-semibold">Customer</th>
             <th className="px-4 py-3 font-semibold">Status</th>
-            <th className="px-4 py-3 font-semibold text-right">Amount</th>
+            {showAmounts && <th className="px-4 py-3 font-semibold text-right">Amount</th>}
             <th className="px-4 py-3 font-semibold">Date</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
           {installations.length === 0 ? (
             <tr>
-              <td colSpan="5" className="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm">
+              <td colSpan={showAmounts ? 5 : 4} className="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm">
                 No installations found
               </td>
             </tr>
@@ -183,9 +186,11 @@ const RecentInstallations = ({ installations, totalCount, onViewAll, onItemClick
                 <td className="px-4 py-3">
                   <StatusBadge status={install.status} />
                 </td>
-                <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-white text-sm">
-                  {formatCurrencyNGN(install.amount)}
-                </td>
+                {showAmounts && (
+                  <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-white text-sm">
+                    {formatCurrencyNGN(install.amount)}
+                  </td>
+                )}
                 <td className="px-4 py-3 text-gray-600 dark:text-gray-400 text-sm">
                   {getInstallDate(install)}
                 </td>
@@ -347,6 +352,13 @@ const QuickActions = ({ onManageUsers, onGoToSettings, onExportData }) => (
 function AdminDashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  // This dashboard serves Admin, Super Admin and Supervisor. A Supervisor
+  // oversees the installation pipeline and has no access to money or to the
+  // admin tools, so the financial figures and the admin shortcuts below are
+  // gated rather than the whole page being duplicated.
+  const permissions = usePermissions();
+  const showMoney = permissions.canViewPayments;
+  const showAdminTools = permissions.isAdmin;
   const { refreshSignal } = useDataRefresh();
   const [stats, setStats] = useState({
     pendingRequests: 0,
@@ -600,13 +612,15 @@ function AdminDashboard() {
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline text-sm font-medium">Refresh</span>
             </button>
-            <button
-              onClick={handleGenerateReport}
-              className="flex-1 sm:flex-none bg-brand-500 text-gray-900 px-4 py-2 rounded-lg hover:bg-brand-600 transition-colors flex items-center justify-center gap-2"
-            >
-              <FileText className="w-4 h-4" />
-              Generate Report
-            </button>
+            {showAdminTools && (
+              <button
+                onClick={handleGenerateReport}
+                className="flex-1 sm:flex-none bg-brand-500 text-gray-900 px-4 py-2 rounded-lg hover:bg-brand-600 transition-colors flex items-center justify-center gap-2"
+              >
+                <FileText className="w-4 h-4" />
+                Generate Report
+              </button>
+            )}
           </div>
         </div>
 
@@ -614,19 +628,24 @@ function AdminDashboard() {
             4 flat numbers, no percent-change/delta fields, so none are
             fabricated here (see the Trend section below for real
             day-over-day data, sourced from actual payment records). */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-6">
+        {/* Revenue is a financial figure: shown only to roles that hold
+            PAYMENTS.VIEW, so a Supervisor gets the three operational counts
+            and the grid closes up rather than leaving a gap. */}
+        <div className={`grid grid-cols-2 gap-3 sm:gap-4 lg:gap-6 ${showMoney ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
           <StatCard title="Pending" value={stats.pendingRequests} icon={Clock} />
           <StatCard title="Completed" value={stats.completedRequests} icon={CheckCircle} />
           <StatCard title="Installers" value={stats.activeInstallers} icon={Users} />
-          <StatCard
-            title="Revenue"
-            value={
-              typeof stats.totalRevenue === 'number'
-                ? formatCurrencyNGN(stats.totalRevenue)
-                : stats.totalRevenue
-            }
-            icon={BarChart}
-          />
+          {showMoney && (
+            <StatCard
+              title="Revenue"
+              value={
+                typeof stats.totalRevenue === 'number'
+                  ? formatCurrencyNGN(stats.totalRevenue)
+                  : stats.totalRevenue
+              }
+              icon={BarChart}
+            />
+          )}
         </div>
 
         {/* Revenue / Installations Trend — built from real
@@ -664,17 +683,19 @@ function AdminDashboard() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-              <TrendChart
-                title="Revenue"
-                data={revenueSeries}
-                type="area"
-                colorLight={REVENUE_COLOR.light}
-                colorDark={REVENUE_COLOR.dark}
-                formatValue={formatCurrencyNGN}
-                loading={trendLoading}
-                emptyMessage="No payments recorded in this range."
-              />
+            <div className={`grid grid-cols-1 gap-4 sm:gap-6 ${showMoney ? 'lg:grid-cols-2' : ''}`}>
+              {showMoney && (
+                <TrendChart
+                  title="Revenue"
+                  data={revenueSeries}
+                  type="area"
+                  colorLight={REVENUE_COLOR.light}
+                  colorDark={REVENUE_COLOR.dark}
+                  formatValue={formatCurrencyNGN}
+                  loading={trendLoading}
+                  emptyMessage="No payments recorded in this range."
+                />
+              )}
               <TrendChart
                 title="Installations Completed"
                 data={installationsSeries}
@@ -688,34 +709,41 @@ function AdminDashboard() {
             </div>
           </div>
 
-        {/* Main Content Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+        {/* Main Content Grid. Quick Actions is Users/Settings/Export — all
+            admin-tier — so a Supervisor gets the recent list full width
+            instead of a column of buttons that would only deny it. */}
+        <div className={`grid grid-cols-1 gap-4 sm:gap-6 ${showAdminTools ? 'lg:grid-cols-3' : ''}`}>
           {/* Recent Installations */}
-          <div className="lg:col-span-2">
+          <div className={showAdminTools ? 'lg:col-span-2' : ''}>
             <RecentInstallations 
               installations={recentInstallations}
               totalCount={requestsTotalCount}
-              onViewAll={() => navigate('/reports')}
+              onViewAll={() => navigate(permissions.canViewReports ? '/reports' : '/installations')}
               onItemClick={handleRowClick}
+              showAmounts={showMoney}
             />
           </div>
 
           {/* Quick Actions */}
-          <div className="space-y-4 sm:space-y-6">
-            <QuickActions
-              onManageUsers={handleManageUsers}
-              onGoToSettings={handleGoToSettings}
-              onExportData={() => setShowExportModal(true)}
-            />
-          </div>
+          {showAdminTools && (
+            <div className="space-y-4 sm:space-y-6">
+              <QuickActions
+                onManageUsers={handleManageUsers}
+                onGoToSettings={handleGoToSettings}
+                onExportData={() => setShowExportModal(true)}
+              />
+            </div>
+          )}
         </div>
 
-      {/* Export Modal */}
-      <ExportModal
-        isOpen={showExportModal}
-        onClose={() => setShowExportModal(false)}
-        onExport={handleExportData}
-      />
+      {/* Export Modal — admin-tier only; nothing opens it otherwise. */}
+      {showAdminTools && (
+        <ExportModal
+          isOpen={showExportModal}
+          onClose={() => setShowExportModal(false)}
+          onExport={handleExportData}
+        />
+      )}
     </div>
   );
 }

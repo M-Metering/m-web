@@ -8,8 +8,16 @@ import { DataRefreshProvider } from '../../contexts/DataRefreshContext';
 import AssignmentsPage from '../AssignmentsPage';
 import jedApi from '../../services/api';
 
+// Mutable so a test can render the page as a different role. ADMIN is the
+// default: capped by the installer's open jobs, and allowed to dispatch.
+const ADMIN_PERMISSIONS = {
+  canManageAssignments: true, canViewAssignments: true,
+  isAdmin: true, isSuperAdmin: false, enforcesMeterCapacity: true,
+};
+let permissions = { ...ADMIN_PERMISSIONS };
+
 vi.mock('../../auth/usePermissions', () => ({
-  usePermissions: () => ({ canManageAssignments: true, isAdmin: true }),
+  usePermissions: () => permissions,
 }));
 
 vi.mock('../../services/api', () => ({
@@ -46,6 +54,7 @@ const METERS = [
 ];
 
 beforeEach(() => {
+  permissions = { ...ADMIN_PERMISSIONS };
   vi.clearAllMocks();
   jedApi.getDiscos.mockResolvedValue(page([{ code: 'ABA_POWER', name: 'Aba Power' }]));
   jedApi.getUsers.mockResolvedValue(page([{ id: 'uuid-1', firstName: 'Musa', lastName: 'Bello', role: 'INSTALLER' }]));
@@ -83,7 +92,7 @@ const renderPage = async () => {
 const setup = async () => {
   await renderPage();
   fireEvent.change(screen.getByLabelText(/^Installer/), { target: { value: 'uuid-1' } });
-  await screen.findByText('Meters required');
+  await screen.findByText('Assigned installations');
 };
 
 const meterList = () => screen.getByRole('list', { name: 'Available meters' });
@@ -133,9 +142,9 @@ describe('AssignmentsPage — meter serial picker', () => {
 describe('AssignmentsPage — meter capacity', () => {
   it('shows required, assigned and remaining meters from live jobs and open batches', async () => {
     await setup();
-    expect(figure('Meters required')).toBe(3);
-    expect(figure('Meters assigned')).toBe(1);
-    expect(figure('Still needed')).toBe(2);
+    expect(figure('Assigned installations')).toBe(3);
+    expect(figure('Assigned meters')).toBe(1);
+    expect(figure('Available capacity')).toBe(2);
     expect(jedApi.getAssignmentBatch).toHaveBeenCalledWith(10);
     expect(jedApi.getAssignmentBatch).not.toHaveBeenCalledWith(11);
   });
@@ -147,7 +156,7 @@ describe('AssignmentsPage — meter capacity', () => {
     fireEvent.click(screen.getByRole('button', { name: /Dispatch 3 meters/ }));
     // The constraint is stated per meter type, with the live remaining count.
     expect(await screen.findByText(
-      'The meter assignment exceeds the pending installations assigned to this installer for the selected meter type. Only 1 more Single Phase meter is needed.'
+      'Only 1 more Single Phase meter can be assigned to this installer.'
     )).toBeTruthy();
     expect(jedApi.assignMeters).not.toHaveBeenCalled();
   });
@@ -160,7 +169,7 @@ describe('AssignmentsPage — meter capacity', () => {
     pickMeter('0239110006913');
     fireEvent.click(screen.getByRole('button', { name: /Dispatch 2 meters/ }));
     expect(await screen.findByText(
-      'The meter assignment exceeds the pending installations assigned to this installer for the selected meter type. Only 1 more Single Phase meter is needed.'
+      'Only 1 more Single Phase meter can be assigned to this installer.'
     )).toBeTruthy();
     expect(jedApi.assignMeters).not.toHaveBeenCalled();
   });
@@ -271,5 +280,69 @@ describe('AssignmentsPage — a meter that exists but cannot be dispatched', () 
     searchFor('0239110006911');
     await waitFor(() => expect(within(meterList()).getAllByRole('checkbox')).toHaveLength(1));
     expect(jedApi.getMeterByNumber).not.toHaveBeenCalled();
+  });
+});
+
+// Role differences on this page. The figures come from the same live reads for
+// everyone; what changes is whether they are a cap, and whether the dispatch
+// form is offered at all.
+describe('AssignmentsPage — role differences', () => {
+  // The API gives SUPERVISOR every /assignments/* route, so it dispatches for
+  // real — and, not being SUPERADMIN, it is capped exactly like an Admin.
+  it('lets a Supervisor dispatch, under the same per-meter-type cap as an Admin', async () => {
+    permissions = {
+      canManageAssignments: true, canViewAssignments: true,
+      isAdmin: false, isSuperAdmin: false, isSupervisor: true, enforcesMeterCapacity: true,
+    };
+    await setup();
+
+    // 2 single-phase jobs with 1 single-phase meter already out: room for one.
+    pickMeter('0239110006911');
+    pickMeter('0239110006913');
+    fireEvent.click(screen.getByRole('button', { name: /Dispatch 2 meters/ }));
+    expect(await screen.findByText(
+      'Only 1 more Single Phase meter can be assigned to this installer.'
+    )).toBeTruthy();
+    expect(jedApi.assignMeters).not.toHaveBeenCalled();
+  });
+
+  it('refuses a dispatch from a role that can view assignments but not manage them', async () => {
+    permissions = {
+      canManageAssignments: false, canViewAssignments: true,
+      isAdmin: false, isSuperAdmin: false, enforcesMeterCapacity: true,
+    };
+    render(<DataRefreshProvider><AssignmentsPage /></DataRefreshProvider>);
+
+    await screen.findByText('Assignments');
+    expect(screen.queryByRole('tab', { name: /Dispatch meters/ })).toBeNull();
+    expect(screen.queryByLabelText(/^Installer/)).toBeNull();
+    expect(screen.getByText('Review every meter dispatch batch')).toBeTruthy();
+    expect(jedApi.assignMeters).not.toHaveBeenCalled();
+  });
+
+  it('denies the page outright to a role without ASSIGNMENTS.VIEW', async () => {
+    permissions = {
+      canManageAssignments: false, canViewAssignments: false,
+      isAdmin: false, isSuperAdmin: false, enforcesMeterCapacity: true,
+    };
+    render(<DataRefreshProvider><AssignmentsPage /></DataRefreshProvider>);
+    expect(await screen.findByText('Access Denied')).toBeTruthy();
+  });
+
+  it('lets a Super Admin dispatch past the installer\u2019s open jobs', async () => {
+    permissions = {
+      canManageAssignments: true, canViewAssignments: true,
+      isAdmin: true, isSuperAdmin: true, enforcesMeterCapacity: false,
+    };
+    await setup();
+    // Admin would be capped at 2 more meters here (3 open jobs, 1 in hand) and
+    // at 1 more of the single-phase type. A Super Admin is capped by neither.
+    ['0239110006911', '0239110006912', '0239110006913'].forEach(pickMeter);
+    fireEvent.click(screen.getByRole('button', { name: /Dispatch 3 meters/ }));
+    await waitFor(() => expect(jedApi.assignMeters).toHaveBeenCalledWith({
+      discoCode: 'ABA_POWER',
+      installerId: 'uuid-1',
+      meterNumbers: ['0239110006911', '0239110006912', '0239110006913'],
+    }));
   });
 });

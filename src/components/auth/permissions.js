@@ -9,14 +9,28 @@
 // while consolidating are fixed below (see ROLE_PERMISSIONS[INSTALLER]).
 
 // Role definitions — values match the real Pharez API's User.role enum
-// exactly (SUPERADMIN/ADMIN/INSTALLER, uppercase). Role strings from the
-// API are used as-is throughout the app now (no case normalization), so
+// exactly (SUPERADMIN/ADMIN/SUPERVISOR/INSTALLER, uppercase). Role strings
+// from the API are used as-is throughout the app (no case normalization), so
 // these must stay in sync with that enum.
 export const ROLES = Object.freeze({
   SUPERADMIN: 'SUPERADMIN',
   ADMIN: 'ADMIN',
+  // SUPERVISOR — shipped by the backend on 2026-09-24 and confirmed present in
+  // User.role, UserCreate.role and UserUpdate.role on the live OpenAPI
+  // document. An ADMIN narrowed to installations and assignments; it is NOT
+  // part of the admin tier and inherits nothing from ADMIN, so every
+  // permission it holds is listed explicitly in ROLE_PERMISSIONS below.
+  SUPERVISOR: 'SUPERVISOR',
   INSTALLER: 'INSTALLER'
 });
+
+// Roles only a Super Admin may create or assign. The API's rule (Frontend
+// Integration Guide, 2026-09-24) is that an ADMIN may create INSTALLER and
+// ADMIN accounts but not SUPERVISOR or SUPERADMIN. This app is deliberately
+// stricter still — see UserManagement.jsx, where an Admin's scope stays
+// Installers only — so this set is the ceiling, not the whole rule.
+export const isPrivilegedRole = (role) =>
+  role === ROLES.ADMIN || role === ROLES.SUPERADMIN || role === ROLES.SUPERVISOR;
 
 // Permission definitions organized by feature
 export const PERMISSIONS = Object.freeze({
@@ -182,6 +196,58 @@ const ROLE_PERMISSIONS = Object.freeze({
   [ROLES.SUPERADMIN]: new Set(ADMIN_TIER_PERMISSIONS),
   [ROLES.ADMIN]: new Set(ADMIN_TIER_PERMISSIONS),
 
+  // SUPERVISOR — "an ADMIN whose access has been narrowed to installations
+  // and assignments", which is the backend's own description of the role
+  // (Frontend Integration Guide, 2026-09-24) and the shape this set mirrors:
+  //
+  //   Installations  full, same as ADMIN — create, list, search, view, cancel,
+  //                  statistics, disco export, mark-exported
+  //   Assignments    full, same as ADMIN — assign/return meters, assign and
+  //                  unassign installation jobs, list/view batches
+  //   Meters         READ-ONLY — list, search, by id, by meter number.
+  //                  No upload, export, statistics or delete (all 403).
+  //   Users          READ-ONLY installer roster — list/search/view INSTALLER
+  //                  accounts and itself. No create, edit, delete or restore.
+  //   Everything else  no access: finance, imports, settings (meter types),
+  //                  disco management, API keys — all 403 server-side.
+  //
+  // Deliberately NOT built from ADMIN_TIER_PERMISSIONS minus exclusions: an
+  // allow-list can't silently grow when a new admin permission is added to
+  // that array, whereas a deny-list would. Every entry below is here because
+  // the API grants it — check the guide's permission table before adding one.
+  //
+  // NOTE: Supervisor holds ASSIGNMENTS.MANAGE, so it CAN dispatch meters, and
+  // is therefore subject to the same per-meter-type capacity rule as an Admin
+  // (`enforcesMeterCapacity` is false only for SUPERADMIN).
+  [ROLES.SUPERVISOR]: new Set([
+    PERMISSIONS.DASHBOARD.VIEW,
+
+    // Installations: the combined area, the detail view, and the operations on
+    // an imported job (assign, unassign, cancel, export & mark sent).
+    // INSTALLATIONS.COMPLETE is withheld: PATCH /:id/start, POST /:id/report
+    // and POST /:id/fail are INSTALLER-only on the API, and completing a JED
+    // job is the installer's task too.
+    PERMISSIONS.INSTALLATIONS.VIEW,
+    PERMISSIONS.INSTALLATIONS.VIEW_ALL,
+    PERMISSIONS.INSTALLATIONS.MANAGE,
+
+    // Assignments: every /assignments/* route, same as ADMIN.
+    PERMISSIONS.ASSIGNMENTS.VIEW,
+    PERMISSIONS.ASSIGNMENTS.MANAGE,
+
+    // Meter inventory, read-only. SCHEDULE.MANAGE is withheld, which is what
+    // gates the export and the statistics call on Meter Schedule; UPLOADS.EXCEL
+    // is absent, which blocks the upload page; deleting is SUPERADMIN-only at
+    // the point of use. So this grants exactly list/search/view.
+    PERMISSIONS.SCHEDULE.VIEW,
+
+    // The installer roster, read-only — this is also what makes the "assign
+    // installer" picker work for a Supervisor (GET /users?role=INSTALLER is
+    // the only user-list access the API gives it). USERS.CREATE/UPDATE/
+    // DELETE/MANAGE are all withheld.
+    PERMISSIONS.USERS.VIEW
+  ]),
+
   [ROLES.INSTALLER]: new Set([
     // Dashboard - Installer view only
     PERMISSIONS.DASHBOARD.VIEW,
@@ -332,18 +398,28 @@ export const getAllPermissionsForRole = (userRole) => {
  * Get role metadata
  */
 export const getRoleMetadata = (role) => {
+  // `level` is a display-only ordinal (highest = most access). Nothing in the
+  // app authorizes on it — every check goes through hasPermission/
+  // canAccessPage — so Supervisor slotting in between Installer and Admin is
+  // presentational, not a privilege ladder.
   const metadata = {
     [ROLES.SUPERADMIN]: {
       displayName: 'Super Administrator',
       description: 'Full system access, including privileged user management',
-      level: 3,
+      level: 4,
       color: 'red'
     },
     [ROLES.ADMIN]: {
       displayName: 'Administrator',
       description: 'Full system access',
-      level: 2,
+      level: 3,
       color: 'purple'
+    },
+    [ROLES.SUPERVISOR]: {
+      displayName: 'Supervisor',
+      description: 'Installations and assignments, with read-only meters and installers',
+      level: 2,
+      color: 'amber'
     },
     [ROLES.INSTALLER]: {
       displayName: 'Installer',
@@ -407,6 +483,7 @@ export const clearPermissionCache = () => {
 export default {
   ROLES,
   PERMISSIONS,
+  isPrivilegedRole,
   hasPermission,
   hasPermissions,
   hasAnyPermission,

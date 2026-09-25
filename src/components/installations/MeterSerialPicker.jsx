@@ -4,12 +4,14 @@
 // unavailable meter can't be picked. Serials are shown in full, as strings
 // (leading zeros intact). Large inventories are searched rather than scrolled:
 // at most MAX_SHOWN matches render at once.
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import { Search, X, Loader2, RefreshCw, ClipboardPaste } from 'lucide-react';
 import jedApi from '../services/api';
 import { matchPastedSerials, meterDeletionBlockReason } from '../../utils/meterInventory';
 import { meterMakeModel } from '../../utils/meterDisplay';
 import { normalizeStatus } from '../../utils/statusBadge';
+import { phaseCapacity } from '../../utils/meterCapacity';
+import { formatPhaseLabel } from '../../utils/installationScope';
 
 const MAX_SHOWN = 200;
 const COMPLETE_METER_NUMBER_RE = /^\d{10,13}$/;
@@ -31,7 +33,17 @@ function undispatchableReason(meter) {
   return meterDeletionBlockReason(meter) ? 'it is in use' : 'it is not in the available list';
 }
 
-function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChange, disabled, invalid }) {
+/**
+ * @param {object} props
+ * @param {object[]} props.options - dispatchable meters (toMeterOptions)
+ * @param {object|null} [props.capacity] - the target installer's live capacity
+ *   (computeMeterCapacity). Meter types the installer has no remaining
+ *   installation capacity for are disabled rather than silently rejected at
+ *   submit time. Omit it (or pass null) and no meter type is disabled.
+ * @param {boolean} [props.enforced] - false for a role the capacity doesn't
+ *   cap (Super Admin): every meter type stays selectable.
+ */
+function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChange, disabled, invalid, capacity = null, enforced = true }) {
   const [query, setQuery] = useState('');
   const [phase, setPhase] = useState('');
   const [pasteOpen, setPasteOpen] = useState(false);
@@ -45,6 +57,19 @@ function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChan
     () => Array.from(new Set(options.map((o) => o.phaseType).filter(Boolean))).sort(),
     [options]
   );
+
+  // Why a meter type can't be dispatched to this installer right now, or null.
+  // Only the installation-capacity rule lives here — whether the meter itself
+  // is dispatchable was already settled by toMeterOptions/isAssignableMeter,
+  // which is why an ineligible meter isn't in `options` at all.
+  const phaseBlockedReason = useCallback((phaseType) => {
+    if (!enforced || !capacity) return null;
+    const bucket = phaseCapacity(capacity, phaseType);
+    if (bucket.remaining > 0) return null;
+    return bucket.required === 0
+      ? `No pending ${formatPhaseLabel(phaseType)} installation is assigned to this installer.`
+      : `No remaining ${formatPhaseLabel(phaseType)} installation capacity for this installer.`;
+  }, [enforced, capacity]);
 
   const matches = useMemo(() => {
     const term = query.trim();
@@ -91,10 +116,19 @@ function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChan
 
   const applyPaste = () => {
     const { accepted, rejected } = matchPastedSerials(options, pasteText);
-    const added = accepted.filter((s) => !selected.has(s));
+    // A pasted list must obey the same meter-type rule as a clicked row —
+    // otherwise paste would be a way around the disabled checkboxes.
+    const blockedByPhase = [];
+    const allowed = accepted.filter((serial) => {
+      const option = options.find((o) => o.serial === serial);
+      if (!phaseBlockedReason(option?.phaseType)) return true;
+      blockedByPhase.push(serial);
+      return false;
+    });
+    const added = allowed.filter((s) => !selected.has(s));
     if (added.length) onChange([...value, ...added]);
-    setPasteResult({ added: added.length, rejected });
-    if (rejected.length === 0) { setPasteText(''); setPasteOpen(false); }
+    setPasteResult({ added: added.length, rejected: [...rejected, ...blockedByPhase] });
+    if (rejected.length === 0 && blockedByPhase.length === 0) { setPasteText(''); setPasteOpen(false); }
   };
 
   if (loading) {
@@ -154,7 +188,14 @@ function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChan
           <select value={phase} onChange={(e) => setPhase(e.target.value)} disabled={disabled}
             aria-label="Filter meters by phase" className="form-input px-3 py-2 text-sm">
             <option value="">All phases</option>
-            {phases.map((p) => <option key={p} value={p}>{p.charAt(0) + p.slice(1).toLowerCase()}</option>)}
+            {/* A meter type the installer has no eligible installation for is
+                offered as disabled rather than hidden — an operator needs to
+                see that Three Phase exists and why it can't be picked. */}
+            {phases.map((p) => (
+              <option key={p} value={p} disabled={!!phaseBlockedReason(p)}>
+                {formatPhaseLabel(p)}{phaseBlockedReason(p) ? ' — unavailable' : ''}
+              </option>
+            ))}
           </select>
         )}
       </div>
@@ -181,25 +222,33 @@ function MeterSerialPicker({ id, options, loading, error, onRetry, value, onChan
               )}
             </li>
           )}
-          {shown.map((o) => (
-            <li key={o.serial}>
-              <label className="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-900/50">
-                <input
-                  type="checkbox"
-                  checked={selected.has(o.serial)}
-                  onChange={() => toggle(o.serial)}
-                  disabled={disabled}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500 shrink-0"
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm font-mono text-gray-900 dark:text-white break-all">{o.serial}</span>
-                  <span className="block text-[11px] text-gray-500 dark:text-gray-400">
-                    {[o.phaseType, meterMakeModel(o), o.simNumber && `SIM ${o.simNumber}`].filter(Boolean).join(' · ')}
+          {shown.map((o) => {
+            const blocked = phaseBlockedReason(o.phaseType);
+            return (
+              <li key={o.serial}>
+                <label className={`flex items-start gap-2 px-3 py-2 ${
+                  blocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-900/50'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(o.serial)}
+                    onChange={() => toggle(o.serial)}
+                    disabled={disabled || !!blocked}
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500 shrink-0"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-mono text-gray-900 dark:text-white break-all">{o.serial}</span>
+                    <span className="block text-[11px] text-gray-500 dark:text-gray-400">
+                      {[o.phaseType, meterMakeModel(o), o.simNumber && `SIM ${o.simNumber}`].filter(Boolean).join(' · ')}
+                    </span>
+                    {blocked && (
+                      <span className="block text-[11px] text-amber-700 dark:text-amber-400">{blocked}</span>
+                    )}
                   </span>
-                </span>
-              </label>
-            </li>
-          ))}
+                </label>
+              </li>
+            );
+          })}
         </ul>
       )}
 

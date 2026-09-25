@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import ConfirmationModal from '../common/ConfirmationModal';
 import InfoModal from '../common/InfoModal';
 import { usePermissions } from '../auth/usePermissions';
-import { ROLES, getRoleMetadata } from '../auth/permissions';
+import { ROLES, getRoleMetadata, isPrivilegedRole } from '../auth/permissions';
 import jedApi from '../services/api';
 import { fetchAllPages } from '../../utils/fetchAllPages';
 import { getErrorMessage } from '../../utils/errorMessage';
@@ -32,16 +32,22 @@ import {
 const roleBadgeClass = (role) => {
   if (role === ROLES.SUPERADMIN) return 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300';
   if (role === ROLES.ADMIN) return 'bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300';
+  if (role === ROLES.SUPERVISOR) return 'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300';
   return 'bg-brand-100 dark:bg-brand-900/30 text-brand-800 dark:text-brand-300';
 };
 
+
 // Row actions, shared by the desktop table and the mobile card list below.
 // Extracted so the authorization rules exist once: an Admin may view and edit
-// Installers; only a Super Admin may reset a password or delete; and nobody
-// may delete their own account (see utils/userAccount.js).
+// Installers; a Supervisor may only view; only a Super Admin may reset a
+// password or delete; and nobody may delete their own account (see
+// utils/userAccount.js).
 const UserRowActions = ({ user, permissions, actionLoading, onView, onEdit, onResetPassword, onDelete }) => {
-  const isPrivilegedTarget = user?.role === ROLES.ADMIN || user?.role === ROLES.SUPERADMIN;
-  const canEditThisUser = permissions.isSuperAdmin || !isPrivilegedTarget;
+  const isPrivilegedTarget = isPrivilegedRole(user?.role);
+  // canUpdateUsers is the admin-tier gate; the privileged-target rule then
+  // narrows it further. A Supervisor fails the first test, so View is the only
+  // action it is offered — matching the API, which gives it no user writes.
+  const canEditThisUser = permissions.canUpdateUsers && (permissions.isSuperAdmin || !isPrivilegedTarget);
   // Delete and password-reset are Super Admin-only, for every account
   // including Installers — Admin's scope is add/view/edit Installers, not
   // destructive or security-sensitive actions.
@@ -110,7 +116,7 @@ const UserRowActions = ({ user, permissions, actionLoading, onView, onEdit, onRe
 // may create/edit an Admin (or Super Admin) account. An ADMIN using this
 // form can still manage INSTALLER accounts freely.
 const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles }) => {
-  const isEditingPrivilegedUser = !!user && (user.role === ROLES.ADMIN || user.role === ROLES.SUPERADMIN);
+  const isEditingPrivilegedUser = !!user && isPrivilegedRole(user.role);
   const formLocked = isEditingPrivilegedUser && !canAssignPrivilegedRoles;
 
   const [formData, setFormData] = useState({
@@ -297,12 +303,20 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
             className="form-input w-full px-3 py-2 disabled:opacity-50"
           >
             <option value={ROLES.INSTALLER}>Installer</option>
+            {canAssignPrivilegedRoles && <option value={ROLES.SUPERVISOR}>Supervisor</option>}
             {canAssignPrivilegedRoles && <option value={ROLES.ADMIN}>Admin</option>}
             {canAssignPrivilegedRoles && <option value={ROLES.SUPERADMIN}>Super Admin</option>}
           </select>
           {!canAssignPrivilegedRoles && (
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Only a Super Administrator can assign Admin or Super Admin roles.
+              Only a Super Administrator can assign the Supervisor, Admin or Super Admin roles.
+            </p>
+          )}
+          {formData.role === ROLES.SUPERVISOR && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              A Supervisor works the Installations and Assignments areas, and sees
+              meters and the installer roster read-only. No finance, imports,
+              settings or API keys.
             </p>
           )}
         </div>
@@ -460,6 +474,9 @@ function UserManagement() {
   const [resetPasswordMessage, setResetPasswordMessage] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterRole, setFilterRole] = useState('all');
+  // The account just deactivated, so the reversal can be offered once, inline.
+  // Not a general "deactivated accounts" view — see handleRestoreUser.
+  const [restorable, setRestorable] = useState(null);
 
 
   // Admin's user-management scope is Installers only (per the real API's
@@ -508,8 +525,8 @@ function UserManagement() {
     const role = userData.role.toUpperCase();
     // Client-side guard as a UX nicety (clear message instead of a raw
     // 403) — the backend remains the real authorization boundary here.
-    if ((role === ROLES.ADMIN || role === ROLES.SUPERADMIN) && !permissions.isSuperAdmin) {
-      setError('Access Restricted: only a Super Administrator can create an Admin or Super Admin account.');
+    if (isPrivilegedRole(role) && !permissions.isSuperAdmin) {
+      setError('Access Restricted: only a Super Administrator can create a Supervisor, Admin or Super Admin account.');
       return;
     }
 
@@ -548,8 +565,8 @@ function UserManagement() {
 
   const handleUpdateUser = useCallback(async (userData) => {
     const role = userData.role.toUpperCase();
-    if ((role === ROLES.ADMIN || role === ROLES.SUPERADMIN) && !permissions.isSuperAdmin) {
-      setError('Access Restricted: only a Super Administrator can assign an Admin or Super Admin role.');
+    if (isPrivilegedRole(role) && !permissions.isSuperAdmin) {
+      setError('Access Restricted: only a Super Administrator can assign the Supervisor, Admin or Super Admin role.');
       return;
     }
 
@@ -651,7 +668,13 @@ function UserManagement() {
 
       await fetchUsers();
       setUserToDelete(null); // Close modal on success
-      setNotice(`${name} was deleted.`);
+      // DELETE /users/{id} is a SOFT delete (2026-09-24): the account leaves
+      // the list and can no longer log in, but its historical records keep
+      // showing its name. Say that, and offer the reversal while we still know
+      // which account it was — the User schema has no is_active field, so once
+      // the row is gone from the list there is nothing to offer Restore from.
+      setRestorable({ id: targetId, name });
+      setNotice(`${name} was deactivated. They can no longer sign in; their past records still show their name.`);
     } catch (err) {
       console.error('[UserManagement] Error deleting user:', err);
       setError(getErrorMessage(err, 'Unable to delete this user. Please try again.'));
@@ -660,6 +683,32 @@ function UserManagement() {
       setActionLoading(null);
     }
   }, [userToDelete, fetchUsers, permissions.isSuperAdmin, permissions.user]);
+
+  /**
+   * Undo the deactivation just performed (POST /users/{id}/restore). Offered
+   * only right after a delete, for the reason above: nothing in the documented
+   * User schema marks an account as deactivated, so this app cannot present a
+   * list of them to restore from later. See API_GAP_REPORT.md.
+   */
+  const handleRestoreUser = useCallback(async () => {
+    if (!restorable) return;
+    try {
+      setActionLoading(`restore-${restorable.id}`);
+      setError(null);
+      assertApiSuccess(
+        await jedApi.restoreUser(restorable.id),
+        'The server did not confirm the restore.'
+      );
+      await fetchUsers();
+      setNotice(`${restorable.name} was restored and can sign in again.`);
+      setRestorable(null);
+    } catch (err) {
+      console.error('[UserManagement] Error restoring user:', err);
+      setError(getErrorMessage(err, 'Unable to restore this account. Please try again.'));
+    } finally {
+      setActionLoading(null);
+    }
+  }, [restorable, fetchUsers]);
 
   const handleViewUser = useCallback(async (user) => {
     setViewingUser(user);
@@ -706,12 +755,13 @@ function UserManagement() {
     }
   }, [userToResetPassword, permissions.isSuperAdmin]);
 
-  // Fetch users on mount
+  // Fetch users on mount. Supervisor reaches this page too — read-only, and
+  // the API only ever returns it the Installer roster (plus itself).
   useEffect(() => {
-    if (permissions.isAdmin) {
+    if (permissions.canViewUsers) {
       fetchUsers();
     }
-  }, [permissions.isAdmin, fetchUsers]);
+  }, [permissions.canViewUsers, fetchUsers]);
 
   // Filter users based on search and role. The `role: INSTALLER` request
   // param already keeps non-SuperAdmins from receiving other accounts, but
@@ -763,16 +813,18 @@ function UserManagement() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline text-sm font-medium">Refresh</span>
           </button>
-          <button
-            onClick={() => {
-              setEditingUser(null);
-              setShowForm(true);
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-brand-500 text-gray-900 rounded-lg hover:bg-brand-600 transition-colors"
-          >
-            <UserPlus className="w-4 h-4" />
-            Add User
-          </button>
+          {permissions.canCreateUsers && (
+            <button
+              onClick={() => {
+                setEditingUser(null);
+                setShowForm(true);
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-brand-500 text-gray-900 rounded-lg hover:bg-brand-600 transition-colors"
+            >
+              <UserPlus className="w-4 h-4" />
+              Add User
+            </button>
+          )}
         </div>
       </div>
 
@@ -798,8 +850,26 @@ function UserManagement() {
       {notice && (
         <div role="status" className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4 flex items-start gap-3">
           <Check className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-green-800 dark:text-green-300 flex-1 break-words">{notice}</p>
-          <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss"
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-green-800 dark:text-green-300 break-words">{notice}</p>
+            {/* Deactivation is reversible, and this is the only moment we know
+                which account to reverse — the User schema exposes no
+                deactivated flag to build a list from later. */}
+            {restorable && permissions.canDeleteUsers && (
+              <button
+                type="button"
+                onClick={handleRestoreUser}
+                disabled={actionLoading === `restore-${restorable.id}`}
+                className="mt-1 inline-flex items-center gap-1.5 text-xs font-medium text-green-800 dark:text-green-300 hover:underline disabled:opacity-50"
+              >
+                {actionLoading === `restore-${restorable.id}`
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <RefreshCw className="w-3.5 h-3.5" />}
+                Undo — restore {restorable.name}
+              </button>
+            )}
+          </div>
+          <button type="button" onClick={() => { setNotice(null); setRestorable(null); }} aria-label="Dismiss"
             className="p-1 rounded-lg text-green-700 dark:text-green-300 hover:bg-green-100 dark:hover:bg-green-900/40 flex-shrink-0">
             <X className="w-4 h-4" />
           </button>
@@ -946,6 +1016,7 @@ function UserManagement() {
             <option value="all">All Roles</option>
             {permissions.isSuperAdmin && <option value={ROLES.SUPERADMIN}>Super Admin</option>}
             {permissions.isSuperAdmin && <option value={ROLES.ADMIN}>Admin</option>}
+            {permissions.isSuperAdmin && <option value={ROLES.SUPERVISOR}>Supervisor</option>}
             <option value={ROLES.INSTALLER}>Installer</option>
           </select>
         </div>

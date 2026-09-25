@@ -84,9 +84,10 @@ function AppContent() {
   const [globalError, setGlobalError] = useState(null);
   const navigate = useNavigate();
 
-  // 3-minute Admin/Super Admin inactivity logout — no-ops entirely for
-  // Installer (permissions.isAdmin is false), and for a logged-out user.
-  useAdminIdleTimeout(isAuthenticated && permissions.isAdmin);
+  // 3-minute inactivity logout for office accounts — Admin, Super Admin and
+  // Supervisor. It no-ops entirely for Installer (a field technician is not
+  // sitting at a desk between jobs) and for a logged-out user.
+  useAdminIdleTimeout(isAuthenticated && (permissions.isAdmin || permissions.isSupervisor));
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   // Desktop sidebar collapse — persisted so the choice survives a reload,
@@ -174,24 +175,27 @@ function AppContent() {
             <Suspense fallback={<PageLoader />}>
               <Routes>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                {/* Dashboard routes by role: admin/superadmin get the
-                    full-pipeline AdminDashboard (all requests, all
-                    installers, payment stages); installer gets the tabbed
-                    Pending/Completed InstallerDashboard. */}
+                {/* Dashboard routes by role: admin/superadmin/supervisor get
+                    the full-pipeline AdminDashboard (all requests, all
+                    installers, payment stages — the money figures on it are
+                    gated separately inside, so a Supervisor sees the
+                    operational view without the financial one); installer
+                    gets the tabbed Pending/Completed InstallerDashboard. */}
                 <Route
                   path="/dashboard"
-                  element={permissions.isAdmin ? <AdminDashboard /> : <InstallerDashboard />}
+                  element={permissions.canViewAdminDashboard ? <AdminDashboard /> : <InstallerDashboard />}
                 />
-                {/* The one Installations area for admin-tier accounts: the
-                    combined request list (imported jobs + JED's Remita
-                    requests, with disco scoping and dispatch) and JED's
-                    PAID/COMPLETED operational queue, as two views of one
-                    page. Installers never come here — they use /dashboard
-                    (the shared JED queue) and /my-jobs (their dispatched
-                    jobs). */}
+                {/* The one Installations area: the combined request list
+                    (imported jobs + JED's Remita requests, with disco scoping
+                    and dispatch) and JED's PAID/COMPLETED operational queue,
+                    as two views of one page. Admin/Super Admin get the
+                    dispatch actions; a Supervisor holds INSTALLATIONS.VIEW_ALL
+                    without MANAGE, so the same page renders read-only for it.
+                    Installers never come here — they use /dashboard (the
+                    shared JED queue) and /my-jobs (their dispatched jobs). */}
                 <Route
                   path="/installations"
-                  element={permissions.isAdmin ? <InstallationsPage /> : <AccessDenied />}
+                  element={permissions.canViewAllInstallations ? <InstallationsPage /> : <AccessDenied />}
                 />
                 {/* Click-through detail view from either dashboard's rows —
                     the completion action lives here directly (a PAID job
@@ -204,13 +208,19 @@ function AppContent() {
                 <Route
                   path="/installations/:accountNumber"
                   element={
-                    permissions.isAdmin || permissions.canViewInstallations
+                    permissions.canViewAllInstallations || permissions.canViewInstallations
                       ? <InstallationDetail />
                       : <AccessDenied />
                   }
                 />
-                <Route path="/schedule" element={permissions.isAdmin || permissions.canViewSchedule ? <MeterSchedule /> : <AccessDenied />} />
-                <Route path="/users" element={permissions.isAdmin ? <UserManagement /> : <AccessDenied />} />
+                {/* Meter Schedule and Users are reachable by Supervisor too,
+                    read-only in both cases: the API gives it list/search/view
+                    on meters and the Installer roster only, and each page
+                    gates its own privileged actions (upload, export,
+                    statistics, delete, create/edit) on the permissions the
+                    Supervisor doesn't hold. */}
+                <Route path="/schedule" element={permissions.canViewSchedule ? <MeterSchedule /> : <AccessDenied />} />
+                <Route path="/users" element={permissions.canViewUsers ? <UserManagement /> : <AccessDenied />} />
                 {/* Uploads: admin-tier only. `canUploadExcel` is the
                     permission-model check (Installer no longer holds
                     UPLOADS.EXCEL); ExcelUpload repeats it internally as a
@@ -226,7 +236,11 @@ function AppContent() {
                     dispatched to them and the meters in their hands. Distinct
                     from the JED routes above, which are unchanged. */}
                 <Route path="/imports" element={permissions.canRunImports ? <ImportsPage /> : <AccessDenied />} />
-                <Route path="/assignments" element={permissions.canManageAssignments ? <AssignmentsPage /> : <AccessDenied />} />
+                {/* Assignments: reaching the page needs ASSIGNMENTS.VIEW,
+                    dispatching from it needs ASSIGNMENTS.MANAGE. A Supervisor
+                    holds only the first, so it lands on the batch history
+                    with no Dispatch form (the page enforces that itself too). */}
+                <Route path="/assignments" element={permissions.canViewAssignments ? <AssignmentsPage /> : <AccessDenied />} />
                 {/* Kept working for bookmarks and any external link: the
                     page moved into /installations as its default view. */}
                 <Route path="/installation-requests" element={<Navigate to="/installations" replace />} />

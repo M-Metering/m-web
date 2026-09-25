@@ -55,6 +55,7 @@ export const formatPhaseLabel = (value) => {
   return key.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
 };
 
+
 /**
  * Dropdown options: "All discos", every registered disco, and — only when no
  * registered disco is JED — a separate entry for JED's Remita requests, so

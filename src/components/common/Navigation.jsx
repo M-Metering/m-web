@@ -22,8 +22,11 @@ import { NavLink } from 'react-router-dom';
 import InfoModal from './InfoModal';
 import { ROLES, canAccessPage } from '../auth/permissions';
 
-// Role strings match the real API's User.role enum (uppercase).
-const isAdminTierRole = (role) => role === 'ADMIN' || role === 'SUPERADMIN';
+// Role strings match the real API's User.role enum (uppercase). SUPERVISOR is
+// NOT admin tier — the items still gated on this helper (Meter Schedule,
+// Users, Reports, Payments, Settings) are exactly the ones a Supervisor must
+// not see, so they need no further change.
+const isAdminTierRole = (role) => role === ROLES.ADMIN || role === ROLES.SUPERADMIN;
 
 // Sidebar widths — kept in one place since App.jsx's content column needs
 // a matching `lg:pl-*` offset to sit beside (not under) the persistent
@@ -64,7 +67,11 @@ const NAVIGATION_CONFIG = {
       path: '/installations',
       icon: ClipboardList,
       description: 'Every disco\'s requests, dispatch, and the JED queue',
-      accessible: (userRole) => isAdminTierRole(userRole),
+      // Permission-driven rather than a hard-coded role list, so it can't
+      // drift from App.jsx's route guard: admin-tier accounts get it through
+      // canAccessPage's admin short-circuit, Supervisor through its explicit
+      // INSTALLATIONS.VIEW_ALL grant.
+      accessible: (userRole) => canAccessPage(userRole, 'installations'),
     },
     {
       id: 'imports',
@@ -79,7 +86,7 @@ const NAVIGATION_CONFIG = {
       label: 'Assignments',
       path: '/assignments',
       icon: Send,
-      description: 'Dispatch meters to installers',
+      description: 'Meter dispatch batches and installer assignments',
       accessible: (userRole) => canAccessPage(userRole, 'assignments'),
     },
     {
@@ -88,9 +95,10 @@ const NAVIGATION_CONFIG = {
       path: '/schedule',
       icon: Database,
       description: 'View and query meter inventory',
-      // Admin/Super Admin only — Installer must not see or reach this page
-      // (nor Uploads below — see that item).
-      accessible: (userRole) => isAdminTierRole(userRole),
+      // Permission-driven: admin-tier in full, Supervisor read-only (it holds
+      // SCHEDULE.VIEW without SCHEDULE.MANAGE). Installer holds neither and
+      // must not see or reach this page, nor Uploads below.
+      accessible: (userRole) => canAccessPage(userRole, 'schedule'),
     },
     {
       id: 'users',
@@ -98,7 +106,8 @@ const NAVIGATION_CONFIG = {
       path: '/users',
       icon: Users,
       description: 'Manage system users',
-      accessible: (userRole) => isAdminTierRole(userRole),
+      // Admin-tier manages; Supervisor sees the Installer roster read-only.
+      accessible: (userRole) => canAccessPage(userRole, 'users'),
     },
     {
       id: 'reports',

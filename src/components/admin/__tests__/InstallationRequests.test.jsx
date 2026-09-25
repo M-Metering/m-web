@@ -10,8 +10,14 @@ import InstallationRequests from '../InstallationRequests';
 import jedApi from '../../services/api';
 import { downloadXlsx } from '../../../utils/xlsx';
 
+const ADMIN_PERMISSIONS = {
+  canViewInstallationRequests: true, canManageAssignments: true, canManageInstallations: true,
+  isAdmin: true, isSuperAdmin: false, enforcesMeterCapacity: true,
+};
+let permissions = { ...ADMIN_PERMISSIONS };
+
 vi.mock('../../auth/usePermissions', () => ({
-  usePermissions: () => ({ canViewInstallationRequests: true, canManageAssignments: true, isAdmin: true }),
+  usePermissions: () => permissions,
 }));
 
 vi.mock('../../services/api', () => ({
@@ -52,6 +58,7 @@ const REMITA = [
 ];
 
 beforeEach(() => {
+  permissions = { ...ADMIN_PERMISSIONS };
   vi.clearAllMocks();
   jedApi.getDiscos.mockResolvedValue(page([{ code: 'ABA_POWER', name: 'Aba Power' }]));
   jedApi.getInstallations.mockImplementation(async (params) => {
@@ -175,7 +182,7 @@ describe('InstallationRequests — upload-field filters, selection and assignmen
     await waitFor(() => expect(within(dialog).getByRole('option', { name: /Musa Bello/ })).toBeTruthy());
     fireEvent.change(within(dialog).getByLabelText(/Installer/), { target: { value: 'uuid-1' } });
 
-    await within(dialog).findByText('Meters required');
+    await within(dialog).findByText('Assigned installations');
     expect(within(dialog).getByText(/After assigning 1 job: 2 meters still needed/)).toBeTruthy();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Assign' }));
@@ -307,5 +314,54 @@ describe('InstallationRequests — import date', () => {
     await waitFor(() => expect(tileValue('All')).toBe(1));
     fireEvent.click(screen.getByRole('button', { name: /Clear dates/ }));
     await waitFor(() => expect(tileValue('All')).toBe(7));
+  });
+});
+
+// Supervisor holds INSTALLATIONS.MANAGE and ASSIGNMENTS.MANAGE on the real
+// API, so it gets the full page. This block covers the other direction: a
+// viewer WITHOUT those permissions must get the records and none of the
+// actions — which is what every gate on this page is actually keyed to.
+describe('InstallationRequests — a viewer without the manage permissions', () => {
+  const asSupervisor = () => {
+    permissions = {
+      canViewInstallationRequests: true, canManageAssignments: false, canManageInstallations: false,
+      isAdmin: false, isSuperAdmin: false, enforcesMeterCapacity: true,
+    };
+  };
+
+  it('shows the records and none of the actions that would change them', async () => {
+    asSupervisor();
+    renderPage();
+    await screen.findByText('ADA OBI');
+
+    // Every row is still readable...
+    expect(screen.getByText('JED PAID')).toBeTruthy();
+    // ...and nothing on the page can dispatch, unassign, cancel or export-and-mark.
+    expect(screen.queryByLabelText('Select account 1001')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Assign to installer/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Assign installer/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Export & mark sent|Export preview/ })).toBeNull();
+    expect(screen.queryByText('Mark rows as sent (moves them to Exported)')).toBeNull();
+  });
+
+  it('calls no mutating endpoint while the page is open', async () => {
+    asSupervisor();
+    renderPage();
+    await screen.findByText('ADA OBI');
+    expect(jedApi.assignInstallations).not.toHaveBeenCalled();
+    expect(jedApi.unassignInstallations).not.toHaveBeenCalled();
+    expect(jedApi.cancelInstallation).not.toHaveBeenCalled();
+    expect(jedApi.exportInstallations).not.toHaveBeenCalled();
+  });
+
+  it('gives a Supervisor the full page, because the API gives it those routes', async () => {
+    permissions = {
+      canViewInstallationRequests: true, canManageAssignments: true, canManageInstallations: true,
+      isAdmin: false, isSuperAdmin: false, isSupervisor: true, enforcesMeterCapacity: true,
+    };
+    renderPage();
+    await screen.findByText('ADA OBI');
+    expect(screen.getByLabelText('Select account 1001')).toBeTruthy();
+    expect(screen.getByText('Mark rows as sent (moves them to Exported)')).toBeTruthy();
   });
 });

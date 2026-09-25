@@ -9,7 +9,7 @@ import InstallationDetail from '../InstallationDetail';
 import jedApi from '../../services/api';
 
 vi.mock('../../auth/usePermissions', () => ({
-  usePermissions: () => ({ isAdmin: true, canSubmitComplaints: false }),
+  usePermissions: () => ({ isAdmin: true, canSubmitComplaints: false, canCompleteInstallations: true }),
 }));
 
 vi.mock('../../services/api', () => ({

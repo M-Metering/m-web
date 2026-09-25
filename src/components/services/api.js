@@ -797,6 +797,25 @@ class JEDApiService {
     });
   }
 
+  /**
+   * Server-side meter search (added 2026-09-24). Matches `q` against
+   * meter_number and sim_number — exact, prefix and substring, not fuzzy.
+   *
+   * This is the endpoint the old "page through GET /meters and filter in the
+   * browser" fallback was standing in for. GET /meters still has no search
+   * parameter; this is a separate route. Never widen a page cap to search.
+   *
+   * @param {{ q: string, status?: string, phaseType?: string, page?: number, limit?: number }} params
+   */
+  async searchMeters(params = {}) {
+    const url = this.utils.buildUrlWithParams(this.endpoints.METERS.SEARCH, params);
+    return await this.makeRequest(url, {
+      method: 'GET',
+      useCache: true,
+      cacheKey: `meters-search-${JSON.stringify(params)}`
+    });
+  }
+
   async getMeterStatistics() {
     const url = this.buildApiUrl(this.endpoints.METERS.STATISTICS);
     return await this.makeRequest(url, { 
@@ -1059,11 +1078,97 @@ class JEDApiService {
     return response;
   }
 
+  /**
+   * Server-side user search (added 2026-09-24). Matches `q` against first
+   * name, last name, email and phone, and is still bound by the caller's own
+   * visibility rules — an ADMIN or SUPERVISOR only ever gets Installers (and
+   * themselves) back, whatever `q` matches.
+   *
+   * `includeInactive: true` is the ONLY way to see soft-deleted accounts:
+   * plain GET /users never returns them.
+   *
+   * NOTE on `role`: the spec documents this filter's enum as
+   * SUPERADMIN/ADMIN/INSTALLER only — it has not been widened to SUPERVISOR
+   * even though User.role has. Sending role=SUPERVISOR risks a Joi rejection,
+   * so callers that want Supervisors filter the result client-side instead.
+   *
+   * @param {{ q: string, role?: string, includeInactive?: boolean, page?: number, limit?: number }} params
+   */
+  async searchUsers(params = {}) {
+    const url = this.utils.buildUrlWithParams(this.endpoints.USERS.SEARCH, params, 'USERS');
+    return await this.makeRequest(url, {
+      method: 'GET',
+      useCache: true,
+      cacheKey: `users-search-${JSON.stringify(params)}`
+    });
+  }
+
+  /**
+   * SOFT delete (added/fixed 2026-09-24 — this used to 500 on every call).
+   * Sets is_active = false: the account leaves the default lists and can no
+   * longer log in, but its historical records keep showing its name. Reverse
+   * it with restoreUser.
+   */
   async deleteUser(userId) {
     const url = this.utils.buildUrl(this.endpoints.USERS.BY_ID(userId), 'USERS');
     const response = await this.makeRequest(url, { method: 'DELETE' });
     this.clearCache();
     return response;
+  }
+
+  /**
+   * Reverse a soft delete (added 2026-09-24): sets is_active = true again.
+   * 400 if the target isn't currently deactivated. Same role rule as delete —
+   * SUPERADMIN for any target, ADMIN for INSTALLER targets only.
+   */
+  async restoreUser(userId) {
+    const url = this.utils.buildUrl(this.endpoints.USERS.RESTORE(userId), 'USERS');
+    const response = await this.makeRequest(url, { method: 'POST' });
+    this.clearCache();
+    return response;
+  }
+
+  // ==================== FINANCE (RECOGNISED REVENUE) ====================
+  // Added 2026-09-24. SUPERADMIN/ADMIN only — SUPERVISOR and INSTALLER get a
+  // 403, so every caller must be behind a payments-tier permission gate.
+  //
+  // Recognition timing is the backend's, not ours, and differs per disco:
+  // JED recognises on Remita confirmation (PAID/CONFIRMED/COMPLETED), Aba
+  // Power on installation completion (INSTALLED/EXPORTED). Do not re-derive
+  // either here.
+  //
+  // Every response carries estimated/missing-amount counts. A total from these
+  // endpoints must never be rendered on its own — see utils/financeSummary.js,
+  // which turns them into the caveat line that goes beside the figure.
+
+  /** Total recognised revenue plus a per-disco split. */
+  async getRevenueSummary(params = {}) {
+    const url = this.utils.buildUrlWithParams(this.endpoints.FINANCE.REVENUE_SUMMARY, params);
+    return await this.makeRequest(url, {
+      method: 'GET',
+      useCache: true,
+      cacheKey: `revenue-summary-${JSON.stringify(params)}`
+    });
+  }
+
+  /** Grouped totals for charts/tables: groupBy disco|meterType|day|week|month. */
+  async getRevenueBreakdown(params = {}) {
+    const url = this.utils.buildUrlWithParams(this.endpoints.FINANCE.REVENUE_BREAKDOWN, params);
+    return await this.makeRequest(url, {
+      method: 'GET',
+      useCache: true,
+      cacheKey: `revenue-breakdown-${JSON.stringify(params)}`
+    });
+  }
+
+  /** The individual records behind the totals, paginated. */
+  async getRevenueTransactions(params = {}) {
+    const url = this.utils.buildUrlWithParams(this.endpoints.FINANCE.REVENUE_TRANSACTIONS, params);
+    return await this.makeRequest(url, {
+      method: 'GET',
+      useCache: true,
+      cacheKey: `revenue-transactions-${JSON.stringify(params)}`
+    });
   }
 
   // ==================== MULTI-DISCO INSTALLATION FLOW ====================
@@ -1167,6 +1272,24 @@ class JEDApiService {
   }
 
   /**
+   * Undo an import batch (added 2026-09-24): remove the rows this import
+   * created, but only where nothing real depends on them yet.
+   *
+   * PARTIAL BY DESIGN, and idempotent. Installations already INSTALLED,
+   * EXPORTED or IN_PROGRESS, and meters already dispatched or installed, are
+   * kept and returned in `skippedByReason`. A non-zero skippedCount is the
+   * safety behaviour working, never a failure — render it as such.
+   *
+   * @returns {Promise<object>} { deletedCount, skippedCount, skippedByReason, ... }
+   */
+  async undoImportBatch(id) {
+    const url = this.buildApiUrl(this.endpoints.IMPORTS.UNDO(id));
+    const response = await this.makeRequest(url, { method: 'POST' });
+    this.clearCache();
+    return response;
+  }
+
+  /**
    * Partial success is normal here: a 201 can still carry rejected rows, and
    * a 200 means nothing landed. Callers must read data.created/skipped/failed
    * and data.errors rather than treating 2xx as "all good".
@@ -1241,6 +1364,25 @@ class JEDApiService {
   }
 
   // ---------- Installations (admin) ----------
+  /**
+   * Server-side installation search (added 2026-09-24). Matches `q` against
+   * account_number and customer_name.
+   *
+   * Covers InstallationRequest ONLY. JED's Remita requests are a different
+   * resource with no search endpoint, so a screen showing both still has to
+   * search the JED side itself — don't present this as searching everything.
+   *
+   * @param {{ q: string, discoCode?: string, status?: string, page?: number, limit?: number }} params
+   */
+  async searchInstallations(params = {}) {
+    const url = this.utils.buildUrlWithParams(this.endpoints.INSTALLATIONS.SEARCH, params);
+    return await this.makeRequest(url, {
+      method: 'GET',
+      useCache: true,
+      cacheKey: `installations-search-${JSON.stringify(params)}`
+    });
+  }
+
   async getInstallations(params = {}) {
     const url = this.utils.buildUrlWithParams(this.endpoints.INSTALLATIONS.BASE, params);
     return await this.makeRequest(url, { method: 'GET', useCache: true, cacheKey: `installations-${JSON.stringify(params)}` });

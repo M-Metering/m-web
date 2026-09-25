@@ -84,9 +84,14 @@ const MATCHABLE_METER_FIELDS = ['meterNumber', 'simNumber', 'meterMake', 'model'
 // as a string — see utils/meterNumber.js.
 const COMPLETE_METER_NUMBER_RE = /^\d{10,13}$/;
 
-// Safety ceiling for the fallback scan below. Only ever reached by a PARTIAL
-// term, which has no endpoint of its own.
+// Safety ceiling for the fallback scan below. Only ever reached by a term
+// that no search endpoint covers (a make, model or SGC fragment).
 const FULL_METER_FETCH_MAX_PAGES = 100;
+
+// GET /meters/search caps `limit` at 100. One page of matches is plenty for a
+// search box; beyond it the result is reported as truncated rather than paged,
+// so the operator narrows the term instead of scrolling.
+const METER_SEARCH_LIMIT = 100;
 
 const matchesActiveFilters = (meter, { status, phaseType } = {}) => {
   if (status && status !== 'ALL' && normalizeStatus(meter?.status) !== normalizeStatus(status)) return false;
@@ -116,21 +121,22 @@ async function fetchAllMeters({ status, phaseType } = {}) {
  * Find meters for a search term.
  *
  * ROOT CAUSE THIS FIXES. GET /meters has no search parameter, so search was
- * implemented as "download the inventory, filter in the browser". That is
- * capped by definition — so a meter past the cap was reported as not existing
- * — and it costs ~60 requests against a ~6,000-meter inventory. Raising the
- * cap (the previous attempt) made it slower without making it correct.
+ * once implemented as "download the inventory, filter in the browser". That is
+ * capped by definition — a meter past the cap was reported as not existing —
+ * and it costs ~60 requests against a ~6,000-meter inventory. Raising the cap
+ * (an earlier attempt) made it slower without making it correct.
  *
- * The API does have an authoritative lookup: GET /meters/meter-number/{n}.
- * It was defined in api.js as getMeterByNumber and never called from anywhere
- * (CodeBaseAudit's 2026-08-29 pass dismissed it as a redundant round-trip —
- * true for a details modal, wrong for search, where the whole point is to
- * reach a meter that is NOT on screen).
+ * There are now two real server-side paths, in order of precision:
  *
- * So: a complete meter number is ONE server-side request against the entire
- * inventory, with no paging and no cap. A partial term (part of a serial, a
- * SIM, a make, an SGC) has no endpoint, so it still falls back to the paged
- * scan — which is now the exception rather than the rule.
+ *   1. GET /meters/meter-number/{n} — a COMPLETE meter number. One request,
+ *      whole inventory, exact match, no paging and no cap.
+ *   2. GET /meters/search?q= — added 2026-09-24. A partial serial or SIM,
+ *      matched server-side over meter_number and sim_number, paginated.
+ *
+ * The paged scan survives only for what neither endpoint covers: a make,
+ * model or SGC term. Those are not searchable server-side, so a term with a
+ * non-digit still falls back — and only then. Never widen a page cap to
+ * search; add the endpoint the term needs.
  *
  * @returns {{ items: object[], truncated: boolean, exact: boolean }}
  */
@@ -147,12 +153,41 @@ async function searchMeters(term, filters) {
     } catch (err) {
       // A genuine "no such meter" is an empty result, not an error.
       if (isNotFoundError(err)) return { items: [], truncated: false, exact: true };
-      // Anything else (network, 500): fall through to the scan rather than
-      // failing a search the slower path could still satisfy.
-      console.warn('[MeterSchedule] Exact meter lookup unavailable, scanning instead:', err?.message);
+      // Anything else (network, 500): fall through rather than failing a
+      // search a slower path could still satisfy.
+      console.warn('[MeterSchedule] Exact meter lookup unavailable, searching instead:', err?.message);
     }
   }
 
+  // A digits-only partial is a serial or SIM fragment — exactly what
+  // /meters/search covers, and it covers the WHOLE inventory.
+  if (/^\d+$/.test(term)) {
+    try {
+      const params = { q: term, limit: METER_SEARCH_LIMIT };
+      if (filters?.status && filters.status !== 'ALL') params.status = filters.status;
+      if (filters?.phaseType && filters.phaseType !== 'ALL') params.phaseType = filters.phaseType;
+      const response = await JEDApiService.searchMeters(params);
+      // A search that legitimately matches nothing returns an envelope with an
+      // empty list — that is a real "no matches" and must NOT trigger a
+      // 60-request scan. No envelope at all is a different thing: the search
+      // didn't happen, so fall through rather than report an empty inventory.
+      if (!response) throw new Error('Empty meter search response');
+      const items = unwrapListResponse(response);
+      const total = response?.pagination?.totalCount;
+      return {
+        items,
+        // More matches than one page holds: say so rather than implying the
+        // list is everything.
+        truncated: Number.isFinite(total) ? total > items.length : items.length >= METER_SEARCH_LIMIT,
+        exact: false,
+      };
+    } catch (err) {
+      console.warn('[MeterSchedule] Meter search unavailable, scanning instead:', err?.message);
+    }
+  }
+
+  // Make / model / SGC, or a failed search above: nothing server-side covers
+  // these, so the capped scan remains the only option.
   const all = await fetchAllMeters(filters);
   const needle = term.toLowerCase();
   return {
@@ -392,8 +427,11 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
   };
 };
 
-// Custom hook for meter statistics
-const useMeterStatistics = () => {
+// Custom hook for meter statistics.
+// `enabled` is false for a role the API won't serve this to (Supervisor holds
+// SCHEDULE.VIEW without SCHEDULE.MANAGE, and GET /meters/statistics is
+// admin-tier only).
+const useMeterStatistics = (enabled = true) => {
   const { refreshSignal } = useDataRefresh();
   const [meterStats, setMeterStats] = useState({
     totalMeters: 0,
@@ -471,8 +509,15 @@ const useMeterStatistics = () => {
   }, []);
 
   useEffect(() => {
+    // GET /meters/statistics is admin-tier only — a Supervisor gets a 403.
+    // Skipping the call entirely beats firing one we know will be refused and
+    // then hiding the section after the fact.
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     fetchMeterStatistics();
-  }, [fetchMeterStatistics, refreshSignal]);
+  }, [enabled, fetchMeterStatistics, refreshSignal]);
 
   return {
     meterStats,
@@ -907,14 +952,18 @@ const MeterFilterControls = ({ filters, onFilterChange, loading, onRefresh, onEx
           </div>
 
           <div className="flex items-center gap-2 sm:self-end">
-            <button
-              onClick={onExport}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-green-400 disabled:cursor-not-allowed text-sm"
-            >
-              <Download className="w-4 h-4" />
-              Export
-            </button>
+            {/* Omitted for a role the API won't serve GET /meters/export to
+                (Supervisor) — the caller passes no handler in that case. */}
+            {onExport && (
+              <button
+                onClick={onExport}
+                disabled={loading}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-green-400 disabled:cursor-not-allowed text-sm"
+              >
+                <Download className="w-4 h-4" />
+                Export
+              </button>
+            )}
             <button
               onClick={onRefresh}
               disabled={loading}
@@ -1017,14 +1066,18 @@ const QueryFilterControls = ({ filters, onFilterChange, loading, onRefresh, onEx
           </div>
 
           <div className="flex items-center gap-2 sm:self-end">
-            <button
-              onClick={onExport}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-green-400 disabled:cursor-not-allowed text-sm"
-            >
-              <Download className="w-4 h-4" />
-              Export
-            </button>
+            {/* Omitted for a role the API won't serve GET /meters/export to
+                (Supervisor) — the caller passes no handler in that case. */}
+            {onExport && (
+              <button
+                onClick={onExport}
+                disabled={loading}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-green-400 disabled:cursor-not-allowed text-sm"
+              >
+                <Download className="w-4 h-4" />
+                Export
+              </button>
+            )}
             <button
               onClick={onRefresh}
               disabled={loading}
@@ -1200,7 +1253,7 @@ function deleteConfirmationMessage(meters) {
   return lines.join('\n\n');
 }
 
-const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, onDataChanged }) => {
+const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canExportMeters, onDataChanged }) => {
   const { meters, loading, error, pagination, filters, fetchMeters, updateFilters, changePage, exportMeters } = meterInventory;
 
   // Deletion is scoped to what a Super Admin selected, one meter at a time
@@ -1320,7 +1373,7 @@ const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, onDa
         onFilterChange={updateFilters}
         loading={loading}
         onRefresh={fetchMeters}
-        onExport={exportMeters}
+        onExport={canExportMeters ? exportMeters : null}
       />
 
       {(error || deleteError) && (
@@ -1482,7 +1535,7 @@ const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, onDa
 };
 
 // Meter Query Component
-const MeterQuery = ({ meterQuery }) => {
+const MeterQuery = ({ meterQuery, canExportMeters }) => {
   const { meters, loading, error, pagination, filters, fetchMeters, updateFilters, changePage, exportMeters } = meterQuery;
 
   return (
@@ -1492,7 +1545,7 @@ const MeterQuery = ({ meterQuery }) => {
         onFilterChange={updateFilters}
         loading={loading}
         onRefresh={fetchMeters}
-        onExport={exportMeters}
+        onExport={canExportMeters ? exportMeters : null}
       />
 
       {error && (
@@ -1557,9 +1610,15 @@ function MeterSchedule() {
   //    narrower than "can upload" — matching how User Management already
   //    reserves destructive actions for a Super Admin. The backend is still
   //    authoritative (DELETE /meters/{meterNumber} documents a 403).
-  const { canManageAssignments, isSuperAdmin } = usePermissions();
+  //  - canManageSchedule: the admin-tier meter operations the API reserves —
+  //    the statistics call and the server-side export. A Supervisor reaches
+  //    this page read-only (list, search, view) and gets a 403 on both, so
+  //    they are not offered rather than offered and refused.
+  const { canManageAssignments, isSuperAdmin, canManageSchedule } = usePermissions();
   const { notifyDataChanged } = useDataRefresh();
-  const { meterStats, loading: statsLoading, error: statsError, refetch: refetchStats } = useMeterStatistics();
+  const {
+    meterStats, loading: statsLoading, error: statsError, refetch: refetchStats,
+  } = useMeterStatistics(canManageSchedule);
 
   // activeTab now declared before the two useMeterData() instances so each
   // can be told whether it's the currently-visible tab (see fix note above
@@ -1688,11 +1747,13 @@ function MeterSchedule() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 sm:gap-4">
-        {statsCards.map((card, index) => (
-          <StatsCard key={index} {...card} />
-        ))}
-      </div>
+      {canManageSchedule && (
+        <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 sm:gap-4">
+          {statsCards.map((card, index) => (
+            <StatsCard key={index} {...card} />
+          ))}
+        </div>
+      )}
 
       <div className="card p-3 sm:p-4">
         <div className="flex space-x-1 sm:space-x-2 overflow-x-auto">
@@ -1717,12 +1778,13 @@ function MeterSchedule() {
           meterInventory={meterInventory}
           canDeleteMeters={isSuperAdmin}
           canAssignMeters={canManageAssignments}
+          canExportMeters={canManageSchedule}
           onDataChanged={notifyDataChanged}
         />
       )}
 
       {activeTab === 'query' && (
-        <MeterQuery meterQuery={meterQuery} />
+        <MeterQuery meterQuery={meterQuery} canExportMeters={canManageSchedule} />
       )}
     </div>
   );

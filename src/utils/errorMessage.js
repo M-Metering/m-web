@@ -38,7 +38,19 @@ const TECHNICAL_RE = new RegExp([
 
 export const GENERIC_ERROR = 'Something went wrong. Please try again.';
 
-export function getErrorMessage(err, fallback = GENERIC_ERROR) {
+/**
+ * @param {unknown} err
+ * @param {string} [fallback] - the short, caller-specific message shown when
+ *   the server's own text isn't fit to display.
+ * @param {{ maxLength?: number }} [options] - raise `maxLength` only where the
+ *   endpoint is known to return a long message that is genuinely FOR the user.
+ *   POST /meters/upload is the one such case today: it answers 400 with the
+ *   exact row, the exact column and the fix ("Format the METER NUMBER column
+ *   as Text in Excel and re-upload"), which is worth more than any fallback
+ *   and runs past the default cap. Every other filter still applies, so this
+ *   never lets stack traces, SQL or schema internals through.
+ */
+export function getErrorMessage(err, fallback = GENERIC_ERROR, { maxLength = MAX_LENGTH } = {}) {
   const raw = String(err?.message ?? err ?? '').trim();
   if (!raw) return fallback;
 
@@ -53,7 +65,7 @@ export function getErrorMessage(err, fallback = GENERIC_ERROR) {
     return fallback;
   }
 
-  const safe = body && body.length <= MAX_LENGTH && !TECHNICAL_RE.test(body) ? body : null;
+  const safe = body && body.length <= maxLength && !TECHNICAL_RE.test(body) ? body : null;
 
   if (type === 'PERMISSION_ERROR') {
     return safe || 'You do not have permission to do that.';
