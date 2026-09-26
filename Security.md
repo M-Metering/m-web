@@ -92,6 +92,41 @@ the JED-era API had no assignment endpoint). It is now a real dispatch through
   re-sent, so a duplicate assignment record can't be created by a double submission.
 
 
+## Uploaded Files Are Public To Anyone With The Link (2026-09-25)
+
+The API gained a general-purpose file store (`POST /uploads`), and this app now uses it for the
+installation photo. One property of it matters more than the rest, and it is a **design decision,
+not a defect** — recorded here so nobody misrepresents it to a user or "fixes" it by guessing.
+
+**Every uploaded file's `url` is unauthenticated.** It points at `GET /files/{token}`, which takes no
+Authorization header, no API key, nothing. The bucket behind it is private and each hit mints a fresh
+10-minute signed URL, so the link never expires on its own — it resolves for as long as the record
+exists. The `:token` is a random UUID, deliberately **not** the file's sequential `id`: a sequential
+id there would let anyone walk `/files/1`, `/files/2`, … and read every file ever uploaded. The token
+is the only thing standing in for authentication.
+
+**What follows for this app:**
+
+- A photo URL is safe to put in an `<img src>`, an email, or an exported spreadsheet cell — that is
+  the whole point, since a disco employee opening the response sheet has no login.
+- It must **not** be presented to staff as private or access-controlled. There is no "share with only
+  these users" for an uploaded file, and the UI does not imply one.
+- Anything genuinely sensitive must not be uploaded here and then linked outside its intended
+  audience. The control is who receives the link, not who is signed in.
+- Never parse the url, reconstruct it from an `id`, or invent a token. The `id` works only on the
+  authenticated `/uploads/:id` routes.
+
+**Deletion is irreversible and immediate.** `DELETE /uploads/{id}` removes the file and its record;
+the public link 404s from the next request, even though the URL string is unchanged. There is no
+restore for uploads (unlike users, which soft-delete). `PhotoUploadField` therefore only ever deletes
+a file the same form just created — when the user replaces or removes the photo — and never deletes
+from a list it merely read.
+
+**Client-side file checks are a courtesy, not a gate.** `utils/fileUpload.js` checks size, count and
+type before the request to fail fast, but the server verifies the type from the file's **actual
+bytes**, so a `.txt` renamed to `.jpg` is rejected there and would have passed here. That is the
+correct division: the browser saves a slow round-trip, the server decides.
+
 ## Supervisor Role and Role-Dependent Meter Assignment (2026-09-24)
 
 > Reviewed twice on 2026-09-24: once when the role existed only in this app, and again after the
@@ -204,7 +239,7 @@ Two limits remain, and the frontend does not claim otherwise:
 ## File Upload Security
 
 - **Client-side checks added this pass (`src/utils/fileValidation.js`):** file extension (`.xlsx`/`.xls`/`.csv`) and a 10MB size cap, checked at file-selection time in both `ExcelUpload.jsx` and `BulkConfirmPaymentsTab.jsx`, before any network request is made. **These are UX conveniences only** — a modified/scripted request bypasses the browser entirely, so they stop an honest user from waiting through a doomed upload, nothing more.
-- **MIME-type/content sniffing:** not attempted client-side (a spoofed MIME type or a renamed file extension would defeat it trivially) — real content validation belongs entirely to the backend, which is documented in the OpenAPI spec as owning file parsing (`POST /uploads/excel`, `POST /meters/upload`).
+- **MIME-type/content sniffing:** not attempted client-side (a spoofed MIME type or a renamed file extension would defeat it trivially) — real content validation belongs entirely to the backend, which owns file parsing (`POST /meters/upload`, and since 2026-09-25 `POST /uploads`, which verifies a file's type from its actual bytes; see "Uploaded Files Are Public To Anyone With The Link"). *Spreadsheets the user picks are now parsed in the browser (`readSpreadsheetRows`) — that is a read of the operator's own file for display, not a trust decision, and nothing parsed there is sent anywhere; each row still becomes an ordinary authenticated API call.*
 - **Update 2026-09-21: CSV exports replaced by `.xlsx`** (`src/utils/xlsx.js`; `csv.js` removed). Formula injection doesn't apply to these files: every value is written as a string, number or date cell, and a string cell is never evaluated even when it starts with `=`/`+`/`-`/`@`. The module never writes formula cells (covered by `src/utils/__tests__/xlsx.test.js`). User-facing errors now go through a hardened `getErrorMessage`. Server 500 bodies, validation internals, stack/DB/driver text and over-long messages are no longer shown, and `ErrorBoundary` shows the raw JS error only in dev builds. The history below is kept for context.
 - **CSV/formula injection — fixed this pass:** all three of this app's own CSV *export* functions (`AdminReports.jsx`, `BulkConfirmPaymentsTab.jsx`, `ExcelUpload.jsx`) were independently hand-rolled, and none fully escaped their cells — two left a user/uploaded-file-controlled column (an error-report "Identifier"/"Meter Number" sourced directly from an uploaded spreadsheet) completely unquoted, so a value containing a comma would have corrupted the CSV's column structure, and none of the three guarded against a leading `=`/`+`/`-`/`@` character, which Excel/Google Sheets/LibreOffice will evaluate as a formula on open regardless of CSV quoting. **Fix:** centralized in `src/utils/csv.js` (`sanitizeCsvCell`/`buildCsv`/`downloadCsv`), which quotes every cell and prefixes a formula-trigger leading character with an apostrophe (Excel's own "force text" convention) before it's ever written. All three export sites now use it. This only protects whoever opens a CSV *this app generates* — it has no bearing on what the backend does with an *uploaded* file.
 - **Duplicate uploads:** not de-duplicated client-side or server-side as far as this review could observe from outside — re-uploading the same file re-processes every row. Given every row still requires a genuinely-existing, genuinely-paid backend record to succeed (see Payment Security), a duplicate upload can at worst re-confirm an already-paid record (idempotent in effect) rather than fabricate a new one — but this wasn't independently verified against the live backend's own idempotency handling, since doing so would require a real duplicate mutation attempt against production data.

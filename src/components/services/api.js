@@ -866,51 +866,107 @@ class JEDApiService {
     return await response.blob();
   }
 
-  // ==================== UPLOADS METHODS ====================
-  // BUG FIX: this used to call buildUrl(endpoint, 'UPLOADS'), which prepends
-  // the UPLOADS group's own '/uploads' prefix on top of the endpoint
-  // constants in api.config.js — which already include '/uploads' themselves
-  // (ENDPOINTS.UPLOADS.EXCEL = '/uploads/excel', etc.). That produced
-  // .../api/v1/uploads/uploads/excel, a route the real API doesn't have —
-  // the exact cause of "Route not found" on Validate File (BulkConfirmPaymentsTab.jsx)
-  // and every upload mode in ExcelUpload.jsx. buildApiUrl() doesn't add a
-  // group prefix, so it resolves to the real .../api/v1/uploads/excel.
-  async processExcelUpload(endpoint, formData) {
-    const url = this.utils.buildApiUrl(endpoint);
+  // ==================== FILE STORAGE (POST /uploads) ====================
+  // General-purpose file storage, added 2026-09-25. Upload a file, get back a
+  // permanent `url`, hand that url to whatever field needs it — today
+  // `installationPhotoUrl` on the installation report, but nothing here
+  // assumes that.
+  //
+  // REPLACED, not extended: `/uploads/excel`, `/uploads/excel-first-sheet` and
+  // `/uploads/excel-modified` are gone from the spec (they were documented but
+  // never deployed, so every call 404'd). `processExcelUpload` went with them —
+  // bulk payment spreadsheets are parsed in the browser now (utils/xlsx.js).
+  //
+  // The `url` in a response is OPAQUE and PERMANENT: it points at the public
+  // `/files/{token}` route, carries a random UUID token rather than the file's
+  // numeric id, and needs no authentication so that a browser, an <img> tag or
+  // a spreadsheet cell can open it. Store and display it verbatim; never parse
+  // it, never rebuild it from an id. The file's `id` works only on the
+  // authenticated /uploads/:id routes.
+
+  /**
+   * Upload 1-5 files (5 MB each, max).
+   *
+   * The whole batch is verified before anything is stored and written in one
+   * transaction, so a single bad file fails the request and nothing partial is
+   * saved — there is never a half-upload to clean up.
+   *
+   * @param {File[]|FileList} files
+   * @param {{category?: string, entityType?: string, entityId?: string|number,
+   *   latitude?: number, longitude?: number, capturedAt?: string}} [meta]
+   */
+  async uploadFiles(files, meta = {}) {
+    const form = new FormData();
+    // The field name is exactly `files`, and it repeats for each file — a
+    // different name is a documented 400 ("Unexpected file field").
+    Array.from(files || []).forEach((file) => form.append('files', file));
+    ['category', 'entityType', 'entityId', 'latitude', 'longitude', 'capturedAt'].forEach((key) => {
+      const value = meta[key];
+      if (value !== undefined && value !== null && value !== '') form.append(key, String(value));
+    });
+
+    const url = this.utils.buildApiUrl(this.endpoints.UPLOADS.BASE);
     const headers = this.utils.buildHeaders();
+    // Must be deleted, not set: the browser has to add its own multipart
+    // boundary, and setting Content-Type by hand breaks the upload.
     delete headers['Content-Type'];
 
-    const response = await fetch(url, { method: 'POST', headers, body: formData });
-    if (!response.ok) {
-      // Extract a clean `.message` from a JSON error body instead of
-      // throwing the raw response text — this used to surface literal
-      // backend JSON (e.g. `{"success":false,"message":"Route not found"}`)
-      // straight into the UI. Callers can check `.status` (e.g. 404) to
-      // decide how to present the failure without string-matching on text.
-      const contentType = response.headers.get('content-type') || '';
-      let message = `Upload failed: ${response.status}`;
-      if (contentType.includes('application/json')) {
-        try {
-          const data = await response.json();
-          message = data?.message || message;
-        } catch {
-          // fall through to the generic message above
-        }
-      } else {
-        const text = await response.text();
-        if (text) message = text;
-      }
-      const error = new Error(message);
-      error.status = response.status;
-      throw error;
-    }
-
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      return await response.json();
-    }
-    return await response.blob();
+    const response = await fetch(url, { method: 'POST', headers, body: form });
+    if (!response.ok) throw await this.uploadError(response);
+    this.clearCache();
+    return await response.json();
   }
+
+  /** Turn a failed upload response into an Error carrying `.status`. */
+  async uploadError(response) {
+    let message = `Upload failed: ${response.status}`;
+    if ((response.headers.get('content-type') || '').includes('application/json')) {
+      try {
+        const body = await response.json();
+        message = body?.message || message;
+      } catch {
+        // keep the generic message
+      }
+    }
+    const error = new Error(message);
+    error.status = response.status;
+    return error;
+  }
+
+  /**
+   * The files attached to one record, newest first. BOTH entityType and
+   * entityId are required — this is a lookup by record, not a file browser —
+   * and no match is an empty array, not a 404.
+   */
+  async getEntityFiles({ entityType, entityId, category } = {}) {
+    const params = { entityType, entityId };
+    if (category) params.category = category;
+    const url = this.utils.buildUrlWithParams(this.endpoints.UPLOADS.BASE, params);
+    return await this.makeRequest(url, {
+      method: 'GET',
+      useCache: true,
+      cacheKey: `uploads-${entityType}-${entityId}-${category || 'all'}`,
+    });
+  }
+
+  /** One file's record by its numeric id. */
+  async getUploadedFile(id) {
+    const url = this.buildApiUrl(this.endpoints.UPLOADS.BY_ID(id));
+    return await this.makeRequest(url, { method: 'GET' });
+  }
+
+  /**
+   * Delete a file — the uploader, or any SUPERADMIN/ADMIN/SUPERVISOR.
+   * IRREVERSIBLE: there is no restore for uploads (unlike users), and the
+   * public link dies immediately even though the url string itself is unchanged.
+   */
+  async deleteUploadedFile(id) {
+    const url = this.buildApiUrl(this.endpoints.UPLOADS.BY_ID(id));
+    const response = await this.makeRequest(url, { method: 'DELETE' });
+    this.clearCache();
+    return response;
+  }
+
 
   // There is no /complaints resource on the real API (no such tag/paths in
   // the OpenAPI spec) — the complaint submission feature was removed

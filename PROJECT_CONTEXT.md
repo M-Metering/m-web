@@ -215,6 +215,109 @@ jedc-meter-management/
   - **`GET /installations/search` and `GET /users/search`** are in the service layer; see Pending for
     why neither is wired to a screen yet.
 
+- **File storage, and the installer's photo (2026-09-25 — the backend's File Upload Integration
+  Guide):**
+  - **Photos are uploaded from the app now.** `POST /uploads` stores a file (1–5 per request, 5 MB
+    each) and returns a permanent link. `components/common/PhotoUploadField.jsx` wraps that: pick or
+    take a photo, it uploads immediately, shows a thumbnail, and the returned URL is what
+    `ReportInstallationModal` submits as `installationPhotoUrl`. The report endpoint itself is
+    unchanged — it always took a URL string; the installer just no longer has to host the image on
+    Google Drive and paste a link. The job's id and the captured coordinates are stored on the file
+    record too, so a photo can be found later with
+    `GET /uploads?entityType=installation&entityId=…`.
+  - **Replacing or removing a photo deletes the file it replaced**, so a retry doesn't leave orphans.
+    That delete is irreversible (uploads have no restore) and only ever targets a file the same form
+    just created.
+  - **The returned URL is public by design.** It points at `GET /files/{token}` — no authentication,
+    a random UUID rather than the file's id. It is safe in an `<img src>`, an email or an exported
+    spreadsheet cell, and must never be described to staff as private. See `Security.md`.
+  - **Graceful degradation:** if the deployment has no storage configured at all (503), the field
+    falls back to accepting a pasted link — the old workflow — rather than costing the installer the
+    photo. A 400 shows the server's own message (it names the fixable problem); a 502 offers a retry;
+    the raw 503 text is never shown, because it is an ops issue the operator can't act on.
+  - **`/uploads/excel*` were removed by the same release** (they were documented but never deployed,
+    so they had always 404'd). Consequences, both now fixed:
+    - **Upload Paid Customers parses the spreadsheet in the browser** (`readSpreadsheetRows`,
+      `utils/xlsx.js`) instead of POSTing it to `/uploads/excel`. That feature had never once
+      succeeded; it works now, with no new dependency. Cells are read as strings so account numbers
+      and RRRs keep their leading zeros, and the legacy `.xls` format is refused with an explanation
+      rather than a parse error.
+    - **The three extra "upload modes" are gone from the Uploads page**, along with the mode picker
+      and the download-a-processed-file branch. That page now does one thing: `POST /meters/upload`.
+
+- **Revenue on the Admin Dashboard, from the existing calculation (2026-09-26):**
+  - **Total collected payments** and **Revenue due to us** now appear on the Admin Dashboard, in a
+    "Payments · All discos" section under the KPI row. They are the *same* figures the Installations
+    page shows, not a second calculation: `summarizeRemitaPayments` (`utils/paymentSummary.js`) keeps
+    the definitions, and the new `hooks/useRemitaPaymentSummary.js` owns the record set feeding it.
+    The definitions are unchanged — collected = PAID + COMPLETED, revenue due = COMPLETED only, each
+    request counted once, invalid amounts skipped.
+  - **Note on where those metrics lived:** they were on the **Installations** page, not the Payments
+    tab. The Payments tab lists individual payment records with per-row amounts and has no totals of
+    its own; its Revenue tab is a different concept (backend-recognised revenue, `/finance/revenue/*`).
+  - **Consistency is tested, not assumed.** `revenueConsistency.test.jsx` renders the Dashboard and
+    the Installations page against one dataset — including a duplicate RRR, an unpaid request and a
+    row with no amount — and asserts the rendered currency strings are identical.
+  - **A real duplicate was removed.** When `GET /dashboard-stats` failed, the Dashboard computed
+    `totalRevenue` itself by summing `amount` over COMPLETED rows — but only across the 5 most recent
+    requests, with no de-duplication and no invalid-amount handling. That produced a confident wrong
+    number from a second copy of the definition. The Revenue KPI now reads "Unavailable" when the
+    stats call fails; the authoritative totals are in the new section.
+  - **Scope and permissions:** the Dashboard has no disco selector, so its figures equal the
+    Installations page at "All discos". The section is gated on `canViewPayments`, which is the
+    existing financial-data permission — Super Admin and Admin see it; **Supervisor and Installer do
+    not, and issue no request for it** (the permission gates the hook, not just the markup).
+  - **Requests:** the Dashboard reads `GET /external/jed/requests` twice for two different jobs —
+    `limit: 5` for the Recent Installations list, and a full paged read for the totals. A 5-row page
+    cannot produce a total, so this is a necessary second read rather than a duplicate one; there is
+    no polling, and it re-reads only on the app's existing `refreshSignal`.
+
+- **Dashboard revenue showed ₦0 — wrong source, fixed (2026-09-26):**
+  - **Root cause.** The figures were derived from the JED/Remita endpoints, and **that flow is empty
+    in this deployment**. `/external/jed/payments` returns zero records, and `/dashboard-stats`
+    reports 0 pending and 0 completed requests — while the Payments page's Revenue tab showed
+    ₦3,013,500 across 29 records. The money here is multi-disco *installation* revenue, which has no
+    Remita payment records at all (the old gap C). Only `GET /finance/revenue/*` covers both
+    domains, so that is now the source: `hooks/useRevenueSummary.js` reads
+    `/finance/revenue/transactions`, and `summarizeRevenueTransactions` (`utils/financeSummary.js`)
+    applies the definitions. Two earlier attempts (`/external/jed/requests`, then
+    `/external/jed/payments`) each skipped every row and rendered a legitimate-looking ₦0.
+  - **Definitions unchanged:** collected = every recognised revenue record (recognition already means
+    the money is real); revenue due = the completed-installation subset only, matched with the
+    existing `isInstalledStatus` (INSTALLED/EXPORTED) and `isCompletedStatus` (COMPLETED) helpers —
+    a JED request that is only PAID is collected but not yet due.
+  - **Collected is the server's own aggregate.** `meta.totals.amount` covers the whole filtered set,
+    so the headline is not a client re-add of paged rows — and it therefore equals the Revenue tab
+    exactly. The rows are still paged, but only to split completed from not-completed; the cap can
+    never distort the headline figure.
+  - **The estimated/unpriced caveat travels with the total**, as it does on the Revenue tab: these
+    endpoints never return an exact figure.
+  - **`utils/paymentSummary.js` is unchanged and still used** by the Installations page for its
+    JED-scoped, per-disco money — a different question from the business-wide total.
+  - **The full read of `/external/jed/requests` for totals is gone.** The Dashboard now touches that
+    endpoint only for the 5-row Recent Installations list.
+  - **The trend charts had the same root cause and the same fix.** They read
+    `/external/jed/payments` and bucketed by `datePaid`/`dateCompleted`, so both panels rendered
+    blank wherever the JED flow is empty. They now build from the same recognised-revenue records,
+    windowed server-side with `from`/`to` (`to` is exclusive, so it is tomorrow — otherwise today
+    falls outside): `amount` summed by `revenueAt` gives "Collected payments", and the
+    completed-installation rows counted by `revenueAt` give "Installations Completed". One request
+    feeds both series, and the charts can no longer disagree with the cards above them. The Dashboard
+    now makes **no** call to `/external/jed/payments` at all.
+  - **The ambiguous "Revenue" KPI was removed** from the Dashboard, and the trend chart formerly
+    titled "Revenue" is now "Collected payments" — it sums `amount` by `datePaid`, so that is what it
+    is. `/dashboard-stats.totalRevenue` is still requested and still read into state; only its
+    display was removed. The section is now **"Payment & Revenue Summary"**, with a one-line
+    definition under each figure.
+  - **A real RBAC leak was fixed alongside it.** The revenue *trend* fetch ran for any signed-in
+    user and only the chart was hidden — so a Supervisor's browser was still requesting
+    `/external/jed/payments`. It is now gated on the same `canViewPayments` permission as the rest of
+    the financial data. Hiding a chart is not the same as not asking for the data behind it.
+  - **A failure is never ₦0.** On error the summary stays null, no figure renders at all, and a
+    concise message with a retry appears. A genuine empty result shows ₦0 and says "No payment data
+    available"; records that came back but carried no usable amount say *that* instead, because the
+    two look identical on screen otherwise and only one of them is normal.
+
 ## 6. Pending / Incomplete Features
 
 - **The meter-assignment limits are still not enforced by the API.** `POST /assignments/meters` checks only that the target is an active installer and that the meters exist — no installation dependency, no meter-type match, no per-type cap, and no ADMIN/SUPERADMIN distinction. The frontend applies all of it from live reads, per meter type, re-checked immediately before the POST, and fails closed for capped roles; but a direct API call with a valid ADMIN or SUPERVISOR token still bypasses it, and two simultaneous dispatches can still jointly exceed the cap. The exact backend change (including the transaction/lock) is in `API_GAP_REPORT.md`, gap **AC**.
@@ -238,8 +341,9 @@ Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`)
 **Endpoint groups actually used:**
 - **Auth:** login, register, profile (get/update), change-password, reset-password (admin resets another user's password to default).
 - **Verification:** send/verify phone OTP, send/verify email OTP.
-- **Meters:** list (paginated, filter by status/phaseType), upload (Excel), template, export, statistics, lookup by meter number/id, delete, customer-requests export.
-- **Uploads:** generic Excel processing (`/uploads/excel[-first-sheet|-modified]`), distinct from `/meters/upload`.
+- **Meters:** list (paginated, filter by status/phaseType), search (`/meters/search`), upload (Excel), template, export, statistics, lookup by meter number/id, delete, customer-requests export.
+- **Uploads / Files:** general file storage — `POST /uploads` (1–5 files, 5 MB each), `GET /uploads?entityType=&entityId=`, `GET|DELETE /uploads/{id}`, and the public `GET /files/{token}` every returned `url` points at. Unrelated to `/meters/upload`. The old `/uploads/excel[-first-sheet|-modified]` Excel-processing routes were **removed** on 2026-09-25 (they were documented but never deployed); spreadsheets the user picks are parsed in the browser now.
+- **Finance:** `GET /finance/revenue/{summary,breakdown,transactions}` — recognised revenue, Admin/Super Admin only.
 - **Settings:** meter-type CRUD, API key management (create/list/deactivate/usage — full secret shown once at creation).
 - **Users:** CRUD with role-based filtering (`GET/POST /users`, `GET/PUT/DELETE /users/{id}`).
 - **Dashboard:** `GET /dashboard-stats` — exactly `{pendingRequests, completedRequests, activeInstallers, totalRevenue}`, no deltas.

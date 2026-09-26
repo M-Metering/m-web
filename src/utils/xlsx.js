@@ -139,6 +139,122 @@ async function loadExcelJS() {
   return mod.default || mod;
 }
 
+/**
+ * Read a user-selected spreadsheet into plain row objects, keyed by the header
+ * row. Added 2026-09-25, when `POST /uploads/excel` — which used to do this
+ * server-side — was removed from the API. It had never actually been deployed,
+ * so this replaces a call that always 404'd.
+ *
+ * Reading happens in the browser with the ExcelJS chunk this file already
+ * lazy-loads for exports, so no new dependency and no upload round-trip.
+ *
+ * EVERY CELL COMES BACK AS A STRING, deliberately. These sheets carry account
+ * numbers and RRRs — identifiers where a leading zero matters and where a long
+ * value would lose precision as a JS number. Formulas are read by their cached
+ * result, and a date cell is read as an ISO string rather than a locale format.
+ *
+ * .xls (the legacy binary format) is NOT supported by ExcelJS; callers must
+ * say so rather than failing with a parse error.
+ *
+ * @param {File|Blob} file
+ * @returns {Promise<{ sheetName: string|null, rows: Record<string,string>[] }>}
+ */
+export async function readSpreadsheetRows(file) {
+  const ExcelJS = await loadExcelJS();
+  const workbook = new ExcelJS.Workbook();
+  const buffer = await file.arrayBuffer();
+
+  const isCsv = /\.csv$/i.test(file?.name || '');
+  if (isCsv) {
+    // ExcelJS's csv.read wants a stream; decode and parse the text instead so
+    // this works the same way in the browser and under jsdom.
+    const text = new TextDecoder().decode(buffer);
+    return { sheetName: null, rows: parseCsvRows(text) };
+  }
+
+  await workbook.xlsx.load(buffer);
+  const sheet = workbook.worksheets[0];
+  if (!sheet) return { sheetName: null, rows: [] };
+
+  const headers = [];
+  sheet.getRow(1).eachCell({ includeEmpty: true }, (cell, col) => {
+    headers[col] = cellString(cell.value);
+  });
+
+  const rows = [];
+  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const record = {};
+    let hasValue = false;
+    row.eachCell({ includeEmpty: true }, (cell, col) => {
+      const header = headers[col];
+      if (!header) return;
+      const value = cellString(cell.value);
+      if (value) hasValue = true;
+      record[header] = value;
+    });
+    if (hasValue) rows.push(record);
+  });
+
+  return { sheetName: sheet.name || null, rows };
+}
+
+/** One ExcelJS cell value as the string the sheet displays. */
+function cellString(value) {
+  if (value === null || value === undefined) return '';
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') {
+    // Formula cells carry { formula, result }; rich text carries { richText }.
+    if ('result' in value) return cellString(value.result);
+    if (Array.isArray(value.richText)) return value.richText.map((part) => part.text).join('');
+    if ('text' in value) return String(value.text);
+    if ('error' in value) return '';
+  }
+  return String(value).trim();
+}
+
+/** Minimal RFC-4180 CSV reader — quoted fields, escaped quotes, CRLF. */
+export function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+
+  const endField = () => { row.push(field); field = ''; };
+  const endRow = () => { endField(); rows.push(row); row = []; };
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 1; } else { quoted = false; }
+      } else {
+        field += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === ',') {
+      endField();
+    } else if (char === '\n') {
+      endRow();
+    } else if (char !== '\r') {
+      field += char;
+    }
+  }
+  if (field || row.length > 0) endRow();
+
+  const [headerRow, ...bodyRows] = rows.filter((r) => r.some((c) => String(c).trim() !== ''));
+  if (!headerRow) return [];
+  const headers = headerRow.map((h) => String(h).trim());
+  return bodyRows.map((cells) => {
+    const record = {};
+    headers.forEach((header, index) => {
+      if (header) record[header] = String(cells[index] ?? '').trim();
+    });
+    return record;
+  });
+}
+
 /** Build an .xlsx as an ArrayBuffer. */
 export async function buildXlsxBuffer(sheets) {
   const ExcelJS = await loadExcelJS();
