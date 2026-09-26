@@ -1,5 +1,81 @@
 # API Gap Report
 
+## 2026-09-25 (sixth pass): file storage arrived, and `/uploads/excel*` left with it
+
+Source: the backend team's *Pharez API — File Upload Integration Guide* (2026-09-25), cross-checked
+against the live OpenAPI document the same day. The path count is unchanged at **81**, which hides
+what actually happened: three paths were removed and three added.
+
+### CLOSED — no image upload (the long-standing "photos aren't supported" gap)
+
+`POST /uploads` is now a general-purpose file store (Cloudflare R2): send 1–5 files (5 MB each),
+get back a permanent `url` per file. Companion routes: `GET /uploads?entityType=&entityId=`,
+`GET /uploads/{id}`, `DELETE /uploads/{id}`, and the public `GET /files/{token}`.
+
+This closes the gap behind `installationPhotoUrl`. **Nothing changed on the report endpoint** — it
+still takes a plain URL string — only where that URL comes from. The installer used to have to host
+the photo somewhere themselves (a Google Drive link) and paste it; now the app uploads the photo and
+submits the returned link. See `components/common/PhotoUploadField.jsx`.
+
+Notable contract details, all verified in the spec:
+
+- The field name is exactly `files`, repeated per file. Anything else is a documented 400.
+- **Do not set `Content-Type`** on the request — the browser must add its own multipart boundary.
+  `uploadFiles` in `api.js` deletes the header for this reason.
+- The batch is **all-or-nothing**: every file is verified before any is stored, and all rows are
+  written in one transaction. One bad file fails the request and nothing partial is saved.
+- The type is verified from the file's **actual bytes**, not its name or the browser's mimetype, so
+  a `.txt` renamed to `.jpg` is rejected server-side. The client checks are a courtesy only.
+- `installation_photo` accepts JPEG/PNG/WebP and **not** PDF; every other category also accepts PDF.
+- `DELETE /uploads/{id}` is **irreversible** — uploads have no restore, unlike users (gap AD).
+  Allowed for the uploader, or any SUPERADMIN/ADMIN/SUPERVISOR.
+
+### BREAKING, and not mentioned in the guide — `/uploads/excel*` are gone
+
+The guide describes `/uploads` as new. It does not say that the three routes previously living under
+that prefix were **removed**:
+
+| Removed path | What used it here |
+|---|---|
+| `POST /uploads/excel` | `BulkConfirmPaymentsTab.jsx` — "Validate File" on Upload Paid Customers |
+| `POST /uploads/excel-first-sheet` | `ExcelUpload.jsx` — an upload mode |
+| `POST /uploads/excel-modified` | `ExcelUpload.jsx` — an upload mode |
+
+These were already recorded in this report (2026-08-26) as **documented but never deployed** — every
+call returned 404 "Route not found", identically to a deliberately invalid path. So nothing that
+worked has stopped working; what changed is that they are no longer even documented, and the prefix
+now means something else entirely. Continuing to point at them would be pointing at another
+feature's namespace.
+
+**What the frontend did about it.** Both call sites are gone:
+
+- **Upload Paid Customers now parses the spreadsheet in the browser** (`readSpreadsheetRows`,
+  `utils/xlsx.js`), using the ExcelJS chunk this app already lazy-loads for exports. This turns a
+  feature that had never once succeeded into a working one, with no new dependency and no upload
+  round-trip. Every cell is read as a **string**, because these sheets carry account numbers and
+  RRRs where a leading zero matters. The legacy binary `.xls` format is not readable by ExcelJS, so
+  the UI says so plainly rather than failing with a parse error.
+- **The three extra upload modes were removed from `ExcelUpload.jsx`** along with the mode picker,
+  the download-a-processed-file branch and `processExcelUpload` in `api.js`. That page now has one
+  job: `POST /meters/upload`.
+
+### New — Gap AF: the public `/files/{token}` link is unauthenticated by design
+
+Not a defect — a deliberate, documented design decision, recorded here because it is a security
+property the frontend must not misrepresent. The `url` on every file record points at
+`GET /files/{token}`, which takes **no authentication at all**: the token is a random UUID
+(deliberately not the file's sequential `id`, which would let anyone walk `/files/1`, `/files/2`, …).
+Anyone holding that specific link can open the file — which is the point, since a disco employee
+opening a spreadsheet has no login.
+
+**Consequence for this app:** a photo URL is safe in an `<img src>`, an email or an exported
+spreadsheet cell, and must **not** be presented to staff as private or access-controlled. There is no
+"share with only these users" for an uploaded file. If something must stay internal, its url must not
+be handed outside that audience.
+
+**No backend change requested** — this is working as intended, and the note exists so nobody
+"hardens" it by guessing the token scheme or rebuilding a url from an id.
+
 > **2026-09-24 (fifth pass) — gaps AB and AC are CLOSED, hours after they were written.** The
 > backend shipped the `SUPERVISOR` role and 8 new endpoints (81 paths, up from 73, verified live).
 > Read the section immediately below first: it records what closed, what the frontend had to change

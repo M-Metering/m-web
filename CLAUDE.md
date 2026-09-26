@@ -75,7 +75,42 @@ jobs can be assigned. JED rows open the explanatory modal instead.
 
 **Money and meter figures come from pure utils, never ad hoc:** `utils/paymentSummary.js`
 (collected = PAID+COMPLETED, revenue due = COMPLETED only, deduped by RRR/id/account, invalid amounts
-skipped). Only Remita requests carry `amount`; imported jobs have none. `utils/meterCapacity.js`: one
+skipped). Only Remita requests carry `amount`; imported jobs have none.
+
+**Business-wide money comes from `GET /finance/revenue/*`, NOT from the JED endpoints.** The Admin
+Dashboard's "Total collected payments" and "Revenue due to us" read
+`/finance/revenue/transactions` via `hooks/useRevenueSummary.js`, and
+`summarizeRevenueTransactions` (`utils/financeSummary.js`) applies the definitions: collected =
+every recognised revenue record (recognition already means the money is real, so nothing unpaid can
+be in the set), revenue due = the completed-installation subset, via `isInstalledStatus` /
+`isCompletedStatus`. The collected headline is the server's `meta.totals.amount` for the whole
+filtered set, not a client re-add — which is why it equals the Payments page's Revenue tab exactly.
+
+**Why this is the source, learned the hard way (2026-09-26).** Two earlier attempts each produced a
+confident ₦0 next to a Revenue tab showing ₦3,013,500:
+`/external/jed/requests` counts every request including INITIATED ones never paid, and
+`/external/jed/payments` is right for the JED/Remita flow but **that flow can be entirely empty** —
+the revenue in this system is multi-disco installation work, which has no Remita payment records at
+all. Only the finance endpoints cover both domains. **A money figure reading ₦0 beside a screen
+showing real money is a SOURCE problem, not a formatting one.**
+
+The Dashboard's **trend charts read the same records**, windowed with `from`/`to` (`to` is
+**exclusive** on the finance endpoints, so pass tomorrow or today's rows drop out). `loadRevenueTransactions`
+in `hooks/useRevenueSummary.js` is the one loader for both the totals and the charts, so a figure and
+the chart under it can never come from different places.
+
+`utils/paymentSummary.js` is still correct and still used, but it is **JED-scoped**: it answers
+"money from Remita requests for this disco" on the Installations page. Don't reach for it for a
+business-wide total.
+
+**Never add a second revenue sum.** A `.filter(...).reduce(...)` over amounts in a component is the
+bug this replaced — the Dashboard had one that ran over only the 5 most recent rows, with no
+de-duplication. If a money figure can't be computed correctly, report it as unavailable rather than
+estimating it, and **never let a failed request render as ₦0** — an error state and a genuine zero
+must look different. A zero should also say which kind it is: no records at all, or records that
+none of them qualified from.
+
+`utils/meterCapacity.js`: one
 meter per open job, minus meters the installer holds, **checked per meter type** (`byPhase`), not only
 on the total — 10 pending three-phase jobs with 6 three-phase meters out leaves room for 1–4 more
 three-phase meters. Single Phase and Three Phase capacities are **independent**: exhausting one never
@@ -113,6 +148,33 @@ and `dateRequested` must never stand in for it.
 **Meter search has three paths, in order of precision.** A COMPLETE meter number → `GET /meters/meter-number/{n}` (`getMeterByNumber`): one request, whole inventory, exact match. A digits-only PARTIAL (serial or SIM fragment) → `GET /meters/search?q=` (`searchMeters`, added 2026-09-24): server-side, whole inventory, paginated. Anything else (a make, model or SGC term) → the paged `GET /meters` scan, because nothing covers those. `GET /meters` itself still has no search parameter. **Never "solve" search by raising a page cap**: that is slower and still wrong — add the endpoint the term needs. Note that an empty *envelope* from the search means the search didn't happen (fall back); an envelope with an empty list means no matches (don't).
 
 **There are now three `*/search` endpoints** — `/meters/search`, `/installations/search`, `/users/search` — all `q`-based, all paginated, all with the same envelope as their list counterparts. `searchInstallations` exists in `api.js` but is deliberately **not** wired into the Installations page: that page loads its scope once and filters locally because its faceted filters need the rows in hand. Wire it up only if that design changes.
+
+**File uploads go through `POST /uploads`, and the `url` it returns is opaque, permanent and
+PUBLIC.** (2026-09-25.) Send 1–5 files, 5 MB each, as a multipart field named exactly `files`, and
+**never set `Content-Type` yourself** — the browser must add its own multipart boundary, and setting
+it breaks the upload. The batch is all-or-nothing: one bad file fails the request and nothing partial
+is stored, so there is no half-upload to clean up. The server verifies the type from the file's
+**actual bytes**, so `utils/fileUpload.js`'s checks are a fail-fast courtesy, never the gate;
+`installation_photo` takes JPEG/PNG/WebP only, every other category also takes PDF.
+
+The returned `url` points at `GET /files/{token}` — **no authentication**, a random UUID token rather
+than the file's numeric `id`. Store and display it verbatim: never parse it, never rebuild it from an
+id, and never describe it to a user as private. Anyone with the link can open it, which is the point
+(a disco employee opening an exported spreadsheet has no login). The file's `id` works only on the
+authenticated `/uploads/:id` routes. `DELETE /uploads/{id}` is **irreversible** — uploads have no
+restore, unlike users — so only delete a file the same flow just created.
+
+`installationPhotoUrl` on the installation report is unchanged and still a plain URL string; the only
+difference is that `components/common/PhotoUploadField.jsx` now produces that URL instead of the
+installer hosting the image elsewhere and pasting a link.
+
+**`/uploads/excel`, `/uploads/excel-first-sheet` and `/uploads/excel-modified` are GONE** (removed
+2026-09-25; they were documented but never deployed, so every call 404'd). That prefix is file
+storage now. **A spreadsheet the user picks is parsed in the browser** — `readSpreadsheetRows` in
+`utils/xlsx.js`, using the ExcelJS chunk already lazy-loaded for exports. It returns every cell as a
+**string**, because these sheets carry account numbers and RRRs where a leading zero matters. ExcelJS
+cannot read the legacy binary `.xls`; say so rather than letting it fail as a parse error. The meter
+workbook upload is `POST /meters/upload` and is unrelated to any of this.
 
 **Recognised revenue has its own endpoints and its own honesty rule.** `GET /finance/revenue/{summary,breakdown,transactions}` (2026-09-24, SUPERADMIN/ADMIN only — Supervisor and Installer get 403) is the authoritative revenue figure, and **it is never exact**: some rows are valued at today's price rather than the price when the work completed (`estimatedAmount`/`estimatedCount`), and some completed work has no price at all (`missingAmountCount`, arriving as `amount: 0, amountMissing: true`, which silently drags the total down). Render every total through `utils/financeSummary.js` so the caveat travels with the figure — **never a bare currency number**. Recognition timing is the backend's and differs per disco (JED on Remita confirmation, Aba Power on installation completion); read it off `recognition`, never re-derive it. This is separate from `utils/paymentSummary.js`, which summarises Remita *payment records* — a different question.
 
@@ -253,7 +315,7 @@ things the API would allow. Loosen it only deliberately, and update this paragra
 
 1. **Read `PROJECT_CONTEXT.md` before starting any non-trivial task.** It documents what's actually implemented, what's a real API gap vs. a frontend bug already fixed, and why specific design decisions were made.
 2. **Inspect existing code before creating a new component, hook, or service method.** This app has already had multiple duplicate-removal passes (see `API_GAP_REPORT.md`'s "Cleaned up" sections) — check `Grep` for an existing implementation before writing a new one.
-3. **Reuse existing components** — `ConfirmationModal`/`InfoModal` for modals, the shared tab pattern, `statusBadge.js` for any status-to-color mapping, `currency.js`/`date.js` for formatting, `xlsx.js` (`downloadXlsx` with typed columns, `downloadServerXlsx` for files the API returns) for **every** spreadsheet export, `errorMessage.js` (`getErrorMessage`) for every error shown to a user, `fileValidation.js` (`validateUploadFile`) for any file-picker upload. Don't reinvent formatting, badge logic, export building, error text or upload validation per-page. **Exports are `.xlsx`, never CSV** (since 2026-09-21; `csv.js` was removed). Excel reads CSV cells untyped, dropping leading zeros from meter/account numbers and showing SIM serials in scientific notation. Identifier columns must use `COLUMN_TYPES.TEXT`; amounts use `CURRENCY` and GPS uses `COORDINATE`. Show users `getErrorMessage(err, 'Short fallback.')`, never `err.message`: it drops server 500 bodies, validation internals and technical text, and callers still `console.error` the full error. Its 160-character cap can be raised per call site with `{ maxLength }` — do that **only** where the endpoint returns a long message that is genuinely for the user. `POST /meters/upload` is the one such case today: it 400s with the exact row, the exact column and the fix ("Format the METER NUMBER column as Text in Excel and re-upload"), which beats any fallback. Every other filter still applies, so this never lets stack traces or schema internals through.
+3. **Reuse existing components** — `ConfirmationModal`/`InfoModal` for modals, the shared tab pattern, `statusBadge.js` for any status-to-color mapping, `currency.js`/`date.js` for formatting, `xlsx.js` (`downloadXlsx` with typed columns, `downloadServerXlsx` for files the API returns) for **every** spreadsheet export and `readSpreadsheetRows` for **every** spreadsheet read, `errorMessage.js` (`getErrorMessage`) for every error shown to a user, `fileValidation.js` (`validateUploadFile`) for a spreadsheet file picker and `fileUpload.js` (`validateUploadCandidate`/`uploadFailure`) for anything going to `POST /uploads`, `PhotoUploadField` for any photo field. Don't reinvent formatting, badge logic, export building, error text or upload validation per-page. **Exports are `.xlsx`, never CSV** (since 2026-09-21; `csv.js` was removed). Excel reads CSV cells untyped, dropping leading zeros from meter/account numbers and showing SIM serials in scientific notation. Identifier columns must use `COLUMN_TYPES.TEXT`; amounts use `CURRENCY` and GPS uses `COORDINATE`. Show users `getErrorMessage(err, 'Short fallback.')`, never `err.message`: it drops server 500 bodies, validation internals and technical text, and callers still `console.error` the full error. Its 160-character cap can be raised per call site with `{ maxLength }` — do that **only** where the endpoint returns a long message that is genuinely for the user. `POST /meters/upload` is the one such case today: it 400s with the exact row, the exact column and the fix ("Format the METER NUMBER column as Text in Excel and re-upload"), which beats any fallback. Every other filter still applies, so this never lets stack traces or schema internals through.
 4. **Do not invent API endpoints.** Every endpoint this app calls is listed in `src/components/services/api.config.js` and cross-referenced against the live OpenAPI spec (`https://api.memetering.com/api-docs`, embedded JSON at `/api-docs/swagger-ui-init.js` — there's no separate `/api-docs.json`). If a feature needs an endpoint that doesn't exist, that's an API gap — document it in `API_GAP_REPORT.md`, don't fabricate a plausible-looking path.
 5. **Do not fabricate API data.** Every stat, badge, or field shown must trace back to a real API response field. If a field the UI wants doesn't exist on the real schema, either drop it or clearly mark it as unavailable — don't compute a fake percentage or invent a plausible-looking value.
 6. **Do not duplicate business logic.** Status-to-label mapping lives in `statusBadge.js`. Currency formatting lives in `utils/currency.js`. Role/permission checks go through `usePermissions()`, never a re-derived `user.role === 'ADMIN'` check scattered across components.

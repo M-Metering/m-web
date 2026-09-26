@@ -2,44 +2,23 @@ import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { PERMISSIONS, hasPermission } from '../auth/permissions';
 import jedApi from '../services/api';
-import { ENDPOINTS } from '../services/api.config.js';
 import { downloadXlsx, COLUMN_TYPES } from '../../utils/xlsx';
 import { validateUploadFile } from '../../utils/fileValidation';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { AlertCircle, Upload, Download, FileCheck2, FileX2, Percent, List, FileDown } from 'lucide-react';
 
-const UPLOAD_MODES = {
-  METERS: {
-    value: 'meters',
-    label: 'Upload New Meters',
-    description: 'Standard process for adding new meters to the system.',
-    endpoint: ENDPOINTS.METERS.UPLOAD,
-    apiGroup: 'METERS'
-  },
-  PROCESS_DEFAULT: {
-    value: 'process-default',
-    label: 'Process (Server Default)',
-    description: 'Use the server\'s default Excel processing logic.',
-    endpoint: ENDPOINTS.UPLOADS.EXCEL
-  },
-  PROCESS_FIRST_SHEET: {
-    value: 'process-first-sheet',
-    label: 'Process First Sheet Only',
-    description: 'Only data from the first sheet of the Excel file will be processed.',
-    endpoint: ENDPOINTS.UPLOADS.EXCEL_FIRST_SHEET
-  },
-  PROCESS_MODIFIED: {
-    value: 'process-modified',
-    label: 'Process & Download Modified File',
-    description: 'The server will process the file and return a modified version for download.',
-    endpoint: ENDPOINTS.UPLOADS.EXCEL_MODIFIED
-  }
-};
+// This page has one job: POST /meters/upload, the meter workbook.
+//
+// It used to offer three more "upload modes" backed by /uploads/excel,
+// /uploads/excel-first-sheet and /uploads/excel-modified. Those were
+// documented but never deployed — every one 404'd — and on 2026-09-25 they
+// were removed from the API entirely (the /uploads prefix is now general file
+// storage, nothing to do with spreadsheets). The modes, the mode picker and
+// the download-a-processed-file branch went with them. Don't reintroduce them.
 
 function ExcelUpload() {
   const { user } = useAuth();
   const [file, setFile] = useState(null);
-  const [uploadMode, setUploadMode] = useState(UPLOAD_MODES.METERS.value);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
@@ -106,38 +85,19 @@ function ExcelUpload() {
     setMessage('Uploading...');
     setUploadResult(null);
 
-    const selectedMode = Object.values(UPLOAD_MODES).find(m => m.value === uploadMode);
-
     try {
       const formData = new FormData();
       formData.append('file', file);
-      // Only `file` is documented for POST /meters/upload and /uploads/* —
-      // an `installerId` field used to be appended here from the stored
-      // (client-editable) user record; it is undocumented, and uploads are
-      // no longer an Installer feature, so it is gone.
+      // Only `file` is documented for POST /meters/upload — an `installerId`
+      // field used to be appended here from the stored (client-editable) user
+      // record; it is undocumented, and uploads are no longer an Installer
+      // feature, so it is gone.
+      const response = await jedApi.uploadMeters(formData);
 
-      let response;
-      if (selectedMode.apiGroup === 'METERS') {
-        response = await jedApi.uploadMeters(formData);
-      } else {
-        response = await jedApi.processExcelUpload(selectedMode.endpoint, formData);
-      }
-
-      // Handle different response types
-      if (response instanceof Blob) {
-        const url = URL.createObjectURL(response);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'processed_file.xlsx';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        setMessage('Processed file downloaded successfully.');
-      } else if (response.success && response.data) { // Standard meters upload response
+      if (response.success && response.data) {
         setUploadResult(response.data);
         setMessage(response.message || 'Meters uploaded successfully.');
-      } else { // Other JSON responses
+      } else {
         setMessage(response.message || 'Upload completed successfully.');
       }
 
@@ -145,9 +105,7 @@ function ExcelUpload() {
       document.querySelector('input[type="file"]').value = ''; // Reset file input
     } catch (err) {
       console.error('Upload failed', err);
-      if (err?.status === 404) {
-        setError('This upload mode is currently unavailable. Please try "Upload New Meters" or contact support.');
-      } else if (err?.status === 401) {
+      if (err?.status === 401) {
         setError('Your session has expired. Please log in again.');
       } else {
         // POST /meters/upload rejects the WHOLE file (nothing is imported) when
@@ -220,43 +178,6 @@ function ExcelUpload() {
               and long SIM serials lose precision, and the upload is refused. The downloaded template
               is already formatted correctly.
             </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Upload mode</label>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {Object.values(UPLOAD_MODES).map(mode => (
-                <label
-                  key={mode.value}
-                  className={`flex items-start p-3 border rounded-lg cursor-pointer transition-all ${
-                    uploadMode === mode.value
-                      ? 'bg-indigo-50 dark:bg-indigo-900/30 border-indigo-400 dark:border-indigo-600 ring-2 ring-indigo-200 dark:ring-indigo-800'
-                      : 'bg-white dark:bg-gray-700/50 border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="upload-mode"
-                    value={mode.value}
-                    checked={uploadMode === mode.value}
-                    onChange={() => setUploadMode(mode.value)}
-                    className="mt-1 text-indigo-600 focus:ring-indigo-500"
-                  />
-                  <div className="ml-3">
-                    <span className={`font-medium ${
-                      uploadMode === mode.value
-                        ? 'text-indigo-900 dark:text-indigo-200'
-                        : 'text-gray-800 dark:text-gray-200'
-                    }`}>{mode.label}</span>
-                    <p className={`text-sm mt-0.5 ${
-                      uploadMode === mode.value
-                        ? 'text-indigo-700 dark:text-indigo-300'
-                        : 'text-gray-500 dark:text-gray-400'
-                    }`}>{mode.description}</p>
-                  </div>
-                </label>
-              ))}
-            </div>
           </div>
 
           <div className="flex items-center gap-3">
