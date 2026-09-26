@@ -17,6 +17,8 @@
 // Remita confirmation, Aba Power on installation completion. Never re-derive it
 // here; read `recognition` off the row.
 import { formatCurrencyNGN } from './currency';
+import { isInstalledStatus } from './installationStatus';
+import { isCompletedStatus } from './statusBadge';
 
 const toNumber = (value) => {
   const n = Number(value);
@@ -27,6 +29,10 @@ const toCount = (value) => {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : 0;
 };
+
+// Money is summed in floats; trim the drift so ₦75,000.00 never renders as
+// ₦74,999.999999. Same rounding paymentSummary.js applies for the same reason.
+const round2 = (n) => Math.round(n * 100) / 100;
 
 export const RECOGNITION_LABELS = Object.freeze({
   ON_PAYMENT_CONFIRMED: 'counted when Remita confirms payment',
@@ -119,6 +125,80 @@ export function normalizeRevenueTransaction(row) {
 export function transactionAmountLabel(row) {
   if (row?.amountMissing) return 'Not priced';
   return formatCurrencyNGN(toNumber(row?.amount));
+}
+
+/**
+ * Whether a revenue row's underlying record is a COMPLETED INSTALLATION.
+ *
+ * Both installation domains land in this one list, so both vocabularies are
+ * accepted — and neither is re-implemented here:
+ *   multi-disco `InstallationRequest` → INSTALLED / EXPORTED (isInstalledStatus)
+ *   JED `JedCustomerRequest`          → COMPLETED            (isCompletedStatus)
+ * A JED request that is only PAID is money collected but NOT yet due to us,
+ * which is exactly the distinction the two figures below turn on.
+ */
+export const isCompletedInstallationRow = (row) =>
+  isInstalledStatus(row?.sourceStatus) || isCompletedStatus(row?.sourceStatus);
+
+/**
+ * "Total collected payments" and "revenue due to us" over the recognised-
+ * revenue records (GET /finance/revenue/transactions).
+ *
+ * WHY THESE FIGURES COME FROM HERE. The same two definitions used to be read
+ * from JED's Remita records alone (utils/paymentSummary.js), which is correct
+ * for that flow but silently reports ₦0 wherever the revenue is multi-disco
+ * installation work — there are no Remita payment records for it at all. The
+ * finance endpoints cover BOTH domains, so this is the only source that can
+ * answer the question for the whole business.
+ *
+ * THE DEFINITIONS ARE UNCHANGED:
+ *   collected   = every recognised revenue record. Recognition already means
+ *                 the money is real — JED recognises on payment confirmed,
+ *                 Aba Power on installation completed — so nothing unpaid or
+ *                 merely initiated can appear in this set at all.
+ *   revenueDue  = the completed-installation subset only.
+ *
+ * `totals` is the response's own `meta.totals`, which covers the WHOLE
+ * filtered set rather than the current page. It is preferred for `collected`
+ * so the headline figure is the server's, not a client re-add of paged rows;
+ * summing the rows is only the fallback when the server didn't send it.
+ *
+ * @param {object[]} rows - raw transaction rows
+ * @param {{amount?: number, count?: number, estimatedAmount?: number,
+ *   estimatedCount?: number, missingAmountCount?: number}} [totals] - meta.totals
+ */
+export function summarizeRevenueTransactions(rows = [], totals = null) {
+  const records = (Array.isArray(rows) ? rows : []).map(normalizeRevenueTransaction);
+
+  let summedCollected = 0;
+  let revenueDue = 0;
+  let completedCount = 0;
+  let unpricedCount = 0;
+
+  records.forEach((row) => {
+    if (row.amountMissing) unpricedCount += 1;
+    summedCollected += row.amount;
+    if (isCompletedInstallationRow(row)) {
+      revenueDue += row.amount;
+      completedCount += 1;
+    }
+  });
+
+  const serverTotal = toNumber(totals?.amount);
+  const hasServerTotal = totals && Number.isFinite(Number(totals.amount));
+
+  return {
+    collected: hasServerTotal ? serverTotal : round2(summedCollected),
+    revenueDue: round2(revenueDue),
+    // How many records the figures are drawn from. `count` is the server's
+    // own for the whole set; `loadedCount` is what actually arrived, so a
+    // capped read is detectable rather than silently short.
+    count: toCount(totals?.count) || records.length,
+    loadedCount: records.length,
+    completedCount,
+    unpricedCount,
+    note: dataQualityNote(totals),
+  };
 }
 
 export default {

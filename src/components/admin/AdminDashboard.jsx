@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermissions } from '../auth/usePermissions';
+import { useRevenueSummary, loadRevenueTransactions } from '../../hooks/useRevenueSummary';
+import { isCompletedInstallationRow } from '../../utils/financeSummary';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import JEDApiService from '../services/api';
 import { useNavigate } from 'react-router-dom';
 import { formatCurrencyNGN } from '../../utils/currency';
-import { formatDateTime } from '../../utils/date';
+import { formatDateTime, toDateInputValue } from '../../utils/date';
 import { buildDailySeries } from '../../utils/trendAggregation';
 import TrendChart from './TrendChart';
 import StatusBadge from '../common/StatusBadge';
@@ -24,7 +26,9 @@ import {
   Settings,
   X,
   LayoutDashboard,
-  RefreshCw
+  RefreshCw,
+  Wallet,
+  BadgeCheck
 } from 'lucide-react';
 
 // Reference dataviz palette slots (see the project's dataviz skill —
@@ -69,6 +73,42 @@ const StatCard = ({ title, value, icon: Icon, change, changeType = 'neutral' }) 
     </div>
     <h3 className="text-gray-500 dark:text-gray-400 text-xs sm:text-sm font-medium">{title}</h3>
     <p className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1">{value}</p>
+  </div>
+);
+
+const METRIC_TONES = {
+  brand: 'bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400',
+  green: 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400',
+};
+
+/**
+ * A money figure with its own caption. Same card shell as StatCard above, but
+ * with a skeleton state and a second line for the record count.
+ *
+ * `break-words` and the one-column mobile grid are deliberate: a full NGN
+ * amount such as ₦1,250,000.00 must stay readable, never clipped or
+ * overlapping, down to the narrowest phone.
+ */
+const PaymentMetricCard = ({ icon: Icon, tone = 'brand', label, value, detail, hint, loading = false }) => (
+  <div className="card p-4 sm:p-6 flex flex-col transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5 dark:hover:shadow-black/30">
+    <div className={`p-2 rounded-lg self-start mb-3 ${METRIC_TONES[tone] || METRIC_TONES.brand}`}>
+      <Icon className="w-4 h-4 sm:w-5 sm:h-5" />
+    </div>
+    <h3 className="text-gray-500 dark:text-gray-400 text-xs sm:text-sm font-medium">{label}</h3>
+    {loading ? (
+      <>
+        <div className="h-7 sm:h-8 w-32 mt-1 rounded bg-gray-200 dark:bg-gray-700 animate-pulse" aria-hidden="true" />
+        <span className="sr-only">Loading {label}</span>
+      </>
+    ) : (
+      <p className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1 break-words">{value}</p>
+    )}
+    {!loading && detail && (
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 break-words">{detail}</p>
+    )}
+    {hint && (
+      <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 break-words">{hint}</p>
+    )}
   </div>
 );
 
@@ -359,6 +399,20 @@ function AdminDashboard() {
   const permissions = usePermissions();
   const showMoney = permissions.canViewPayments;
   const showAdminTools = permissions.isAdmin;
+
+  // Recognised revenue across both installation domains — the same records
+  // and the same server totals the Payments page's Revenue tab shows, so the
+  // two screens agree by construction. See hooks/useRevenueSummary.js for why
+  // this is the source and not the JED payment records.
+  // `enabled` carries the permission check, so a role without access to
+  // financial data issues no request at all rather than fetching and hiding.
+  const {
+    summary: payments,
+    loading: paymentsLoading,
+    error: paymentsError,
+    truncated: paymentsTruncated,
+    reload: reloadPayments,
+  } = useRevenueSummary({ enabled: showMoney });
   const { refreshSignal } = useDataRefresh();
   const [stats, setStats] = useState({
     pendingRequests: 0,
@@ -416,17 +470,24 @@ function AdminDashboard() {
             totalRevenue: payload.totalRevenue ?? 0,
           });
         } catch (statsError) {
-          // Fallback: compute from the fetched page of requests using the
-          // real status enum (INITIATED/PAID/COMPLETED), not guessed
-          // lowercase values.
-          console.warn('[Dashboard] Failed to fetch admin stats, calculating from installations:', statsError.message);
+          // Fallback: count from the fetched page of requests using the real
+          // status enum (INITIATED/PAID/COMPLETED), not guessed lowercase values.
+          //
+          // `totalRevenue` is deliberately NOT computed here. It used to be
+          // summed from this page of requests — but that is only the 5 most
+          // recent rows, with no de-duplication and no invalid-amount handling,
+          // so it produced a confident-looking figure that was simply wrong,
+          // and it was a second implementation of a definition that already
+          // has one. A money figure we cannot compute correctly is reported as
+          // unavailable rather than estimated; the authoritative collected and
+          // revenue-due totals are in the Payments section below, from
+          // summarizeRemitaPayments over every Remita request.
+          console.warn('[Dashboard] Failed to fetch admin stats, counting from installations:', statsError.message);
           setStats({
             pendingRequests: installations.filter((inst) => inst.status === 'INITIATED' || inst.status === 'PAID').length,
             completedRequests: installations.filter((inst) => inst.status === 'COMPLETED').length,
             activeInstallers: 0,
-            totalRevenue: installations
-              .filter((inst) => inst.status === 'COMPLETED')
-              .reduce((sum, inst) => sum + (parseFloat(inst.amount) || 0), 0)
+            totalRevenue: null,
           });
         }
       } catch (err) {
@@ -448,39 +509,45 @@ function AdminDashboard() {
     // on a manual click of the header's Refresh button.
   }, [user, refreshSignal, refreshKey]);
 
-  // Revenue / Installations trend — admin-only, mirrors the KPI section's
-  // admin-vs-installer scoping above. Fetches real payment records for the
-  // selected window (GET /external/jed/payments) and buckets them
-  // client-side; nothing here is invented. `revenueSeries`/`installationsSeries`
-  // are kept in state across refetches (not cleared to []) so the chart can
-  // hold its previous render at reduced opacity while a new range loads,
-  // instead of flashing to a skeleton or empty state.
+  // Trend charts — the SAME source as the totals above (recognised revenue),
+  // windowed server-side to the selected range.
+  //
+  // These used to read GET /external/jed/payments and bucket by
+  // `datePaid`/`dateCompleted`. That is JED-only, and where the JED/Remita
+  // flow is empty both charts rendered blank for exactly the reason the
+  // headline figures read ₦0 (2026-09-26). Reading the revenue records instead
+  // means the charts and the cards can never disagree.
+  //
+  // Both series come from one request: `revenueAt` is the recognition date
+  // (the payment for a JED row, the install report for a disco row, per
+  // `dateBasis`), so summing `amount` by it gives collected-over-time, and
+  // counting only the COMPLETED-INSTALLATION rows gives installations
+  // completed. Nothing is invented — a day with no records is a real zero.
+  // `revenueSeries`/`installationsSeries` are kept in state across refetches
+  // (not cleared to []) so a chart holds its previous render at reduced
+  // opacity while a new range loads, instead of flashing to a skeleton.
   const fetchTrendData = useCallback(async (days) => {
     setTrendLoading(true);
     setTrendError(null);
     try {
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - (days - 1));
-      startDate.setHours(0, 0, 0, 0);
+      const start = new Date();
+      start.setDate(start.getDate() - (days - 1));
+      // `to` is EXCLUSIVE on the finance endpoints, so it is tomorrow —
+      // otherwise today's records fall outside the window.
+      const end = new Date();
+      end.setDate(end.getDate() + 1);
 
-      const response = await JEDApiService.getPayments({
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
-        limit: 100,
+      const { rows, truncated } = await loadRevenueTransactions({
+        from: toDateInputValue(start),
+        to: toDateInputValue(end),
       });
 
-      const records = Array.isArray(response)
-        ? response
-        : Array.isArray(response?.data)
-          ? response.data
-          : [];
-      const pagination = response?.pagination || {};
-      const totalCount = pagination.totalCount ?? records.length;
-
-      setTrendTruncated(totalCount > records.length ? { shown: records.length, total: totalCount } : null);
-      setRevenueSeries(buildDailySeries(records, { dateField: 'datePaid', valueField: 'amount', aggregate: 'sum', days }));
-      setInstallationsSeries(buildDailySeries(records, { dateField: 'dateCompleted', aggregate: 'count', days }));
+      setTrendTruncated(truncated ? { shown: rows.length, total: null } : null);
+      setRevenueSeries(buildDailySeries(rows, { dateField: 'revenueAt', valueField: 'amount', aggregate: 'sum', days }));
+      setInstallationsSeries(buildDailySeries(
+        rows.filter(isCompletedInstallationRow),
+        { dateField: 'revenueAt', aggregate: 'count', days }
+      ));
     } catch (err) {
       console.error('[Dashboard] Failed to load revenue/installations trend:', err);
       setTrendError(getErrorMessage(err, 'Failed to load trend data'));
@@ -490,10 +557,15 @@ function AdminDashboard() {
   }, []);
 
   useEffect(() => {
-    if (user) {
+    // Gated on the payments permission, not just on being signed in: this
+    // reads GET /external/jed/payments, which is financial data. The charts
+    // built from it were already hidden from roles without PAYMENTS.VIEW, but
+    // the REQUEST was still going out — hiding a chart is not the same as not
+    // asking for the data behind it.
+    if (user && showMoney) {
       fetchTrendData(trendDays);
     }
-  }, [user, trendDays, fetchTrendData, refreshSignal, refreshKey]);
+  }, [user, showMoney, trendDays, fetchTrendData, refreshSignal, refreshKey]);
 
   // Every export endpoint is documented as returning an Excel (.xlsx) file
   // only — none accepts a `format` param. The modal used to offer a "CSV"
@@ -628,25 +700,91 @@ function AdminDashboard() {
             4 flat numbers, no percent-change/delta fields, so none are
             fabricated here (see the Trend section below for real
             day-over-day data, sourced from actual payment records). */}
-        {/* Revenue is a financial figure: shown only to roles that hold
-            PAYMENTS.VIEW, so a Supervisor gets the three operational counts
-            and the grid closes up rather than leaving a gap. */}
-        <div className={`grid grid-cols-2 gap-3 sm:gap-4 lg:gap-6 ${showMoney ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
+        {/* Operational counts only. The generic "Revenue" KPI that used to sit
+            here — GET /dashboard-stats' single undifferentiated `totalRevenue`
+            — was removed on 2026-09-26: it sat directly above two precisely
+            defined money figures while answering a third, unstated question,
+            which made all three ambiguous. `totalRevenue` is still returned by
+            the endpoint and still read into `stats` below; nothing about the
+            backend field was changed, it simply isn't shown here. Collected
+            and due, which ARE defined, are in the section underneath. */}
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 lg:gap-6">
           <StatCard title="Pending" value={stats.pendingRequests} icon={Clock} />
           <StatCard title="Completed" value={stats.completedRequests} icon={CheckCircle} />
           <StatCard title="Installers" value={stats.activeInstallers} icon={Users} />
-          {showMoney && (
-            <StatCard
-              title="Revenue"
-              value={
-                typeof stats.totalRevenue === 'number'
-                  ? formatCurrencyNGN(stats.totalRevenue)
-                  : stats.totalRevenue
-              }
-              icon={BarChart}
-            />
-          )}
         </div>
+
+        {/* Payment & Revenue Summary — the two defined money figures, from
+            GET /external/jed/payments (the same records the Payments tab
+            shows) through summarizeRemitaPayments. Named explicitly rather
+            than "Revenue" so it can't be confused with the old KPI. */}
+        {showMoney && (
+          <section aria-labelledby="dashboard-payments" className="space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <h2 id="dashboard-payments" className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                Payment &amp; Revenue Summary
+              </h2>
+              {paymentsError && (
+                <button
+                  type="button"
+                  onClick={reloadPayments}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline"
+                >
+                  <RefreshCw className="w-3 h-3" /> Try again
+                </button>
+              )}
+            </div>
+
+            {paymentsError ? (
+              <div role="alert" className="card p-4 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                <p className="text-sm text-red-800 dark:text-red-300">{paymentsError}</p>
+              </div>
+            ) : (
+              <>
+                {/* One column on mobile so a long amount is never clipped. */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                  <PaymentMetricCard
+                    icon={Wallet}
+                    tone="brand"
+                    label="Total collected payments"
+                    hint="Amount actually collected from qualifying paid transactions."
+                    loading={paymentsLoading}
+                    value={payments ? formatCurrencyNGN(payments.collected) : null}
+                    detail={payments
+                      ? `${payments.count.toLocaleString()} record${payments.count === 1 ? '' : 's'} counted`
+                      : null}
+                  />
+                  <PaymentMetricCard
+                    icon={BadgeCheck}
+                    tone="green"
+                    label="Revenue due to us"
+                    hint="Amount associated with completed installations."
+                    loading={paymentsLoading}
+                    value={payments ? formatCurrencyNGN(payments.revenueDue) : null}
+                    detail={payments
+                      ? `${payments.completedCount.toLocaleString()} completed installation${
+                        payments.completedCount === 1 ? '' : 's'}`
+                      : null}
+                  />
+                </div>
+
+                {/* A zero has to be explainable, not just displayed — and a
+                    total from these endpoints is never exact, so the estimated
+                    /unpriced caveat travels with it (see financeSummary.js). */}
+                {!paymentsLoading && payments && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {payments.count === 0
+                      ? 'No revenue recorded yet.'
+                      : 'Revenue due counts completed installations only; collected covers every recognised payment.'}
+                    {payments.note ? ` ${payments.note}` : ''}
+                    {paymentsTruncated && ' Not every record could be loaded, so these totals may be incomplete.'}
+                  </p>
+                )}
+              </>
+            )}
+          </section>
+        )}
 
         {/* Revenue / Installations Trend — built from real
             GET /external/jed/payments records for the selected window */}
@@ -679,14 +817,19 @@ function AdminDashboard() {
 
             {trendTruncated && (
               <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 text-xs text-amber-800 dark:text-amber-300">
-                Showing {trendTruncated.shown} of {trendTruncated.total} matching transactions in this range (API page limit is 100) — the trend below may be incomplete. Narrow the date range for full accuracy.
+                Showing the first {trendTruncated.shown.toLocaleString()} records in this range — the
+                trend below may be incomplete. Choose a shorter range for full accuracy.
               </div>
             )}
 
             <div className={`grid grid-cols-1 gap-4 sm:gap-6 ${showMoney ? 'lg:grid-cols-2' : ''}`}>
               {showMoney && (
                 <TrendChart
-                  title="Revenue"
+                  // Built by summing `amount` over payment records by
+                  // `datePaid`, so it is collected payments over time — named
+                  // for what it is. "Revenue" was ambiguous next to the two
+                  // defined figures above and the old KPI it sat beside.
+                  title="Collected payments"
                   data={revenueSeries}
                   type="area"
                   colorLight={REVENUE_COLOR.light}

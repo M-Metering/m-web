@@ -219,11 +219,34 @@ export const ENDPOINTS = {
     }
   },
 
-  // ==================== UPLOADS ENDPOINTS ====================
+  // ==================== FILE STORAGE ====================
+  // Replaced on 2026-09-25. `/uploads` used to be three Excel-processing
+  // routes (`/uploads/excel`, `/uploads/excel-first-sheet`,
+  // `/uploads/excel-modified`) which were documented but never actually
+  // deployed — every call 404'd. They are now GONE from the spec entirely,
+  // and `/uploads` is a general-purpose file store (Cloudflare R2) instead.
+  // Nothing in this app points at the old paths any more; don't reintroduce
+  // them. Bulk payment spreadsheets are parsed in the browser now, and the
+  // meter workbook upload is `/meters/upload`, which is unrelated to this group.
+  //
+  // Upload a file, get back a permanent `url`, hand that url to whatever field
+  // needs it (today: `installationPhotoUrl` on the installation report).
   UPLOADS: {
-    EXCEL: '/uploads/excel',
-    EXCEL_FIRST_SHEET: '/uploads/excel-first-sheet',
-    EXCEL_MODIFIED: '/uploads/excel-modified',
+    BASE: '/uploads',
+    BY_ID: (id) => `/uploads/${encodeURIComponent(id)}`,
+  },
+
+  // The PUBLIC delivery route every upload's `url` field points at. It takes a
+  // random UUID token, deliberately NOT the file's numeric id, and needs no
+  // authentication — because a browser, an <img> tag or a spreadsheet cell
+  // opened by a disco employee cannot send a bearer token.
+  //
+  // This app never builds one of these: the `url` from the upload response is
+  // stored and used verbatim. It is listed here only so the path is documented
+  // in one place with the rest. Treat that url as opaque and permanent — never
+  // parse it, never reconstruct it from an id.
+  FILES: {
+    BY_TOKEN: (token) => `/files/${encodeURIComponent(token)}`,
   },
 
   // ==================== MULTI-DISCO INSTALLATION FLOW ====================

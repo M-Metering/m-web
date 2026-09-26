@@ -15,11 +15,17 @@
 //     go through toISOString(), which in WAT (+01:00) shifts it a day earlier
 //     — hence toDateInputValue/formatPlainDate from utils/date.js.
 //
-// The API accepts no image uploads: `installationPhotoUrl` is a URL string the
-// client obtains from its own storage first.
+//  3. `installationPhotoUrl` is still a plain URL string on this endpoint —
+//     nothing about the report call changed. What changed (2026-09-25) is
+//     where that URL comes from: the photo is uploaded to the API's own file
+//     store (POST /uploads) and the permanent link it returns is submitted
+//     here, instead of the installer hosting the image somewhere themselves
+//     and pasting a link. See components/common/PhotoUploadField.jsx.
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { X, Loader2, MapPin, AlertCircle, Camera, Check } from 'lucide-react';
+import { X, Loader2, MapPin, AlertCircle, Check } from 'lucide-react';
 import jedApi from '../services/api';
+import PhotoUploadField from '../common/PhotoUploadField';
+import { UPLOAD_ENTITY } from '../../utils/fileUpload';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { toDateInputValue } from '../../utils/date';
 import { fetchAllPages } from '../../utils/fetchAllPages';
@@ -419,25 +425,26 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
 
           <Field
             id="report-photo"
-            label="Installation photo link"
+            label="Installation photo"
             error={errors.installationPhotoUrl}
-            hint="Upload the photo to your usual storage and paste the link — this app cannot upload the image itself."
           >
-            <div className="relative">
-              <Camera className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input
-                id="report-photo"
-                name="installationPhotoUrl"
-                type="url"
-                inputMode="url"
-                value={form.installationPhotoUrl}
-                onChange={handleChange}
-                disabled={submitting}
-                placeholder="https://…"
-                aria-invalid={!!errors.installationPhotoUrl}
-                className={`${inputClass('installationPhotoUrl')} pl-9`}
-              />
-            </div>
+            {/* Uploaded straight to the API's file store, which returns the
+                permanent link this form submits as installationPhotoUrl. The
+                job's id and the captured coordinates go on the file record too,
+                so the photo can be found later via
+                GET /uploads?entityType=installation&entityId=… */}
+            <PhotoUploadField
+              id="report-photo"
+              value={form.installationPhotoUrl}
+              onChange={(url) => {
+                setForm((prev) => ({ ...prev, installationPhotoUrl: url }));
+                setErrors((prev) => ({ ...prev, installationPhotoUrl: undefined }));
+              }}
+              disabled={submitting}
+              entityType={UPLOAD_ENTITY.INSTALLATION}
+              entityId={job.id}
+              coordinates={{ latitude: form.latitude, longitude: form.longitude }}
+            />
           </Field>
 
           <Field id="report-supervisor" label="Disco supervisor" error={errors.discoSupervisor}>

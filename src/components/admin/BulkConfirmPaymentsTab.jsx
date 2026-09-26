@@ -3,18 +3,16 @@
 // "Upload Paid Customers" — the real Pharez API has no bulk "create these
 // customers as PAID" endpoint (no way to batch-create JedCustomerRequest
 // records at all, and no way to set status directly — see
-// API_GAP_REPORT.md). What it does have — on paper — is exactly what a
-// genuine paid-customer import needs, composed honestly:
-//   1. POST /uploads/excel — documented in the live OpenAPI spec as a
-//      generic Excel-parsing endpoint (turns an uploaded file into row
-//      objects, so no client-side spreadsheet library is needed) — but
-//      confirmed (see API_GAP_REPORT.md) to return 404 "Route not found"
-//      on the deployed production server for every documented variant
-//      (/uploads/excel, /uploads/excel-first-sheet, /uploads/excel-modified),
-//      identically to a deliberately-invalid path. The endpoint is
-//      documented but not actually deployed — a real backend gap, not a
-//      frontend bug — so "Validate File" cannot succeed until the backend
-//      team deploys it (or an equivalent).
+// API_GAP_REPORT.md). What it does have is exactly what a genuine
+// paid-customer import needs, composed honestly:
+//   1. The spreadsheet is parsed IN THE BROWSER (`readSpreadsheetRows`,
+//      utils/xlsx.js). This used to POST the file to /uploads/excel for the
+//      server to parse — an endpoint that was documented but never deployed,
+//      so "Validate File" 404'd every single time. That path was removed from
+//      the API entirely on 2026-09-25 (the /uploads prefix is now general file
+//      storage), so parsing locally is both the fix and the only option. It
+//      needs no new dependency: ExcelJS is already the lazy-loaded chunk this
+//      app uses for exports.
 //   2. POST /external/jed/confirm-payment (by accountNumber) or
 //      POST /external/jed/confirm-payment/manual/{rrr} — the same real,
 //      already-used endpoints ConfirmPaymentTab calls for a single
@@ -24,8 +22,7 @@
 // is fabricated client-side, and no invented bulk endpoint is called.
 import { useState } from 'react';
 import jedApi from '../services/api';
-import { ENDPOINTS } from '../services/api.config.js';
-import { downloadXlsx, COLUMN_TYPES } from '../../utils/xlsx';
+import { downloadXlsx, COLUMN_TYPES, readSpreadsheetRows } from '../../utils/xlsx';
 import { validateUploadFile } from '../../utils/fileValidation';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import ConfirmationModal from '../common/ConfirmationModal';
@@ -184,17 +181,14 @@ function BulkConfirmPaymentsTab() {
     setResults(null);
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const response = await jedApi.processExcelUpload(ENDPOINTS.UPLOADS.EXCEL, formData);
-
-      if (response instanceof Blob) {
-        throw new Error('Unexpected file response from server while parsing.');
+      // ExcelJS cannot read the legacy binary .xls format — say so plainly
+      // rather than failing later with a parse error.
+      if (/\.xls$/i.test(file.name || '')) {
+        setParseError('The old .xls format cannot be read here. Open it in Excel and save as .xlsx or .csv, then try again.');
+        return;
       }
 
-      const sheetNames = Array.isArray(response?.sheets) ? response.sheets : Object.keys(response?.data || {});
-      const firstSheet = sheetNames[0];
-      const rawRows = firstSheet && Array.isArray(response?.data?.[firstSheet]) ? response.data[firstSheet] : [];
+      const { rows: rawRows } = await readSpreadsheetRows(file);
 
       if (!rawRows.length) {
         setParseError('No data rows found in the uploaded file.');
@@ -213,18 +207,9 @@ function BulkConfirmPaymentsTab() {
       setParsedRows(rows);
     } catch (err) {
       console.error('[BulkConfirmPayments] Parse failed:', err);
-      if (err?.status === 404) {
-        // The file-validation service isn't reachable right now — a clear,
-        // non-technical message rather than the backend's raw "route not
-        // found" response.
-        setParseError('File validation is currently unavailable. Please try again later or contact support.');
-      } else if (err?.status === 401) {
-        setParseError('Your session has expired. Please log in again.');
-      } else if (String(err?.message || '').toLowerCase().includes('network')) {
-        setParseError('Network error — check your connection and try again.');
-      } else {
-        setParseError(getErrorMessage(err, "Couldn't read this file. Check it and try again."));
-      }
+      // Parsing is local now, so there is no network failure mode here — a
+      // throw means the file itself could not be read.
+      setParseError(getErrorMessage(err, "Couldn't read this file. Check that it's a valid .xlsx or .csv and try again."));
     } finally {
       setParsing(false);
     }
