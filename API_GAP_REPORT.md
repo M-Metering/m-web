@@ -1,5 +1,128 @@
 # API Gap Report
 
+## 2026-09-27 (seventh pass): meter state across modules, bulk account assignment, revenue definitions, installer job status
+
+Live OpenAPI document re-pulled today: **95 operations**. Nothing below was verifiable against real
+records from this workstation (no credentials); every claim about live data is marked as such.
+`scripts/diagnostics/verify-live-data.mjs` (read-only, run with an ADMIN/SUPERADMIN login) checks
+each point against production.
+
+### Confirmed from the spec — "Available after assignment" is the API's design, not a lost write
+
+`POST /assignments/meters` documents: *"Assignment does not change meters.status, so the JED flow is
+unaffected."* A dispatched meter therefore keeps `status: AVAILABLE`; the holder is recorded on the
+dispatch batch item (`assignmentStatus: ASSIGNED`). The same endpoint reports "unknown,
+already-assigned or already-installed serials … individually", i.e. **the backend already refuses a
+second assignment of the same meter** — duplicate prevention is server-enforced.
+
+The frontend bug was that Meter Schedule rendered `status` alone. It now joins the open METER batches
+(`hooks/useMeterHolders.js`) and shows **Assigned · With <installer>**, with no second Assign. That
+costs one list read per open-batch status plus one `GET /assignments/{id}` per open batch.
+
+### Gap G (updated) — `GET /meters` still documents no `assignmentStatus` / holder
+
+Still absent from the documented item schema (`id, meterNumber, simNumber, manufacturedDate,
+meterMake, model, phaseType, sgcNumber, status, uploadedAt, installedAt`). **Backend change:** return
+`assignmentStatus` and `assignedTo`/`assignedToName` on `GET /meters`, `/meters/search` and
+`/meters/meter-number/{n}`, and accept an `assignmentStatus` filter (or a "dispatchable" flag) so the
+picker can ask for exactly the meters it may offer. That replaces the per-batch reads above.
+
+### New — Gap AH: `GET /meters` documents no ordering, and its filters are exact matches
+
+Two unverified-but-plausible reasons an AVAILABLE Three Phase meter could be found by Meter Schedule
+(server-side search) yet be missing from the Assignments picker (a 60-page scan of
+`GET /meters?status=AVAILABLE`):
+
+1. **No documented `ORDER BY`.** Offset paging over an unordered query can skip or repeat rows between
+   pages, especially while rows are being updated. The diagnostic reads the same scan twice and
+   compares. **Backend change:** a stable order (`ORDER BY id`) on every paginated list.
+2. **Exact-match enum filters over raw stored values.** The disco meter import keeps the raw cell
+   (`keepRaw` on `phaseType`), so a value such as "Three Phase" or "3 Phase" — or a status stored as
+   "Available" — is silently excluded by `status=AVAILABLE` / `phaseType=THREE PHASE`. The diagnostic
+   prints every distinct raw spelling. **Backend change:** normalise `status`/`phaseType` to the enum
+   on write (and backfill), or compare case/format-insensitively.
+
+The frontend no longer depends on either: the picker searches `/meters/search` without a status filter
+and judges eligibility client-side, resolves pasted serials exactly, and `normalizePhase` collapses
+every spelling to the enum before any comparison.
+
+### New — Gap AG: no per-installer statistics endpoint
+
+Installer Job Status needs counts per installer per status and meters held per installer. The API has
+`GET /installations/statistics?discoCode=` (per status, not per installer) and nothing per installer,
+so the page reads `GET /installations` for the five installer-bearing statuses (never PENDING or
+CANCELLED) and groups client-side; cap 10,000 per status, with a warning past it. **Backend change:**
+`GET /installations/statistics?groupBy=installer` returning `{ installerId, installerName, assigned,
+inProgress, installed, exported, failed, metersHeld }` rows, optionally by disco/date.
+
+### Revenue — definitions changed; one remaining limitation
+
+Business decision: **Total collected payments = value of pending installations; Revenue due to us =
+value of completed installations.** Both are computed from every row of
+`GET /finance/revenue/transactions` and shown on the Dashboard, the Payments page and the
+Installations page from one function. The previous ₦0 root cause (JED-only sources) was already fixed
+on 2026-09-26; today's change is the definition, plus: a read that doesn't return every row now shows
+"Unavailable" instead of a short sum.
+
+**Limitation:** recognised revenue only contains money the backend has recognised — JED on payment
+confirmation, Aba Power on installation completion. A pending Aba Power installation has no amount
+anywhere in the API (imported jobs carry no price), so it contributes ₦0 to "collected". Valuing it
+would mean estimating from the meter-type price, which this app does not do. **Backend change, if
+wanted:** expose an expected amount per pending installation (or a pending total in
+`/finance/revenue/summary`).
+
+### New — Gap AI: no list endpoint can be sorted, and `/dashboard-stats` is undefined
+
+- **No sort parameter** on `GET /installations` or `GET /external/jed/requests` (or any list), and no
+  documented default order. "The 5 most recent requests" cannot be asked for directly, so the Dashboard
+  reads the first page and the last two (whichever way the server orders, the newest are in one of
+  them) and sorts by request date — up to 3 small reads per source instead of 1. **Backend change:**
+  `sortBy`/`sortOrder` (at least `createdAt`/`dateRequested` desc) on both lists.
+- **`GET /dashboard-stats` gives `pendingRequests`/`completedRequests` no definition** (does pending
+  include unpaid INITIATED?) and covers JED requests only — it read 0/0 while imported installation work
+  existed. The Dashboard no longer shows them; it uses `/installations/statistics` and JED
+  `totalCount`s instead. **Backend change, if wanted:** one aggregate returning
+  `pendingInstallations`, `completedInstallations` and `pendingPaidAmount` for both domains with the
+  mapping in `utils/installationTotals.js`.
+- Run section 8–9 of `scripts/diagnostics/verify-live-data.mjs` to reconcile the KPIs against a full
+  recount and to see which order each list actually uses.
+
+### New — Gap AJ: no installation count by meter type, and the meter-type list is undocumented
+
+- The pending installation value is Σ(meter-type price) over pending installations, which needs a
+  count per meter type. `GET /installations/statistics` counts per status only, and `GET /installations`
+  has no `meterType` filter, so the app reads every pending row (only pending statuses, by server-side
+  status filter) to learn each one's type, and withholds the value if a read is capped. **Backend
+  change:** `GET /installations/statistics?groupBy=meterType` (and the same for JED PAID), or a
+  `pendingValue` aggregate computed server-side at current prices.
+- Since 2026-09-28 this value is "Total collected payments" on the Dashboard, Payments page, Reports
+  and Installations page, so every one of those screens reads the pending records (shared via jedApi's
+  30-second cache). A server-side `totalCollectedPayment` aggregate would make it one request.
+- `GET /settings/meter-type` documents no response schema; the app relies on `{ id, name, amount,
+  isActive }` as the Settings screen already does. Nothing links a meter type to an installation
+  except the free-text name, so matching is by normalised name. **Backend change:** document the
+  schema, and store a meter-type id (or the enum) on each installation and JED request.
+- Admin Reports' remaining filters (installation/payment status, installer, meter number) are not
+  parameters of `/finance/revenue/transactions`; they live on the Installations page and Installer Job
+  Status, which have them.
+
+### New — Gap AK: no installation lookup by meter number; meter statistics lack "assigned"
+
+- A meter record carries no customer or installation fields, and neither `GET /installations` nor
+  `/installations/search` filters by meter number, so Meter Schedule's Installed drill-down reads every
+  completed installation (INSTALLED/EXPORTED + JED COMPLETED, server-filtered) and joins by meter number.
+  **Backend change:** `GET /installations?meterNumber=` (and the JED equivalent), or installation fields
+  on `GET /meters` for installed meters.
+- `GET /meters/statistics` has no count of meters out with installers (`status` stays AVAILABLE on
+  dispatch), so the Assigned card counts the open dispatch batches. It also never returned the
+  `pending`/`paid` fields the old cards displayed — those cards were removed.
+
+### Bulk installation assignment — already supported
+
+`POST /assignments/installations` takes `accountNumbers[]` or `ids[]` and is partial-success
+(`rejected[]`), moving only PENDING/FAILED jobs. The new paste-accounts flow uses it with `ids[]`, one
+request per disco. No gap.
+
 ## 2026-09-25 (sixth pass): file storage arrived, and `/uploads/excel*` left with it
 
 Source: the backend team's *Pharez API — File Upload Integration Guide* (2026-09-25), cross-checked

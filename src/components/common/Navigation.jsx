@@ -15,7 +15,7 @@
 import {
   LayoutDashboard, Database, Users, BarChart3,
   Upload, Settings, X, CreditCard, ChevronsLeft, ChevronsRight,
-  ClipboardList, MessageSquareWarning, FileSpreadsheet, Send, Wrench
+  ClipboardList, MessageSquareWarning, FileSpreadsheet, Send, Wrench, HardHat
 } from 'lucide-react';
 import { useEffect, useCallback, useMemo, useState } from 'react';
 import { NavLink } from 'react-router-dom';
@@ -88,6 +88,16 @@ const NAVIGATION_CONFIG = {
       icon: Send,
       description: 'Meter dispatch batches and installer assignments',
       accessible: (userRole) => canAccessPage(userRole, 'assignments'),
+    },
+    {
+      // Every installer's workload and progress (2026-09-27). Admin, Super
+      // Admin and Supervisor — never an Installer, whose own view is My Jobs.
+      id: 'installer-status',
+      label: 'Installer Job Status',
+      path: '/installer-status',
+      icon: HardHat,
+      description: 'Each installer\'s jobs, meters and completion rate',
+      accessible: (userRole) => userRole !== ROLES.INSTALLER && canAccessPage(userRole, 'installer-status'),
     },
     {
       id: 'schedule',

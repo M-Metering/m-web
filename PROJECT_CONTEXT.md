@@ -318,8 +318,129 @@ jedc-meter-management/
     available"; records that came back but carried no usable amount say *that* instead, because the
     two look identical on screen otherwise and only one of them is normal.
 
+- **Meter state, bulk account assignment, revenue definitions, Installer Job Status (2026-09-27):**
+  - **"Available after assignment" was a display bug over a by-design API behaviour.** The spec says
+    `POST /assignments/meters` does not change `meters.status`; the holder lives on the dispatch batch
+    item. Meter Schedule rendered `status` only. It now joins the open METER batches
+    (`hooks/useMeterHolders.js`, `indexMeterHolders`/`withMeterHolders`) and shows **Assigned · With
+    <installer>**, withholds Assign and blocks delete for a held meter. The same index keeps held meters
+    out of the Assignments picker even when `GET /meters` omits `assignmentStatus` (gap G). The backend
+    already rejects re-assigning a held meter per row.
+  - **Assignments picker could miss a meter Meter Schedule found.** Its options came only from a
+    60-page `GET /meters?status=AVAILABLE` scan (no documented order; exact-match filters over raw
+    import values — gap AH). A typed serial is now also searched server-side (`/meters/search`, no status
+    filter, judged by `isAssignableMeter`), pasted serials the scan lacks are resolved exactly, and found
+    dispatchable meters join the options. A refused meter is explained with the real reason and holder.
+  - **Three Phase spellings.** `normalizePhase` maps "3 Phase", "THREE_PHASE", "Three Phase Meter", "3PH"
+    etc. to the enum; used by the picker, capacity, Meter Schedule's badge/filter and the installer's
+    Report Installation picker (which used to send the job's raw `meterType` as an exact `phaseType`
+    filter, so a differently-spelt Three Phase job listed none of the installer's meters).
+  - **Paste account numbers** on Installations → All Requests: newline/comma/tab/space separated,
+    trimmed, de-duplicated, classified (ready / already assigned / can't be assigned / not found), then
+    assigned through the normal modal — one `POST /assignments/installations` per disco, partial failures
+    reported per account, with a one-line outcome ("15 installations assigned successfully. 3 were
+    already assigned. 2 account numbers were not found.").
+  - **Photo field:** separate **Take photo** (`capture`) and **Choose from gallery** (no `capture`)
+    inputs; `capture` on the only input had forced the camera on phones. Same validation and upload.
+  - **Revenue definitions changed:** Total collected payments = value of **pending** installations;
+    Revenue due to us = value of **completed** installations. One calculation
+    (`summarizeRevenueTransactions`), one panel (`RevenueSummaryPanel`), shown on the Dashboard, the
+    Payments page (new) and the Installations page (now from the finance source, scoped per disco,
+    replacing the JED-only `summarizeRemitaPayments`, which was removed). All pages read; "Unavailable"
+    when not every row loaded. The Installations page's money (cards and JED per-row amounts) is now
+    gated on `PAYMENTS.VIEW` — a Supervisor previously saw it.
+  - **Installer Job Status** (`/installer-status`, Admin/Super Admin/Supervisor): per-installer assigned,
+    awaiting, in progress, completed, failed, meters held, meter need and completion rate, with a
+    filterable drill-down (status, meter type, assigned/installed date range, account, meter number).
+    Built from GET /users?role=INSTALLER, GET /installations for the five installer-bearing statuses and
+    the open dispatch batches; no aggregate endpoint exists (gap AG).
+  - **Not verified against live data** (no credentials here): run
+    `scripts/diagnostics/verify-live-data.mjs` with an ADMIN account to confirm raw status/phase
+    spellings, whether `GET /meters` carries `assignmentStatus`, paging stability, and the revenue split.
+
+- **Admin Dashboard installation data rebuilt (2026-09-27, second pass):**
+  - **Why it showed 0 / wrong numbers.** The Pending/Completed KPIs read `/dashboard-stats`, which is
+    JED-only and gives "pending" no definition (0/0 while imported work existed); missing fields
+    defaulted to 0; and on failure the page counted the 5 "recent" rows — counting unpaid INITIATED as
+    pending — and showed that as the system total. Recent Installations was JED-only and an unsorted
+    `limit: 5`. One failed request blanked the whole page.
+  - **Now:** KPIs from server aggregates (`/installations/statistics` + JED `totalCount` per status),
+    mapping in `utils/installationTotals.js` (Pending = JED PAID + imported PENDING/ASSIGNED/IN_PROGRESS/
+    FAILED; Completed = JED COMPLETED + imported INSTALLED/EXPORTED), with the breakdown and the
+    "not counted" awaiting-payment/cancelled figures shown. The Pending card carries **Amount paid** (the
+    pending half of the one revenue calculation; repeated payment records counted once; PAYMENTS.VIEW
+    only). Recent Installations merges both domains newest-first by request date, reading edge pages
+    because the API can't sort (gap AI). Every figure has its own skeleton/error/empty state and re-reads
+    on `refreshSignal`; the rest of the page survives a failed read.
+  - Files: `hooks/useDashboardInstallations.js`, `components/admin/DashboardInstallations.jsx`,
+    tests in `components/admin/__tests__/AdminDashboard.test.jsx` and `utils/__tests__/installationTotals.test.js`.
+
+- **Reports revamp, Job Status theme, shared awaiting definition, meter-price value (2026-09-27, third pass):**
+  - **Admin Reports** has three tabs: **Overview** (system-wide counts — total, pending, completed,
+    assigned, unassigned, failed, paid JED, awaiting payment, cancelled — plus the revenue panel, the
+    pending value by meter type and total recorded payments, all from the Dashboard's own hooks);
+    **Payments & deals** (every recognised payment record, both domains: account, customer, disco,
+    meter type, status, amount, dated by the event that recognised it; filtered and paged server-side);
+    **JED requests** (the previous register, unchanged apart from dropping its "Total Revenue" card,
+    which showed the undefined `/dashboard-stats.totalRevenue` and defaulted to 0).
+  - **Installer Job Status figures were black on dark cards.** `.card` sets a background per theme
+    but no text colour, and the table's number cells had none, so they inherited the browser's black.
+    The table body and every tile now carry `text-gray-900 dark:text-white`; status badge colours are
+    unchanged.
+  - **Awaiting = Dashboard Pending.** Job Status' tiles now come from the Dashboard's
+    `useInstallationTotals`, with the breakdown (with installers / failed / unassigned / paid JED);
+    per-installer awaiting uses the same predicate, so FAILED now counts as awaiting there too.
+  - **Pending installation value** = Σ current meter-type price per pending installation's own type,
+    shown on the Dashboard's Pending card, in Reports and in Job Status, always separately from the
+    recorded amount paid. Unknown/unpriced/conflicting types are listed, never priced.
+    `utils/meterPricing.js`, `hooks/usePendingInstallationValue.js`,
+    `components/admin/PendingInstallationValue.jsx`. Meter-type saves fire the refresh signal.
+  - Diagnostic script section 10 recomputes the value from live rows and prices.
+
+- **Module data ownership (2026-09-27, fourth pass):**
+  - **Installer Job Status reverted to operational only:** awaiting = ASSIGNED + IN_PROGRESS again
+    (failed shown separately), and the value/amount panel removed. Its theme fix stays.
+  - **Dashboard "Awaiting Installations"** now counts only work assigned to an installer (imported
+    ASSIGNED + IN_PROGRESS, from `/installations/statistics`) — the sum of Job Status' Awaiting column.
+    Unassigned, failed and paid-JED requests are listed as "not counted". No money on that card; the
+    meter-price value lives only in Admin Reports. (The Dashboard's Payment & Revenue Summary panel is
+    kept: it was an explicit earlier requirement that Dashboard and Payments show the same figures.)
+  - **Meter Schedule cards are clickable drill-downs** (Total, Available, Assigned, Installed, Faulty,
+    Retired, Single/Three Phase) with count-vs-list reconciliation. Installed meters show their
+    installation: customer, account, address, phone (admin tier), installation date, seal, installer,
+    assignment date, disco, GPS and photo. The undocumented Pending/Paid cards (always 0) were removed.
+  - **Media Access:** the camera + gallery photo field from earlier today was never committed or
+    deployed — the live app (commit c140d0a) still forces the camera until this work ships.
+
+- **One Pending Installation figure (2026-09-28):**
+  - **Why the screens disagreed:** the Dashboard card counted only jobs held by an installer (a
+    second, narrower definition added the day before), Reports counted every pending installation,
+    and the Installations page had no total at all — its "Pending" tile was the imported API status
+    PENDING (unassigned only), with JED's paid requests in a separate tile.
+  - **Now:** Pending = Awaiting = JED PAID + imported PENDING/ASSIGNED/IN_PROGRESS/FAILED, from server
+    aggregates (`useInstallationTotals`), on the Dashboard (Pending card with its Awaiting line), the
+    Installations page (new "Pending installations" tile + status filter) and Admin Reports. Installer
+    Job Status' Awaiting applies the same rule per installer and reconciles to the total on the page.
+    The narrower `awaitingAssigned` count was deleted; the imported PENDING status is now labelled
+    "Unassigned".
+  - The installer's own screens (Installer Dashboard, My Jobs) still count their actionable queue
+    (assigned + in progress) — an installer can't act on a failed job until it is reassigned.
+
+- **Total collected payments = pending installations at meter-type prices (2026-09-28, second pass):**
+  one formula (`totalCollectedPayment`, `utils/meterPricing.js`) and one hook
+  (`usePaymentRevenueSummary`) behind the one panel on the Dashboard, Payments, Reports and
+  Installations. Each pending record is priced by its own meter type from Settings → Meter Types (any
+  number of types); a price change, a completion or a new job changes it on the next refresh. On the
+  Installations page it follows the disco/filters together with the Pending count. Revenue due is
+  unchanged (recognised revenue for completed work). `PendingInstallationValue.jsx` was removed —
+  the panel carries the breakdown.
+  - **Fixed in `fetchAllPages`:** a response reporting `totalPages` without `hasNext` stopped after
+    page 1 (19 pending records served 10 per page were valued as 10). It now follows `totalPages`.
+
 ## 6. Pending / Incomplete Features
 
+- **No per-installer statistics endpoint** — Installer Job Status groups filtered installation reads client-side (API_GAP_REPORT.md, gap AG).
+- **A pending imported installation has no amount anywhere in the API**, so it adds ₦0 to "Total collected payments" (API_GAP_REPORT.md, 2026-09-27).
 - **The meter-assignment limits are still not enforced by the API.** `POST /assignments/meters` checks only that the target is an active installer and that the meters exist — no installation dependency, no meter-type match, no per-type cap, and no ADMIN/SUPERADMIN distinction. The frontend applies all of it from live reads, per meter type, re-checked immediately before the POST, and fails closed for capped roles; but a direct API call with a valid ADMIN or SUPERVISOR token still bypasses it, and two simultaneous dispatches can still jointly exceed the cap. The exact backend change (including the transaction/lock) is in `API_GAP_REPORT.md`, gap **AC**.
 - **The `User` schema exposes no deactivated flag.** `DELETE /users/{id}` is a working soft delete and `POST /users/{id}/restore` reverses it, but nothing in the documented `User` response marks an account as deactivated — so this app offers Restore inline right after a deactivation rather than building a "deactivated accounts" list it would have to guess at. `API_GAP_REPORT.md`, gap **AD**.
 - **The `role` query-parameter enum is stale on `/users` and `/users/search`** — it still lists only SUPERADMIN/ADMIN/INSTALLER even though `User.role` includes SUPERVISOR, so the app never sends `role=SUPERVISOR` and filters client-side instead. `API_GAP_REPORT.md`, gap **AE**.
@@ -346,7 +467,7 @@ Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`)
 - **Finance:** `GET /finance/revenue/{summary,breakdown,transactions}` — recognised revenue, Admin/Super Admin only.
 - **Settings:** meter-type CRUD, API key management (create/list/deactivate/usage — full secret shown once at creation).
 - **Users:** CRUD with role-based filtering (`GET/POST /users`, `GET/PUT/DELETE /users/{id}`).
-- **Dashboard:** `GET /dashboard-stats` — exactly `{pendingRequests, completedRequests, activeInstallers, totalRevenue}`, no deltas.
+- **Dashboard:** `GET /dashboard-stats` — exactly `{pendingRequests, completedRequests, activeInstallers, totalRevenue}`, no deltas. Only `activeInstallers` is displayed (since 2026-09-27); the installation KPIs come from `GET /installations/statistics` and JED `totalCount`s.
 - **JED requests:** list/lookup by account number/status/installer, export.
 - **Remita (payments/RRR):**
   - `POST /external/jed/generate-ref` — generate a Remita RRR (requires `ApiKeyAuth`, not the session JWT).

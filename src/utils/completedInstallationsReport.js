@@ -212,3 +212,46 @@ export function buildCompletedInstallationsReport({ rows, meterIndex = new Map()
     ],
   };
 }
+
+// ---------------------------------------------------------------------------
+// Installation details for ONE installed meter (Meter Schedule → Installed).
+//
+// Reads each field through the export's own column definitions above, so the
+// screen and the workbook can never disagree about which API field is the
+// customer's phone, the seal, the installer, and so on. A field the record
+// doesn't carry comes back null — nothing is filled in.
+// ---------------------------------------------------------------------------
+const DETAIL_KEYS = [
+  'source', 'disco', 'status', 'accountNumber', 'customerName', 'customerPhone', 'customerAddress',
+  'meterType', 'installationDate', 'completedAt', 'installerName', 'installerId', 'assignedAt',
+  'sealNumber', 'latitude', 'longitude', 'photoUrl', 'discoSupervisor', 'notes',
+];
+const COLUMN_BY_KEY = new Map(COLUMNS.map((c) => [c[0], c]));
+
+/** @param {object} row - a normalised row (normalizeMultiRow / normalizeJedRow) */
+export function installationDetailsOf(row) {
+  const out = {};
+  DETAIL_KEYS.forEach((key) => {
+    const value = COLUMN_BY_KEY.get(key)[3](row, null);
+    out[key] = value === undefined || value === '' ? null : value;
+  });
+  return out;
+}
+
+/**
+ * meterNumber → installation details, for completed installations only.
+ * A meter reported on two records keeps the first and is counted in
+ * `conflicts` rather than silently merged.
+ * @returns {{ index: Map<string, object>, conflicts: number }}
+ */
+export function indexInstallationsByMeter(rows = []) {
+  const index = new Map();
+  let conflicts = 0;
+  rows.filter(isCompletedRow).forEach((row) => {
+    const serial = meterSerialOf(row);
+    if (!serial) return;
+    if (index.has(serial)) { conflicts += 1; return; }
+    index.set(serial, installationDetailsOf(row));
+  });
+  return { index, conflicts };
+}

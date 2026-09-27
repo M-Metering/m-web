@@ -71,6 +71,15 @@ export const PERMISSIONS = Object.freeze({
     VIEW: 'assignments:view',
     MANAGE: 'assignments:manage'
   },
+
+  // Installer Job Status (2026-09-27): every installer's workload and
+  // progress — jobs by status, meters in hand, completion rate. Operational
+  // data only; it carries no money, so it needs no PAYMENTS permission. Built
+  // entirely from reads the holder already has: GET /installations,
+  // GET /users?role=INSTALLER and GET /assignments.
+  INSTALLERS: {
+    VIEW_STATUS: 'installers:view_status'
+  },
   
   // User management permissions
   USERS: {
@@ -183,7 +192,10 @@ const ADMIN_TIER_PERMISSIONS = [
   PERMISSIONS.IMPORTS.VIEW,
   PERMISSIONS.IMPORTS.RUN,
   PERMISSIONS.ASSIGNMENTS.VIEW,
-  PERMISSIONS.ASSIGNMENTS.MANAGE
+  PERMISSIONS.ASSIGNMENTS.MANAGE,
+
+  // Installer Job Status - every installer's workload
+  PERMISSIONS.INSTALLERS.VIEW_STATUS
 ];
 
 // Role-based permissions mapping
@@ -245,7 +257,12 @@ const ROLE_PERMISSIONS = Object.freeze({
     // installer" picker work for a Supervisor (GET /users?role=INSTALLER is
     // the only user-list access the API gives it). USERS.CREATE/UPDATE/
     // DELETE/MANAGE are all withheld.
-    PERMISSIONS.USERS.VIEW
+    PERMISSIONS.USERS.VIEW,
+
+    // Installer Job Status — operational only (jobs, meters, completion),
+    // no money. Every read behind it is one this role already holds:
+    // GET /installations, GET /users?role=INSTALLER, GET /assignments.
+    PERMISSIONS.INSTALLERS.VIEW_STATUS
   ]),
 
   [ROLES.INSTALLER]: new Set([
@@ -308,7 +325,8 @@ const PAGE_ACCESS = Object.freeze({
   // Renamed from 'installation-requests' when those two top-level items
   // merged; the permission itself is unchanged.
   installations: [PERMISSIONS.INSTALLATIONS.VIEW_ALL],
-  'my-jobs': [PERMISSIONS.INSTALLATIONS.FIELD_JOBS]
+  'my-jobs': [PERMISSIONS.INSTALLATIONS.FIELD_JOBS],
+  'installer-status': [PERMISSIONS.INSTALLERS.VIEW_STATUS]
 });
 
 // Permission check with caching

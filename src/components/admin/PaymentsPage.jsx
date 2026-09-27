@@ -20,6 +20,9 @@ import { formatCurrencyNGN } from '../../utils/currency';
 import ConfirmPaymentTab from './ConfirmPaymentTab';
 import BulkConfirmPaymentsTab from './BulkConfirmPaymentsTab';
 import RevenueTab from './RevenueTab';
+import RevenueSummaryPanel from './RevenueSummaryPanel';
+import { usePermissions } from '../auth/usePermissions';
+import { usePaymentRevenueSummary } from '../../hooks/usePaymentRevenueSummary';
 import StatusBadge from '../common/StatusBadge';
 import {
   CreditCard, RefreshCw, AlertCircle, Loader2, Calendar
@@ -231,6 +234,12 @@ function PaymentsTab() {
 
 function PaymentsPage() {
   const [activeTab, setActiveTab] = useState('payments');
+  // The same hook and the same panel as the Admin Dashboard — one revenue
+  // calculation, so "Total collected payments" and "Revenue due to us" read
+  // identically on both screens. The route is already Payments-gated; the
+  // permission is passed anyway so the hook never fires for anyone else.
+  const { canViewPayments } = usePermissions();
+  const paymentSummary = usePaymentRevenueSummary({ enabled: canViewPayments === true });
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -245,6 +254,16 @@ function PaymentsPage() {
           </p>
         </div>
       </div>
+
+      {canViewPayments && (
+        <RevenueSummaryPanel
+          id="payments-revenue-summary"
+          title="Payment & Revenue Summary"
+          collected={paymentSummary.collected}
+          revenue={paymentSummary.revenue}
+          onRetry={paymentSummary.reload}
+        />
+      )}
 
       <div className="card p-3 sm:p-4">
         <div className="flex space-x-1 sm:space-x-2 overflow-x-auto">

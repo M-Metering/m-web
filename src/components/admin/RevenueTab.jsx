@@ -27,15 +27,41 @@ import {
   normalizeRevenueTransaction,
   transactionAmountLabel,
 } from '../../utils/financeSummary';
+import { useDiscoOptions } from '../../hooks/useDiscoOptions';
+import { METER_PHASE_TYPES, installationStatusLabel } from '../../utils/installationStatus';
+import { jedStatusLabel } from '../../utils/statusBadge';
+import { formatPhaseLabel } from '../../utils/installationScope';
 
-// Exactly the documented rangePreset values — no invented ranges.
+// Exactly the documented rangePreset values — no invented ranges — plus
+// "All time" (no range sent) and "Custom" (the documented from/to).
 const RANGE_PRESETS = [
+  { id: 'all', label: 'All time' },
   { id: 'today', label: 'Today' },
   { id: 'thisWeek', label: 'This week' },
   { id: 'thisMonth', label: 'This month' },
   { id: 'last30days', label: 'Last 30 days' },
   { id: 'thisYear', label: 'This year' },
+  { id: 'custom', label: 'Custom' },
 ];
+
+// `to` is EXCLUSIVE on the finance endpoints; the picker's "to" is the last
+// day wanted, so the request asks for the day after it.
+const dayAfter = (ymd) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const next = new Date(y, m - 1, d + 1);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}`;
+};
+
+// The record's own status, in each domain's vocabulary.
+const sourceStatusLabel = (row) => (row.source === 'jed_customer_request'
+  ? jedStatusLabel(row.sourceStatus)
+  : installationStatusLabel(row.sourceStatus));
+
+// Which event dated the record (the API's `dateBasis` column name).
+const DATE_BASIS_LABELS = {
+  date_paid: 'Paid', date_completed: 'Completed', date_requested: 'Requested', reported_at: 'Installed',
+};
 
 const PAGE_LIMIT = 20;
 
@@ -50,9 +76,18 @@ function Figure({ label, value, muted = false }) {
   );
 }
 
-function RevenueTab() {
+/**
+ * @param {{ defaultRange?: string }} [props] - initial range preset ('thisMonth'
+ *   on the Payments page; Reports opens on 'all').
+ */
+function RevenueTab({ defaultRange = 'thisMonth' } = {}) {
   const { refreshSignal } = useDataRefresh();
-  const [rangePreset, setRangePreset] = useState('thisMonth');
+  const { discos } = useDiscoOptions();
+  const [rangePreset, setRangePreset] = useState(defaultRange);
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [meterType, setMeterType] = useState('');
+  const [discoCode, setDiscoCode] = useState('');
   const [search, setSearch] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [page, setPage] = useState(1);
@@ -68,7 +103,22 @@ function RevenueTab() {
   const [rowsLoading, setRowsLoading] = useState(true);
   const [rowsError, setRowsError] = useState(null);
 
-  const filters = useMemo(() => ({ rangePreset }), [rangePreset]);
+  // Every filter here is a documented server-side parameter of both
+  // /finance/revenue/summary and /transactions, so the totals above the table
+  // and the rows in it always describe the same filtered set — nothing is
+  // filtered in the browser.
+  const filters = useMemo(() => {
+    const f = {};
+    if (rangePreset === 'custom') {
+      if (customFrom) f.from = customFrom;
+      if (customTo) f.to = dayAfter(customTo);
+    } else if (rangePreset !== 'all') {
+      f.rangePreset = rangePreset;
+    }
+    if (meterType) f.meterType = meterType;
+    if (discoCode) f.discoCode = discoCode;
+    return f;
+  }, [rangePreset, customFrom, customTo, meterType, discoCode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,6 +202,31 @@ function RevenueTab() {
           <RefreshCw className={`w-3.5 h-3.5 ${summaryLoading || rowsLoading ? 'animate-spin' : ''}`} />
           Refresh
         </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+        {rangePreset === 'custom' && (
+          <>
+            <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+              From <input type="date" value={customFrom} onChange={(e) => { setCustomFrom(e.target.value); setPage(1); }}
+                aria-label="Revenue from date" className="form-input px-2 py-1.5 text-sm flex-1" />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+              To <input type="date" value={customTo} onChange={(e) => { setCustomTo(e.target.value); setPage(1); }}
+                aria-label="Revenue to date" className="form-input px-2 py-1.5 text-sm flex-1" />
+            </label>
+          </>
+        )}
+        <select value={meterType} onChange={(e) => { setMeterType(e.target.value); setPage(1); }}
+          aria-label="Filter revenue by meter type" className="form-input px-3 py-2 text-sm">
+          <option value="">All meter types</option>
+          {METER_PHASE_TYPES.map((t) => <option key={t} value={t}>{formatPhaseLabel(t)}</option>)}
+        </select>
+        <select value={discoCode} onChange={(e) => { setDiscoCode(e.target.value); setPage(1); }}
+          aria-label="Filter revenue by disco" className="form-input px-3 py-2 text-sm">
+          <option value="">All discos</option>
+          {discos.map((d) => <option key={d.code} value={d.code}>{d.name ? `${d.name} (${d.code})` : d.code}</option>)}
+        </select>
       </div>
 
       {/* Summary */}
@@ -238,7 +313,7 @@ function RevenueTab() {
           </div>
         ) : rows.length === 0 ? (
           <p className="p-8 text-center text-sm text-gray-500 dark:text-gray-400">
-            No revenue recorded for this range.
+            No revenue recorded for these filters.
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -249,6 +324,7 @@ function RevenueTab() {
                   <th className="px-4 py-3 font-semibold">Customer</th>
                   <th className="px-4 py-3 font-semibold">Disco</th>
                   <th className="px-4 py-3 font-semibold">Meter type</th>
+                  <th className="px-4 py-3 font-semibold">Status</th>
                   <th className="px-4 py-3 font-semibold text-right">Amount</th>
                   <th className="px-4 py-3 font-semibold">Recognised</th>
                 </tr>
@@ -261,7 +337,8 @@ function RevenueTab() {
                     <td className="px-4 py-3 font-mono text-gray-900 dark:text-white">{row.reference || '—'}</td>
                     <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{row.customerName || '—'}</td>
                     <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{row.discoCode || '—'}</td>
-                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{row.meterType || '—'}</td>
+                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{row.meterType ? formatPhaseLabel(row.meterType) : '—'}</td>
+                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-xs">{row.sourceStatus ? sourceStatusLabel(row) : '—'}</td>
                     <td className={`px-4 py-3 text-right font-semibold ${
                       row.amountMissing ? 'text-amber-700 dark:text-amber-400' : 'text-gray-900 dark:text-white'
                     }`}>
@@ -272,6 +349,9 @@ function RevenueTab() {
                     </td>
                     <td className="px-4 py-3 text-gray-600 dark:text-gray-400 text-xs">
                       {row.revenueAt ? formatDateTime(row.revenueAt) : '—'}
+                      {row.dateBasis && DATE_BASIS_LABELS[row.dateBasis] && (
+                        <span className="block text-[11px] text-gray-400 dark:text-gray-500">{DATE_BASIS_LABELS[row.dateBasis]} date</span>
+                      )}
                     </td>
                   </tr>
                 ))}

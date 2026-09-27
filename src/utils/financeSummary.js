@@ -142,62 +142,120 @@ export const isCompletedInstallationRow = (row) =>
 
 /**
  * "Total collected payments" and "revenue due to us" over the recognised-
- * revenue records (GET /finance/revenue/transactions).
+ * revenue records (GET /finance/revenue/transactions). THE ONE revenue
+ * calculation in the app: the Admin Dashboard, the Payments page and the
+ * Installations page all render its output, so for the same records they
+ * cannot disagree.
  *
- * WHY THESE FIGURES COME FROM HERE. The same two definitions used to be read
- * from JED's Remita records alone (utils/paymentSummary.js), which is correct
- * for that flow but silently reports ₦0 wherever the revenue is multi-disco
- * installation work — there are no Remita payment records for it at all. The
- * finance endpoints cover BOTH domains, so this is the only source that can
- * answer the question for the whole business.
+ * WHY THESE FIGURES COME FROM HERE. The same two figures used to be read from
+ * JED's Remita records alone (utils/paymentSummary.js), which silently reports
+ * ₦0 wherever the revenue is multi-disco installation work — there are no
+ * Remita payment records for it at all. The finance endpoints cover BOTH
+ * domains, so this is the only source that can answer for the whole business.
  *
- * THE DEFINITIONS ARE UNCHANGED:
- *   collected   = every recognised revenue record. Recognition already means
- *                 the money is real — JED recognises on payment confirmed,
- *                 Aba Power on installation completed — so nothing unpaid or
- *                 merely initiated can appear in this set at all.
- *   revenueDue  = the completed-installation subset only.
+ * THE DEFINITIONS (business decision, 2026-09-27):
+ *   collected   = the value of PENDING installations: money recognised for
+ *                 work that is not yet a completed installation (e.g. a JED
+ *                 request that is PAID and awaiting its installer).
+ *   revenueDue  = the value of COMPLETED installations (INSTALLED/EXPORTED,
+ *                 or JED COMPLETED — isCompletedInstallationRow).
+ * The two are disjoint and together make up everything recognised, which is
+ * reported separately as `recognisedTotal` (the server's own meta.totals).
+ * Until 2026-09-27 "collected" meant every recognised record, i.e. it also
+ * included the completed work; that overlap is gone.
  *
- * `totals` is the response's own `meta.totals`, which covers the WHOLE
- * filtered set rather than the current page. It is preferred for `collected`
- * so the headline figure is the server's, not a client re-add of paged rows;
- * summing the rows is only the fallback when the server didn't send it.
+ * COMPLETE OR NOTHING. Neither figure can be taken from the server's total —
+ * the split needs every row. So both are computed from the rows, and when not
+ * every row arrived (`complete: false`, a paging cap or a short read) they
+ * are null: a partial sum is exactly the undercount this must never show.
+ * `reconciled` says whether the rows add up to the server's own total; a
+ * mismatch means the records changed mid-read and a refresh is needed.
  *
- * @param {object[]} rows - raw transaction rows
+ * @param {object[]} rows - raw transaction rows (ALL of them, or a subset
+ *   picked by `select`)
  * @param {{amount?: number, count?: number, estimatedAmount?: number,
  *   estimatedCount?: number, missingAmountCount?: number}} [totals] - meta.totals
+ *   for the whole, unfiltered read
+ * @param {{ select?: (row: object) => boolean }} [options]
+ *   select: narrow to a scope (a disco) AFTER completeness is
+ *   judged on the full read.
  */
-export function summarizeRevenueTransactions(rows = [], totals = null) {
-  const records = (Array.isArray(rows) ? rows : []).map(normalizeRevenueTransaction);
+export function summarizeRevenueTransactions(rows = [], totals = null, { select } = {}) {
+  const raw = (Array.isArray(rows) ? rows : []).map(normalizeRevenueTransaction);
+  // One payment is one record. A row the server sends twice (a repeated page,
+  // a retried read) is counted once, by the record's own identity: its source
+  // table and id, else disco + account. A record with neither is kept rather
+  // than guessed at.
+  const seen = new Set();
+  let duplicates = 0;
+  const all = raw.filter((row) => {
+    const key = row.source && row.sourceId != null
+      ? `${row.source}:${row.sourceId}`
+      : row.reference ? `${row.discoCode || ''}:${row.reference}` : null;
+    if (!key) return true;
+    if (seen.has(key)) { duplicates += 1; return false; }
+    seen.add(key);
+    return true;
+  });
+  // Unique records, so a page the server repeats can't hide one it skipped.
+  const loaded = all.length;
+  const serverCount = toCount(totals?.count);
+  const complete = serverCount === 0 || loaded >= serverCount;
 
-  let summedCollected = 0;
-  let revenueDue = 0;
+  const records = select ? all.filter(select) : all;
+  let pending = 0;
+  let completed = 0;
+  let pendingCount = 0;
   let completedCount = 0;
   let unpricedCount = 0;
-
   records.forEach((row) => {
     if (row.amountMissing) unpricedCount += 1;
-    summedCollected += row.amount;
     if (isCompletedInstallationRow(row)) {
-      revenueDue += row.amount;
+      completed += row.amount;
       completedCount += 1;
+    } else {
+      pending += row.amount;
+      pendingCount += 1;
     }
   });
 
-  const serverTotal = toNumber(totals?.amount);
   const hasServerTotal = totals && Number.isFinite(Number(totals.amount));
-
+  const allSum = all.reduce((sum, row) => sum + row.amount, 0);
   return {
-    collected: hasServerTotal ? serverTotal : round2(summedCollected),
-    revenueDue: round2(revenueDue),
-    // How many records the figures are drawn from. `count` is the server's
-    // own for the whole set; `loadedCount` is what actually arrived, so a
-    // capped read is detectable rather than silently short.
-    count: toCount(totals?.count) || records.length,
-    loadedCount: records.length,
+    collected: complete ? round2(pending) : null,
+    revenueDue: complete ? round2(completed) : null,
+    pendingCount,
     completedCount,
+    // Records in scope. `count` for an unscoped read is the server's own.
+    count: select ? records.length : (serverCount || records.length),
+    loadedCount: loaded,
+    complete,
+    recognisedTotal: hasServerTotal ? toNumber(totals.amount) : null,
+    reconciled: !complete || !hasServerTotal || Math.abs(round2(allSum) - toNumber(totals.amount)) < 0.01,
     unpricedCount,
-    note: dataQualityNote(totals),
+    duplicates,
+    note: select ? null : dataQualityNote(totals),
+  };
+}
+
+/**
+ * Which recognised-revenue rows belong to an Installations-page scope — the
+ * same attribution that page applies to its own rows (utils/installationScope.js):
+ *   All discos           every row
+ *   a registered disco   rows whose discoCode is that disco's; for a JED-coded
+ *                        disco, also every JED Remita row (they're JED's)
+ *   JED (Remita)         JED Remita rows only
+ * @param {{ includeMulti: boolean, multiDiscoCode: string, remitaBucket: string|null }} scopeInfo
+ * @param {(discoCode: string) => string} bucketOf - attributeRemitaRecord bound to the registered discos
+ * @returns {((row: object) => boolean) | undefined} undefined for "everything"
+ */
+export function revenueScopeFilter(scopeInfo, bucketOf) {
+  if (!scopeInfo || scopeInfo.remitaBucket === null) return undefined;
+  const code = String(scopeInfo.multiDiscoCode || '').toUpperCase();
+  return (row) => {
+    const isRemita = row.source === 'jed_customer_request';
+    if (isRemita && bucketOf(row.discoCode) === scopeInfo.remitaBucket) return true;
+    return scopeInfo.includeMulti && !isRemita && String(row.discoCode || '').toUpperCase() === code;
   };
 }
 

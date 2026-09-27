@@ -92,6 +92,27 @@ the JED-era API had no assignment endpoint). It is now a real dispatch through
   re-sent, so a duplicate assignment record can't be created by a double submission.
 
 
+## Financial Data, Installer Overview and Meter Holders (2026-09-27)
+
+- **Fixed: a Supervisor saw money on the Installations page.** The "Total collected payments" /
+  "Revenue due to us" cards and each JED row's amount were rendered for anyone who could open the
+  page, and Supervisor can. Both are now gated on `PAYMENTS.VIEW` (`canViewPayments`), and the revenue
+  read itself is skipped for a role without it — matching the Dashboard, which already worked this way.
+  `/finance/*` is a 403 for Supervisor server-side, so no data leaked from that endpoint; the leaked
+  figures came from the JED request list the page loads for other purposes.
+- **Financial and index reads now default OFF.** `useRevenueSummary` and `useMeterHolders` only read
+  when passed `enabled: true` exactly; previously `enabled` defaulted to true, so an undefined
+  permission flag (a typo, a missing field in a mock or a future role) would have switched a financial
+  read on. A test pins this.
+- **Installer Job Status** (`/installer-status`) is gated by `INSTALLERS.VIEW_STATUS` in `App.jsx`,
+  `Navigation.jsx` and the component itself. It shows no money. Every read behind it is one the
+  Supervisor already holds on the API (`GET /installations`, `GET /users?role=INSTALLER`,
+  `GET /assignments`), so it widens nothing server-side. Installer is denied — it is an overview of
+  other installers' work.
+- **Duplicate meter assignment is refused by the backend** (`POST /assignments/meters` rejects
+  already-assigned serials per row). The client-side holder index is a UX layer on top, never the
+  control.
+
 ## Uploaded Files Are Public To Anyone With The Link (2026-09-25)
 
 The API gained a general-purpose file store (`POST /uploads`), and this app now uses it for the

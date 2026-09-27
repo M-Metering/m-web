@@ -28,6 +28,7 @@ const readPagination = (resp) => {
   const p = resp?.pagination || resp?.data?.pagination || {};
   return {
     hasNext: p.hasNext,
+    currentPage: p.currentPage ?? p.page,
     totalPages: p.totalPages ?? p.pages,
     totalCount: p.totalCount ?? p.total,
   };
@@ -52,8 +53,15 @@ const positiveInt = (value) => {
  */
 export async function fetchAllPagesDetailed(fetchPage, params = {}, { maxPages = MAX_PAGES, inferNextFromFullPage = false } = {}) {
   const hasNextOf = (resp, rows) => {
-    const { hasNext } = readPagination(resp);
+    const { hasNext, totalPages, currentPage } = readPagination(resp);
     if (hasNext !== undefined && hasNext !== null) return !!hasNext;
+    // No `hasNext`, but the server says how many pages there are: believe it.
+    // Without this, a response carrying only totalPages/totalCount (and a
+    // page smaller than 100 rows) stopped after page 1 — the undercount this
+    // helper exists to prevent (found 2026-09-28: 19 pending installations
+    // served 10 per page were valued as 10).
+    const pages = positiveInt(totalPages);
+    if (pages) return (positiveInt(currentPage) || 1) < pages;
     return inferNextFromFullPage && rows.length >= PAGE_LIMIT;
   };
 

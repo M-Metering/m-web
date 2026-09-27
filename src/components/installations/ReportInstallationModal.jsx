@@ -28,6 +28,7 @@ import PhotoUploadField from '../common/PhotoUploadField';
 import { UPLOAD_ENTITY } from '../../utils/fileUpload';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { toDateInputValue } from '../../utils/date';
+import { normalizePhase } from '../../utils/installationScope';
 import { fetchAllPages } from '../../utils/fetchAllPages';
 import { validateMeterNumber, METER_NUMBER_HINT } from '../../utils/meterNumber';
 import { validateSealNumber, isDuplicateSealError, DUPLICATE_SEAL_MESSAGE } from '../../utils/sealNumber';
@@ -96,9 +97,15 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
       setMetersLoading(true);
       setMetersError(null);
       try {
-        const params = job?.meterType ? { phaseType: job.meterType } : {};
-        const list = await fetchAllPages((p) => jedApi.getMyMeters(p), params);
-        if (!cancelled) setMeters(list);
+        // The phase is matched HERE, on the normalised value, not with the
+        // endpoint's `phaseType` filter: that filter is an exact match on the
+        // stored value, so a Three Phase meter recorded as "3 Phase" (or a job
+        // whose meterType is "Three Phase") would list nothing at all. An
+        // installer holds a handful of meters, so reading them all is cheap.
+        const list = await fetchAllPages((p) => jedApi.getMyMeters(p), {});
+        const jobPhase = normalizePhase(job?.meterType);
+        const matching = jobPhase ? list.filter((m) => normalizePhase(m?.phaseType) === jobPhase) : list;
+        if (!cancelled) setMeters(matching);
       } catch (err) {
         console.error('[ReportInstallation] Failed to load my meters:', err);
         if (!cancelled) {

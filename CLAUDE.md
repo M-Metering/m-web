@@ -25,7 +25,7 @@ Versions below are read directly from `package.json` — verify there before ass
 | Icons | lucide-react 0.548.0 |
 | PWA | vite-plugin-pwa 1.3.0 (Workbox-generated service worker) |
 | Linting | ESLint 9.36.0, flat config (`eslint.config.js`), React Hooks + React Refresh plugins |
-| Testing | Vitest 3 + React Testing Library + jsdom (dev-only, added 2026-09-21). `npm test` runs `src/**/__tests__/*.test.{js,jsx}`: unit tests for the permission model (the per-role module matrix, including Supervisor), the installation-scope, installer-queue, status-badge, api-result, user-account, installer-job-filter, meter-capacity (the Admin assignment rules and the Super Admin bypass, case by case), meter-inventory, meter-display, meter-number, seal-number, payment-summary, error-message, xlsx, completed-report and pagination utils, plus component tests for Installation Requests (including its read-only Supervisor rendering), Assignments (including the role differences), Meter Schedule (inventory, search), User Management (edit/delete payloads), Navigation (the role matrix), Installer Dashboard, My Jobs, InstallationDetail, Report Installation and the installer job summary, all against a mocked `jedApi`. `scripts/excel-check/` generates sample workbooks with the real export code and checks them in Microsoft Excel over COM (Windows with Excel only). Coverage is still narrow; see `CodeBaseAudit.md` for the untested high-risk areas |
+| Testing | Vitest 3 + React Testing Library + jsdom (dev-only, added 2026-09-21). `npm test` runs `src/**/__tests__/*.test.{js,jsx}`: unit tests for the permission model (the per-role module matrix, including Supervisor), the installation-scope, installer-queue, status-badge, api-result, user-account, installer-job-filter, meter-capacity (the Admin assignment rules and the Super Admin bypass, case by case), meter-inventory, meter-availability (holder index, phase canonicalisation, paste parser), account-batch, installer-stats, meter-display, meter-number, seal-number, payment-summary, error-message, xlsx, completed-report and pagination utils, plus component tests for Installation Requests (including its read-only Supervisor rendering, account paste and per-disco bulk assign), revenue consistency (Dashboard = Payments = Installations), Installer Job Status, the photo field (camera + gallery), Assignments (including the role differences), Meter Schedule (inventory, search), User Management (edit/delete payloads), Navigation (the role matrix), Installer Dashboard, My Jobs, InstallationDetail, Report Installation and the installer job summary, all against a mocked `jedApi`. `scripts/excel-check/` generates sample workbooks with the real export code and checks them in Microsoft Excel over COM (Windows with Excel only). Coverage is still narrow; see `CodeBaseAudit.md` for the untested high-risk areas |
 | Spreadsheets | ExcelJS 4 (lazy-loaded chunk, excluded from the PWA precache), with an npm `overrides` pin of `uuid` ≥ 11.1.1 for a moderate advisory in ExcelJS's own `uuid` dependency |
 | Other | `sharp` (dev-only, PWA icon generation script) |
 
@@ -73,18 +73,66 @@ sets don't overlap, so one filter covers both. Scoping, attribution, filtering a
 "JED (Remita requests)" entry only when no registered disco code starts with `JED`. Only imported
 jobs can be assigned. JED rows open the explanatory modal instead.
 
-**Money and meter figures come from pure utils, never ad hoc:** `utils/paymentSummary.js`
-(collected = PAID+COMPLETED, revenue due = COMPLETED only, deduped by RRR/id/account, invalid amounts
-skipped). Only Remita requests carry `amount`; imported jobs have none.
+**Money figures come from ONE calculation each, never ad hoc (2026-09-28).** Both are rendered by
+`components/admin/RevenueSummaryPanel.jsx`, fed by `hooks/usePaymentRevenueSummary.js`, on the Admin
+Dashboard, the Payments page, Admin Reports and the Installations page:
+- **Total collected payments = the Pending (= Awaiting) Installations valued at the configured
+  meter-type prices** — `totalCollectedPayment` (`utils/meterPricing.js`): Σ over each pending record
+  of its own meter type's current price (`GET /settings/meter-type`), any number of types, unknown or
+  unpriced types listed and never guessed. It is a value, not a sum of payment records, so a paid JED
+  request contributes its meter price, never its recorded amount as well. The Installations page
+  applies the same function to exactly the rows its filters show, so its Pending count and value
+  always move together. (Before 2026-09-28 "collected" was the recorded payments for pending work.)
+- **Revenue due to us = recognised revenue for completed installations** —
+  `summarizeRevenueTransactions` (`utils/financeSummary.js`) over `GET /finance/revenue/transactions`,
+  all pages, withheld as "Unavailable" when not every row arrived.
+A failure shows "Unable to load payment data." / "Unavailable", never ₦0.
+`revenueConsistency.test.jsx` pins mixed types, completing/adding an installation, a price change,
+pagination, the four screens agreeing, and filters moving count and value together. Only a role with `PAYMENTS.VIEW` issues the read or
+sees the panel (and a JED row's per-row amount on the Installations page); the hook's `enabled`
+defaults to OFF, so an undefined permission flag can't switch a financial read on.
 
-**Business-wide money comes from `GET /finance/revenue/*`, NOT from the JED endpoints.** The Admin
-Dashboard's "Total collected payments" and "Revenue due to us" read
-`/finance/revenue/transactions` via `hooks/useRevenueSummary.js`, and
-`summarizeRevenueTransactions` (`utils/financeSummary.js`) applies the definitions: collected =
-every recognised revenue record (recognition already means the money is real, so nothing unpaid can
-be in the set), revenue due = the completed-installation subset, via `isInstalledStatus` /
-`isCompletedStatus`. The collected headline is the server's `meta.totals.amount` for the whole
-filtered set, not a client re-add — which is why it equals the Payments page's Revenue tab exactly.
+**Module data ownership (2026-09-27, final).** Dashboard = high-level operational counts
+plus the shared payment panel; Installer Job Status = per-installer workload (no money); **Admin
+Reports = the fuller value/price and revenue analysis**; Meter Schedule = meter lifecycle and the records behind each status. Shared
+definitions keep overlapping numbers equal, but a module shows only what its purpose needs — don't
+copy a card into another tab because the data is available.
+
+**Dashboard installation KPIs (2026-09-27)** come from server aggregates across both domains, never
+from a page of rows: `GET /installations/statistics` plus the JED `pagination.totalCount` for
+`status=PAID|COMPLETED|INITIATED` (`limit=1`). The mapping lives in `utils/installationTotals.js` and
+nowhere else. **Pending Installations = Awaiting Installations — ONE population, one figure (2026-09-28):
+JED PAID + imported PENDING/ASSIGNED/IN_PROGRESS/FAILED**, i.e. every request that is paid or
+commissioned and not yet installed. It is `totals.pending` (server aggregates) on the Dashboard (both
+the Pending and the Awaiting line), in Admin Reports, and on the Installations page's "Pending
+installations" tile (the aggregate when unfiltered; the same rule, `isPendingInstallationRow`, recounted
+over the shown rows when a disco/filter applies; the `PENDING_INSTALLATION_FILTER` status option lists
+exactly those rows). Never add a narrower "awaiting" count beside it — an assigned-only one existed for
+a day and made the screens disagree. The imported API status `PENDING` is labelled **"Unassigned"**
+so it can't be mistaken for the whole population. **Completed = JED COMPLETED + imported
+INSTALLED/EXPORTED;** INITIATED (unpaid) and CANCELLED count in neither and are
+shown as "not counted". Payment never makes a job completed. The Pending card carries no money. `/dashboard-stats` now feeds only the Installers count — its pending/completed have
+no documented definition and are JED-only. **Recent Installations** = newest by *request date*
+(`dateRequested` / `createdAt`, the Installations page's own "Request date"), merged across both
+domains; the API has no sort parameter (gap AI), so `edgePages` reads page 1 and the last two pages
+and the client sorts. Each figure has its own loading/error state; a failure is "Unavailable", never 0.
+
+**One source per metric (2026-09-27).** Counts:
+`useInstallationTotals`; per-record pending/completed: `isPendingInstallation`/`isCompletedInstallation`
+(`utils/installationTotals.js`); money: `useRevenueSummary`; **installation value:**
+`usePendingInstallationValue` → `utils/meterPricing.js` = Σ current meter-type price
+(`GET /settings/meter-type`, `{ name, amount, isActive }`) over each pending installation's own meter
+type. Types match through `normalizePhase`; an installation with no type, a type with no active price,
+or a type with two conflicting active prices is **never priced** — it is counted and named. That value IS "Total collected payments" (above); Reports also shows "Total
+amount paid (all recorded payments)" as a separate, differently-defined figure. Saving a meter type fires `notifyDataChanged`. A test
+(`crossModuleReconciliation.test.jsx`) pins Dashboard Pending = Awaiting = Installations = Reports for one
+dataset, the completion / new-job / pagination / failed-read scenarios, the Reports value against an
+independent Σ, and that the Dashboard and Job Status show no value at all. **Admin Reports** is three tabs: Overview (`ReportsOverview`, only the
+shared hooks), Payments & deals (the shared `RevenueTab`, filtered server-side by range, meter type,
+disco and account/customer search), JED requests (the old register with its Excel/PDF exports; its
+undefined `/dashboard-stats` "Total Revenue" card was removed).
+
+**Business-wide money comes from `GET /finance/revenue/*`, NOT from the JED endpoints.**
 
 **Why this is the source, learned the hard way (2026-09-26).** Two earlier attempts each produced a
 confident ₦0 next to a Revenue tab showing ₦3,013,500:
@@ -99,9 +147,9 @@ The Dashboard's **trend charts read the same records**, windowed with `from`/`to
 in `hooks/useRevenueSummary.js` is the one loader for both the totals and the charts, so a figure and
 the chart under it can never come from different places.
 
-`utils/paymentSummary.js` is still correct and still used, but it is **JED-scoped**: it answers
-"money from Remita requests for this disco" on the Installations page. Don't reach for it for a
-business-wide total.
+`summarizeRemitaPayments` (the JED-only "collected/due" in `utils/paymentSummary.js`) was **removed**
+on 2026-09-27: it was a second revenue calculation that could only see the Remita flow and disagreed
+with the Dashboard at the same scope. `paymentSummary.js` now holds only `parseAmount`.
 
 **Never add a second revenue sum.** A `.filter(...).reduce(...)` over amounts in a component is the
 bug this replaced — the Dashboard had one that ran over only the 5 most recent rows, with no
@@ -144,6 +192,31 @@ separate `importedAt`), `assignedAt` (dispatch to an installer) and `installatio
 (the physical install). `filterByImportDate` and the Installation Requests "Imported from/to" filter
 read **only** `importedAt`. JED's Remita requests are never imported — `importedAt` is `null` for them
 and `dateRequested` must never stand in for it.
+
+**A meter's state is BOTH axes plus the open dispatch batches (2026-09-27).** `POST /assignments/meters`
+leaves `meters.status` at AVAILABLE *by design* (the spec says so), and `GET /meters` does not
+document `assignmentStatus` (gap G). So "who holds this meter" is read from the open METER batches —
+`hooks/useMeterHolders.js` → `indexMeterHolders` — the same server record the capacity check uses.
+`withMeterHolders` joins it onto inventory rows; `meterAvailability` gives the one displayed state
+(Available / Assigned / Installed / Faulty / Retired / Lost — no new status); `isAssignableMeter(meter,
+holder)` and `meterDeletionBlockReason(meter, holder)` refuse a held meter whatever its own record
+says. Meter Schedule shows "Assigned · With <installer>" and offers no second Assign. **Phase values
+are canonicalised by `normalizePhase`** ("3 Phase", "THREE_PHASE", "Three Phase Meter" → 'THREE PHASE';
+the meter import keeps raw cells) — compare phases only through it, and send a phase as a query
+parameter only via `toApiPhase`. The Assignments picker no longer relies only on its paged
+`GET /meters?status=AVAILABLE` scan: a typed serial is also searched server-side (`/meters/search`,
+no status filter, judged client-side by `isAssignableMeter`) and pasted serials the scan lacks are
+resolved exactly — found dispatchable meters join the options. `scripts/diagnostics/verify-live-data.mjs`
+(read-only) checks all of this against production with a real account.
+
+**Meter Schedule cards are drill-downs (2026-09-27).** Each status/phase card sets the inventory's
+server-side filter; the open card is derived from the current filters, and `DrillSummary` shows the
+card's count beside the list's own total, flagging any disagreement. **Assigned** (open-dispatch
+index) lists exactly that index. **Installed** joins each meter to its completed installation by meter
+number (`useInstallationRecordsByMeter` → `indexInstallationsByMeter`, reading fields through the
+completed-installations export's own column definitions); phone numbers only for the admin tier.
+Cards show only fields `/meters/statistics` documents; a missing figure is "—", never 0 (the old
+Pending/Paid cards read undocumented fields and were removed).
 
 **Meter search has three paths, in order of precision.** A COMPLETE meter number → `GET /meters/meter-number/{n}` (`getMeterByNumber`): one request, whole inventory, exact match. A digits-only PARTIAL (serial or SIM fragment) → `GET /meters/search?q=` (`searchMeters`, added 2026-09-24): server-side, whole inventory, paginated. Anything else (a make, model or SGC term) → the paged `GET /meters` scan, because nothing covers those. `GET /meters` itself still has no search parameter. **Never "solve" search by raising a page cap**: that is slower and still wrong — add the endpoint the term needs. Note that an empty *envelope* from the search means the search didn't happen (fall back); an envelope with an empty list means no matches (don't).
 
@@ -208,6 +281,25 @@ view is a query param, not a path segment, because `/installations/:accountNumbe
 `/installation-requests` redirects there. Don't re-split them into two nav items, and don't merge
 their rows into one table: they are two resources whose status enums don't overlap. The shared
 `JedAssignmentNotice` is the one explanation of why a JED request can't be dispatched.
+
+**Paste many account numbers (Installations → All Requests, 2026-09-27).** `utils/accountBatch.js`
+classifies a pasted list (`parseIdentifierList` — the same parser as "Paste serials") against the rows
+the page already holds: ready (PENDING/FAILED), already assigned, can't be assigned (finished,
+cancelled, or a JED Remita request), not found. "Select N assignable" narrows the list to the pasted
+accounts and selects the ready ones, so the normal Assign modal and capacity check apply. A selection
+spanning discos is sent as **one `POST /assignments/installations` per disco** (`ids[]`), never one per
+job; a disco whose request fails is reported against its own rows while the others land.
+
+**Installer Job Status (`/installer-status`, 2026-09-27)** — `components/installers/InstallerJobStatus.jsx`
++ `utils/installerStats.js`. Per installer: assigned (awaiting + completed), awaiting (the installer's
+share of Pending: ASSIGNED, IN_PROGRESS, or FAILED while still theirs — `isPendingInstallation`; the
+page shows how the column plus the pending nobody holds adds up to the Dashboard figure), in progress,
+completed (INSTALLED + EXPORTED), failed (also shown on its own), meters held
+(open batches), meter need (`computeMeterCapacity`), completion = completed ÷ assigned ("—" when there
+are no jobs). It reads GET /users?role=INSTALLER and GET /installations for the five statuses that
+carry an installer only (never PENDING/CANCELLED); the drill-down filters that installer's loaded jobs
+in memory. No per-installer aggregate exists on the API (gap AG). Permission `INSTALLERS.VIEW_STATUS`:
+Admin, Super Admin, Supervisor (no money on the page); never Installer.
 
 **One dispatch implementation:** `hooks/useMeterDispatch.js` owns "give these meter serials to this
 installer" — the ASSIGNMENTS.MANAGE check, the role's capacity rule, the live capacity read, the
@@ -297,8 +389,8 @@ Four, all of them in the real API's `User.role` enum (uppercase, used as-is):
 
 - **SUPERADMIN** — everything `ADMIN` has, plus the only role permitted to create/edit `ADMIN`, `SUPERADMIN` or `SUPERVISOR` accounts (enforced client-side in `UserManagement.jsx` via `isPrivilegedRole` **and** by the real backend). It is also the only role **not** capped by the meter-assignment rules — it assigns installations and meters independently (see "Meter assignment is role-dependent" below).
 - **ADMIN** — manages users (except privileged roles), confirms/reconciles payments, runs reports, configures meter types/settings/API keys, manages meter inventory, manages installations. Its meter dispatches **are** capped, per meter type, by the installer's open installations.
-- **SUPERVISOR** — the backend's own description is "an ADMIN whose access has been narrowed to installations and assignments", and this app's permission set mirrors it exactly. **Full** on `/installations` (create, cancel, assign, unassign, disco export and mark-sent) and on `/assignments` (dispatch and return meters). **Read-only** on `/schedule` (list, search, view — no upload, export, statistics or delete) and on `/users` (the Installer roster only — no create, edit, delete or restore). `/dashboard` shows it the pipeline view **without** the revenue KPI, the revenue trend or per-row amounts (money is `PAYMENTS.VIEW`). **No access at all** to Payments/Finance, Imports, Reports, Settings, API Keys or Uploads. It does **not** hold `INSTALLATIONS.COMPLETE` — starting, reporting and failing a job are Installer-only on the API. It is deliberately **outside** `permissions.isAdmin`, which is why every existing `isAdmin` gate denies it without that call site having to learn the new role; what it *may* reach is granted explicitly in `ROLE_PERMISSIONS[SUPERVISOR]`, an allow-list, never an admin set minus exclusions. Because it **can** dispatch meters, it is capped by the meter-assignment rules exactly like an Admin. It gets the 3-minute idle-session timeout (it's an office account).
-- **INSTALLER** — sees the shared "Awaiting Installation"/"Completed" queue (`InstallerDashboard.jsx`, mounted at `/dashboard` for this role), completes installs, and reports problems through the Complaint Form (`/complaints`, Installer-only — see "Pending" in `PROJECT_CONTEXT.md`: the backend has no complaints API yet, so it validates and produces a copyable summary but cannot record anything). **Installer does NOT have Uploads** (removed 2026-09-21: `UPLOADS.EXCEL` is no longer in the Installer permission set, so the sidebar item, the `/uploads` route guard and `ExcelUpload`'s own check all deny it). Cannot reach `/installations`, `/schedule`, `/uploads`, `/users`, `/reports`, `/payments`, `/settings` — gated in `App.jsx`. The idle-session timeout explicitly does **not** apply to Installer.
+- **SUPERVISOR** — the backend's own description is "an ADMIN whose access has been narrowed to installations and assignments", and this app's permission set mirrors it exactly. **Full** on `/installations` (create, cancel, assign, unassign, disco export and mark-sent) and on `/assignments` (dispatch and return meters). **Read-only** on `/schedule` (list, search, view — no upload, export, statistics or delete) and on `/users` (the Installer roster only — no create, edit, delete or restore). `/dashboard` shows it the pipeline view **without** the revenue KPI, the revenue trend or per-row amounts (money is `PAYMENTS.VIEW`). **No access at all** to Payments/Finance, Imports, Reports, Settings, API Keys or Uploads. It does **not** hold `INSTALLATIONS.COMPLETE` — starting, reporting and failing a job are Installer-only on the API. It is deliberately **outside** `permissions.isAdmin`, which is why every existing `isAdmin` gate denies it without that call site having to learn the new role; what it *may* reach is granted explicitly in `ROLE_PERMISSIONS[SUPERVISOR]`, an allow-list, never an admin set minus exclusions. Because it **can** dispatch meters, it is capped by the meter-assignment rules exactly like an Admin. It also gets **Installer Job Status** (`INSTALLERS.VIEW_STATUS` — operational figures only, built from reads it already holds). It gets the 3-minute idle-session timeout (it's an office account).
+- **INSTALLER** — sees the shared "Awaiting Installation"/"Completed" queue (`InstallerDashboard.jsx`, mounted at `/dashboard` for this role), completes installs, and reports problems through the Complaint Form (`/complaints`, Installer-only — see "Pending" in `PROJECT_CONTEXT.md`: the backend has no complaints API yet, so it validates and produces a copyable summary but cannot record anything). **Installer does NOT have Uploads** (removed 2026-09-21: `UPLOADS.EXCEL` is no longer in the Installer permission set, so the sidebar item, the `/uploads` route guard and `ExcelUpload`'s own check all deny it). Cannot reach `/installations`, `/installer-status`, `/schedule`, `/uploads`, `/users`, `/reports`, `/payments`, `/settings` — gated in `App.jsx`. The idle-session timeout explicitly does **not** apply to Installer.
 
 The session's role is **verified server-side on every load** (`AuthContext` calls `GET /auth/profile`
 and trusts only that response — never the client-editable `localStorage.jedUser`). **Client-side role

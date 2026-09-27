@@ -25,7 +25,7 @@ import { Link } from 'react-router-dom';
 import {
   RefreshCw, Search, AlertCircle, Loader2, UserPlus, X,
   Download, Ban, Undo2, Inbox, MapPin, ExternalLink, ArrowDownUp, Filter,
-  Wallet, BadgeCheck, ChevronRight, FileSpreadsheet, CalendarClock,
+  ChevronRight, FileSpreadsheet, CalendarClock, ClipboardPaste,
 } from 'lucide-react';
 import jedApi from '../services/api';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
@@ -48,7 +48,15 @@ import {
 } from '../../utils/completedInstallationsReport';
 import { isAwaitingInstallationStatus } from '../../utils/statusBadge';
 import { getAvailableActions, getCoordinates } from '../../utils/installationStatus';
-import { summarizeRemitaPayments } from '../../utils/paymentSummary';
+import { revenueScopeFilter } from '../../utils/financeSummary';
+import { usePaymentRevenueSummary } from '../../hooks/usePaymentRevenueSummary';
+import { totalCollectedPayment } from '../../utils/meterPricing';
+import { useInstallationTotals } from '../../hooks/useDashboardInstallations';
+import {
+  PENDING_INSTALLATION_FILTER, isPendingInstallationRow, filterByInstallationStatus,
+} from '../../utils/installationTotals';
+import RevenueSummaryPanel from './RevenueSummaryPanel';
+import { classifyPastedAccounts, accountBatchMessage, mergeAssignmentResults } from '../../utils/accountBatch';
 import {
   ROW_SOURCE, JED_BUCKET, ATTRIBUTE_FILTERS, SORT_OPTIONS, NOT_RECORDED,
   buildScopeOptions, resolveScope, attributeRemitaRecord, nonJedCodeSet,
@@ -81,25 +89,6 @@ function StatTile({ label, value, active, onClick }) {
       <p className="text-lg font-bold text-gray-900 dark:text-white leading-tight">{value}</p>
       <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-tight truncate">{label}</p>
     </button>
-  );
-}
-
-function MetricCard({ icon: Icon, tone, label, value, detail }) {
-  const tones = {
-    blue: 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400',
-    green: 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400',
-  };
-  return (
-    <div className="card p-4 flex items-start gap-3 min-w-0">
-      <div className={`p-2 rounded-lg shrink-0 ${tones[tone]}`}>
-        <Icon className="w-5 h-5" />
-      </div>
-      <div className="min-w-0">
-        <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
-        <p className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white break-words">{value}</p>
-        {detail && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{detail}</p>}
-      </div>
-    </div>
   );
 }
 
@@ -201,7 +190,8 @@ function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign,
   );
 }
 
-function JedRequestRow({ row, onAssign, canAssign = true }) {
+// `showAmount` is PAYMENTS.VIEW: a Supervisor sees the request, not the money.
+function JedRequestRow({ row, onAssign, canAssign = true, showAmount = false }) {
   const job = row.raw;
   return (
     <div className="p-4 flex items-start gap-3">
@@ -225,7 +215,7 @@ function JedRequestRow({ row, onAssign, canAssign = true }) {
         )}
         <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 space-y-0.5">
           <p>
-            {job.amount != null && job.amount !== '' ? `${formatCurrencyNGN(job.amount)} · ` : ''}
+            {showAmount && job.amount != null && job.amount !== '' ? `${formatCurrencyNGN(job.amount)} · ` : ''}
             Requested {formatDateOnly(job.dateRequested)}
             {job.dateCompleted ? ` · Installed ${formatDateOnly(job.dateCompleted)}` : ''}
           </p>
@@ -291,6 +281,17 @@ function InstallationRequests() {
   const [assigning, setAssigning] = useState(false);
   const [assignResult, setAssignResult] = useState(null);
   const [jedAssignTarget, setJedAssignTarget] = useState(null);
+
+  // Paste-many account numbers (utils/accountBatch.js). `accountBatch` is the
+  // classified paste; `accountFilter` narrows the list to the accounts it
+  // found, so the ordinary selection, capacity check and Assign modal apply to
+  // them unchanged. `pendingBatchSelect` holds the row keys to select once
+  // the narrowed list has rendered (see the effect below).
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const [accountBatch, setAccountBatch] = useState(null);
+  const [accountFilter, setAccountFilter] = useState(null); // Set<rowKey> | null
+  const [pendingBatchSelect, setPendingBatchSelect] = useState(null); // Set<rowKey> | null
 
   const [cancelTarget, setCancelTarget] = useState(null);
   const [actionBusy, setActionBusy] = useState(false);
@@ -401,6 +402,11 @@ function InstallationRequests() {
   );
 
   const scopeRows = useMemo(() => [...multiRows, ...jedRowsInScope], [multiRows, jedRowsInScope]);
+  // A pasted account list narrows everything below it — tiles, list, options.
+  const listRows = useMemo(
+    () => (accountFilter ? scopeRows.filter((r) => accountFilter.has(r.key)) : scopeRows),
+    [scopeRows, accountFilter]
+  );
 
   // JED statuses are offered for "All", for JED itself, and for any disco
   // that actually has Remita requests attributed to it.
@@ -415,12 +421,22 @@ function InstallationRequests() {
   // Import-date range applies before the status counts, so every tile, the
   // list, the totals and the exports all describe the same set of rows.
   const attrFiltered = useMemo(
-    () => filterByImportDate(applyAttributeFilters(scopeRows, { attributes, search }), importedFrom, importedTo),
-    [scopeRows, attributes, search, importedFrom, importedTo]
+    () => filterByImportDate(applyAttributeFilters(listRows, { attributes, search }), importedFrom, importedTo),
+    [listRows, attributes, search, importedFrom, importedTo]
   );
   const statusCounts = useMemo(() => countByStatus(attrFiltered), [attrFiltered]);
+
+  // "Pending installations" — the same population and rule as the Admin
+  // Dashboard and Reports (utils/installationTotals.js). Unfiltered, at "All
+  // discos", the tile shows the SERVER aggregate the Dashboard shows, so the
+  // two are one number by construction. Once a disco, search, attribute, date
+  // or pasted-account filter narrows the list, it is the same predicate
+  // recounted over exactly the rows shown — and the "Pending installations"
+  // status filter lists those very rows.
+  const systemTotals = useInstallationTotals({ enabled: true });
+  const pendingRowCount = useMemo(() => attrFiltered.filter(isPendingInstallationRow).length, [attrFiltered]);
   const visibleRows = useMemo(
-    () => sortRows(applyStatusFilter(attrFiltered, status), sortKey, sortDir),
+    () => sortRows(filterByInstallationStatus(attrFiltered, status), sortKey, sortDir),
     [attrFiltered, status, sortKey, sortDir]
   );
 
@@ -431,7 +447,7 @@ function InstallationRequests() {
     ATTRIBUTE_FILTERS.forEach(({ field }) => {
       const others = { ...attributes, [field]: '' };
       const base = filterByImportDate(
-        applyAttributeFilters(scopeRows, { attributes: others, search }), importedFrom, importedTo
+        applyAttributeFilters(listRows, { attributes: others, search }), importedFrom, importedTo
       );
       const options = buildFilterOptions(base, field);
       const current = attributes[field];
@@ -441,7 +457,7 @@ function InstallationRequests() {
       out[field] = options;
     });
     return out;
-  }, [scopeRows, attributes, search, importedFrom, importedTo]);
+  }, [listRows, attributes, search, importedFrom, importedTo]);
 
   const shownFilters = ATTRIBUTE_FILTERS.filter(
     (f) => f.always || filterOptions[f.field].some((o) => o.value !== NOT_RECORDED)
@@ -460,6 +476,8 @@ function InstallationRequests() {
 
   // Scope change: filters from another disco don't carry over.
   useEffect(() => {
+    setAccountFilter(null);
+    setAccountBatch(null);
     setAttributes(EMPTY_ATTRIBUTES);
     setStatus('');
     setImportedFrom('');
@@ -485,6 +503,20 @@ function InstallationRequests() {
     });
   }, [visibleByKey]);
 
+  // Select a pasted batch once the narrowed list is on screen. Waits for the
+  // deferred search to settle (clearing it is part of applying a batch), so a
+  // row isn't dropped by the prune above for being hidden by a stale term.
+  useEffect(() => {
+    if (!pendingBatchSelect || search !== searchTerm) return;
+    const next = new Map();
+    pendingBatchSelect.forEach((key) => {
+      const row = visibleByKey.get(key);
+      if (row && getAvailableActions(row.status).assign) next.set(key, row);
+    });
+    setSelected(next);
+    setPendingBatchSelect(null);
+  }, [pendingBatchSelect, visibleByKey, search, searchTerm]);
+
   const selectedRows = useMemo(() => Array.from(selected.values()), [selected]);
   const assignableVisible = useMemo(
     () => visibleRows.filter((r) => r.source === ROW_SOURCE.MULTI && getAvailableActions(r.status).assign),
@@ -492,8 +524,10 @@ function InstallationRequests() {
   );
   const allAssignableSelected = assignableVisible.length > 0 && assignableVisible.every((r) => selected.has(r.key));
 
-  // Assignment is per disco, so a mixed-disco selection can't be dispatched
-  // in one call — surfaced as a clear message rather than a 400.
+  // Assignment is per disco: a mixed-disco selection (e.g. a pasted account
+  // list under "All discos") goes out as one bulk request per disco — see
+  // handleAssign. Meter capacity is per disco too, so it is only shown for a
+  // single-disco selection.
   const selectionDiscos = useMemo(
     () => Array.from(new Set(selectedRows.map((r) => r.discoCode).filter(Boolean))),
     [selectedRows]
@@ -504,7 +538,7 @@ function InstallationRequests() {
   const {
     capacity, loading: capacityLoading, error: capacityError, reload: reloadCapacity,
   } = useInstallerMeterCapacity({
-    installerId: assignOpen && !assignResult ? installerId : '',
+    installerId: assignOpen && !assignResult && !mixedDiscos ? installerId : '',
     discoCode: selectionDisco,
   });
 
@@ -521,42 +555,106 @@ function InstallationRequests() {
     setSelected(allAssignableSelected ? new Map() : new Map(assignableVisible.map((r) => [r.key, r])));
   };
 
-  const payments = useMemo(
-    () => summarizeRemitaPayments(jedRowsInScope.map((r) => r.raw)),
-    [jedRowsInScope]
+  // Money for this scope comes from the ONE revenue calculation the Dashboard
+  // and Payments page use (recognised revenue, GET /finance/revenue/*), narrowed
+  // to the scope with the same disco attribution as the rows below — so at
+  // "All discos" these figures equal the Dashboard's exactly. It is financial
+  // data: only a role with PAYMENTS.VIEW sees it or triggers the read (a
+  // Supervisor reaches this page and gets neither — the endpoint is a 403 for
+  // it anyway).
+  const canViewMoney = permissions.canViewPayments;
+  const revenueSelect = useMemo(
+    () => revenueScopeFilter(scopeInfo, (code) => attributeRemitaRecord({ discoCode: code }, nonJedCodes)),
+    [scopeInfo, nonJedCodes]
   );
-  const paymentRecords = payments.paidCount + payments.completedCount;
+  const paymentSummary = usePaymentRevenueSummary({
+    enabled: canViewMoney === true, select: revenueSelect, totals: systemTotals.totals,
+  });
+  // Total collected payments for the rows this page is showing: the SAME
+  // formula (totalCollectedPayment) and the same live prices as the shared
+  // figure, applied to exactly the rows the "Pending installations" tile
+  // counts — so under any disco, filter or pasted list the count and the
+  // value describe the same records.
+  const filteredValuation = useMemo(
+    () => (paymentSummary.priceIndex ? totalCollectedPayment(attrFiltered, paymentSummary.priceIndex) : null),
+    [attrFiltered, paymentSummary.priceIndex]
+  );
   const scopeLabel = scopeOptions.find((o) => o.value === scope)?.label || 'All discos';
+
+  const handleFindAccounts = () => {
+    const result = classifyPastedAccounts(pasteText, scopeRows);
+    setAccountBatch(result.accounts.length ? result : null);
+  };
+
+  // Show exactly the accounts the paste found and select the assignable ones.
+  // Other filters are cleared first — a pasted list is its own filter, and a
+  // leftover feeder or status filter would silently hide pasted rows.
+  const applyAccountBatch = () => {
+    if (!accountBatch) return;
+    clearAllFilters();
+    setAccountFilter(new Set(accountBatch.matchedKeys));
+    setPendingBatchSelect(new Set(accountBatch.assignableRows.map((r) => r.key)));
+    setPasteOpen(false);
+  };
+
+  const clearAccountBatch = () => {
+    setAccountFilter(null);
+    setAccountBatch(null);
+    setPasteText('');
+    setSelected(new Map());
+  };
 
   const handleAssign = async () => {
     if (assigning) return;
     if (!installerId) { setAssignError('Select an installer.'); return; }
-    if (mixedDiscos) { setAssignError('Select jobs from a single disco at a time.'); return; }
     if (selectedRows.length === 0) { setAssignError('No jobs selected.'); return; }
 
     setAssigning(true);
     setAssignError(null);
     setAssignResult(null);
-    try {
-      // `ids` and `accountNumbers` are mutually exclusive — ids are used
-      // because they're unambiguous across discos.
-      const payload = {
-        discoCode: selectionDisco,
-        installerId,
-        ids: selectedRows.map((r) => r.id),
-      };
-      if (dispatchRef.trim()) payload.dispatchRef = dispatchRef.trim();
-
-      const response = await jedApi.assignInstallations(payload);
-      setAssignResult(response?.data || response);
+    // POST /assignments/installations is scoped to one disco, so a selection
+    // spanning discos is sent as one bulk request PER DISCO (never one per
+    // job). Each is partial-success on the server; a disco whose request
+    // fails outright is reported against its own rows while the others still
+    // land — one bad group never undoes another.
+    const groups = new Map();
+    selectedRows.forEach((r) => {
+      const code = r.discoCode || multiDiscoCode;
+      if (!groups.has(code)) groups.set(code, []);
+      groups.get(code).push(r);
+    });
+    const results = [];
+    let failures = 0;
+    for (const [code, rows] of groups) {
+      try {
+        // `ids` and `accountNumbers` are mutually exclusive — ids are used
+        // because they're unambiguous across discos.
+        const payload = { discoCode: code, installerId, ids: rows.map((r) => r.id) };
+        if (dispatchRef.trim()) payload.dispatchRef = dispatchRef.trim();
+        const response = await jedApi.assignInstallations(payload);
+        results.push(response?.data || response);
+      } catch (err) {
+        console.error(`[InstallationRequests] Assign failed for ${code}:`, err);
+        failures += 1;
+        const reason = getErrorMessage(err, 'Could not assign these jobs.');
+        results.push({
+          assignedCount: 0,
+          rejectedCount: rows.length,
+          rejected: rows.map((r) => ({ accountNumber: r.accountNumber, reason })),
+        });
+      }
+    }
+    const merged = mergeAssignmentResults(results);
+    if (failures === groups.size) {
+      setAssignError(merged.rejected[0]?.reason || 'Could not assign these jobs.');
+    } else {
+      setAssignResult(merged);
+    }
+    if (merged.assignedCount > 0) {
       notifyDataChanged();
       refreshAll();
-    } catch (err) {
-      console.error('[InstallationRequests] Assign failed:', err);
-      setAssignError(getErrorMessage(err, 'Could not assign these jobs.'));
-    } finally {
-      setAssigning(false);
     }
+    setAssigning(false);
   };
 
   const handleUnassign = async (job) => {
@@ -721,6 +819,7 @@ function InstallationRequests() {
   }
 
   const assignJobCount = selectedRows.length;
+  const pendingUnfiltered = !scope && activeFilterCount === 0 && !accountFilter;
 
   // The completed-installations export claims to cover the whole scope, so it
   // is only offered once every source in scope has loaded in full.
@@ -781,43 +880,46 @@ function InstallationRequests() {
         )}
       </div>
 
-      {/* Payments — from JED's Remita requests, the only records with an amount */}
-      {jed.loaded && !jedError && (
-        <section aria-labelledby="ir-payments" className="space-y-2">
-          <h2 id="ir-payments" className="text-sm font-semibold text-gray-700 dark:text-gray-300">
-            Payments &middot; {scopeLabel}
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <MetricCard
-              icon={Wallet}
-              tone="blue"
-              label="Total collected payments"
-              value={formatCurrencyNGN(payments.collected)}
-              detail={`${paymentRecords.toLocaleString()} paid request${paymentRecords === 1 ? '' : 's'} (paid or completed)`}
-            />
-            <MetricCard
-              icon={BadgeCheck}
-              tone="green"
-              label="Revenue due to us"
-              value={formatCurrencyNGN(payments.revenueDue)}
-              detail={`${payments.completedCount.toLocaleString()} completed installation${payments.completedCount === 1 ? '' : 's'}`}
-            />
-          </div>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            Paid and completed payments, each counted once. Revenue due counts completed installations only.
-            {includeMulti && ' Imported requests have no payment amount.'}
-            {scopeInfo.remitaBucket && scopeInfo.remitaBucket !== JED_BUCKET && jedRowsInScope.length === 0 &&
-              ` No payments recorded for ${scopeInfo.remitaBucket}.`}
-            {payments.duplicates > 0 && ` ${payments.duplicates} duplicate record${payments.duplicates === 1 ? '' : 's'} skipped.`}
-            {payments.invalidAmounts > 0 && ` ${payments.invalidAmounts} without a valid amount skipped.`}
-          </p>
-        </section>
+      {/* Payments — the shared revenue panel, scoped to this disco */}
+      {canViewMoney && (
+        <RevenueSummaryPanel
+          id="ir-payments"
+          title={`Payment & Revenue Summary · ${scopeLabel}`}
+          collected={pendingUnfiltered
+            // The overall scope: the shared figure, identical to the Dashboard's.
+            ? paymentSummary.collected
+            : {
+              valuation: completenessWarnings.length ? null : filteredValuation,
+              loading: paymentSummary.collected.loading || listLoading,
+              error: paymentSummary.collected.error,
+              incomplete: completenessWarnings.length > 0,
+            }}
+          revenue={paymentSummary.revenue}
+          onRetry={paymentSummary.reload}
+        />
       )}
 
       {/* Status counts — for exactly the rows the filters below produce */}
       {scopeRows.length > 0 && (
         <section aria-label="Status counts" className="space-y-2">
+          {pendingUnfiltered && systemTotals.error && (
+            <p role="alert" className="text-xs text-red-700 dark:text-red-300">Unable to load the pending installation total. {systemTotals.error}</p>
+          )}
+          {pendingUnfiltered && !listLoading && systemTotals.totals && systemTotals.totals.pending !== pendingRowCount && (
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              {systemTotals.totals.pending.toLocaleString()} installations are pending, but {pendingRowCount.toLocaleString()} of them are in
+              the list loaded here{completenessWarnings.length ? ' (not every record loaded)' : ' — refresh to reconcile'}.
+            </p>
+          )}
           <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+            <StatTile
+              label="Pending installations"
+              value={pendingUnfiltered
+                ? (systemTotals.loading ? '…' : systemTotals.error || !systemTotals.totals ? '—' : systemTotals.totals.pending.toLocaleString())
+                : pendingRowCount}
+              active={status === PENDING_INSTALLATION_FILTER}
+              onClick={() => setStatus(status === PENDING_INSTALLATION_FILTER ? '' : PENDING_INSTALLATION_FILTER)}
+            />
             <StatTile label="All" value={attrFiltered.length} active={status === ''} onClick={() => setStatus('')} />
             {multiStatuses.map((s) => (
               <StatTile key={s.value} label={s.label} value={statusCounts[s.value] || 0}
@@ -840,6 +942,101 @@ function InstallationRequests() {
 
       <div className="card overflow-hidden">
         <div className="p-3 sm:p-4 border-b border-gray-200 dark:border-gray-700 space-y-3">
+          {/* Paste many account numbers — only for a role that can dispatch. */}
+          {canAssign && (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPasteOpen((v) => !v)}
+                  aria-expanded={pasteOpen}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
+                >
+                  <ClipboardPaste className="w-3.5 h-3.5" /> Paste account numbers
+                </button>
+                {accountFilter && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-brand-100 dark:bg-brand-900/30 text-brand-800 dark:text-brand-300">
+                    Showing {accountFilter.size.toLocaleString()} pasted account{accountFilter.size === 1 ? '' : 's'}
+                    <button type="button" onClick={clearAccountBatch} aria-label="Clear pasted account list"
+                      className="p-0.5 rounded-full hover:bg-brand-200 dark:hover:bg-brand-800">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                )}
+              </div>
+
+              {pasteOpen && (
+                <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-2">
+                  <label htmlFor="ir-paste-accounts" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                    Account numbers — one per line, or separated by commas, spaces or tabs
+                  </label>
+                  <textarea
+                    id="ir-paste-accounts"
+                    rows={4}
+                    value={pasteText}
+                    onChange={(e) => { setPasteText(e.target.value); setAccountBatch(null); }}
+                    placeholder={'1234567890\n1234567891'}
+                    className="form-input w-full px-3 py-2 text-sm font-mono"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleFindAccounts}
+                      disabled={!pasteText.trim() || listLoading}
+                      className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50"
+                    >
+                      {listLoading ? 'Loading requests…' : 'Find accounts'}
+                    </button>
+                    {accountBatch && accountBatch.assignableRows.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={applyAccountBatch}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-brand-500 text-gray-900 rounded-lg text-xs font-medium hover:bg-brand-600"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        Select {accountBatch.assignableRows.length.toLocaleString()} assignable
+                      </button>
+                    )}
+                  </div>
+
+                  {accountBatch && (
+                    <div role="status" className="text-xs space-y-1 text-gray-700 dark:text-gray-300">
+                      <p>
+                        {accountBatch.accounts.length.toLocaleString()} account number{accountBatch.accounts.length === 1 ? '' : 's'} checked
+                        {accountBatch.duplicates.length > 0 && ` (${accountBatch.duplicates.length} duplicate${accountBatch.duplicates.length === 1 ? '' : 's'} removed)`}
+                        {' '}in {scopeLabel}.
+                      </p>
+                      <ul className="space-y-0.5">
+                        <li><span className="font-semibold text-green-700 dark:text-green-400">{accountBatch.assignable.length}</span> found and ready to assign</li>
+                        {accountBatch.alreadyAssigned.length > 0 && (
+                          <li>
+                            <span className="font-semibold">{accountBatch.alreadyAssigned.length}</span> already assigned:{' '}
+                            <span className="font-mono break-all">{accountBatch.alreadyAssigned.map((a) => (a.installer ? `${a.account} (${a.installer})` : a.account)).join(', ')}</span>
+                          </li>
+                        )}
+                        {accountBatch.cannotAssign.length > 0 && (
+                          <li>
+                            <span className="font-semibold text-amber-700 dark:text-amber-400">{accountBatch.cannotAssign.length}</span> can&apos;t be assigned now:{' '}
+                            <span className="break-all">{accountBatch.cannotAssign.map((a) => `${a.account} (${a.reason})`).join(', ')}</span>
+                          </li>
+                        )}
+                        {accountBatch.notFound.length > 0 && (
+                          <li>
+                            <span className="font-semibold text-red-700 dark:text-red-400">{accountBatch.notFound.length}</span> not found:{' '}
+                            <span className="font-mono break-all">{accountBatch.notFound.join(', ')}</span>
+                          </li>
+                        )}
+                      </ul>
+                      {completenessWarnings.length > 0 && accountBatch.notFound.length > 0 && (
+                        <p className="text-amber-700 dark:text-amber-400">Not every request loaded, so &ldquo;not found&rdquo; may be incomplete.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
@@ -859,6 +1056,7 @@ function InstallationRequests() {
               className="form-input w-full px-3 py-2 text-sm"
             >
               <option value="">All statuses</option>
+              <option value={PENDING_INSTALLATION_FILTER}>Pending installations (every not-yet-installed request)</option>
               {multiStatuses.length > 0 && (
                 <optgroup label="Imported jobs">
                   {multiStatuses.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
@@ -1059,13 +1257,16 @@ function InstallationRequests() {
           <div className="px-3 sm:px-4 py-2.5 bg-brand-50 dark:bg-brand-900/20 border-b border-brand-200 dark:border-brand-800 flex items-center justify-between gap-3">
             <p className="text-sm font-medium text-brand-800 dark:text-brand-300">
               {selectedRows.length} selected
-              {mixedDiscos && <span className="block text-xs font-normal">Select one disco at a time to dispatch</span>}
+              {mixedDiscos && (
+                <span className="block text-xs font-normal">
+                  Across {selectionDiscos.length} discos — sent as one request per disco
+                </span>
+              )}
             </p>
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => { setAssignError(null); setAssignResult(null); setAssignOpen(true); }}
-                disabled={mixedDiscos}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-brand-500 text-gray-900 rounded-lg text-xs font-medium hover:bg-brand-600 disabled:opacity-50"
               >
                 <UserPlus className="w-3.5 h-3.5" />
@@ -1098,7 +1299,7 @@ function InstallationRequests() {
             <div className="divide-y divide-gray-200 dark:divide-gray-700">
               {visibleRows.slice(0, visibleCount).map((row) => (
                 row.source === ROW_SOURCE.JED ? (
-                  <JedRequestRow key={row.key} row={row} onAssign={setJedAssignTarget} canAssign={canAssign} />
+                  <JedRequestRow key={row.key} row={row} onAssign={setJedAssignTarget} canAssign={canAssign} showAmount={canViewMoney} />
                 ) : (
                   <RequestRow
                     key={row.key}
@@ -1139,7 +1340,7 @@ function InstallationRequests() {
               <div className="min-w-0">
                 <h2 id="assign-title" className="text-lg font-semibold text-gray-900 dark:text-white">Assign to installer</h2>
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                  {assignJobCount} job{assignJobCount === 1 ? '' : 's'} &middot; {selectionDisco}
+                  {assignJobCount} job{assignJobCount === 1 ? '' : 's'} &middot; {mixedDiscos ? `${selectionDiscos.length} discos` : selectionDisco}
                 </p>
               </div>
               <button type="button" onClick={() => setAssignOpen(false)} aria-label="Close"
@@ -1150,7 +1351,20 @@ function InstallationRequests() {
 
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
               {assignResult ? (
-                <BatchResultSummary data={assignResult} acceptedLabel="Jobs assigned" />
+                <>
+                  {accountFilter && accountBatch && (
+                    <p role="status" className="text-sm text-gray-800 dark:text-gray-200">
+                      {accountBatchMessage({
+                        assigned: assignResult.assignedCount,
+                        rejected: assignResult.rejectedCount,
+                        alreadyAssigned: accountBatch.alreadyAssigned.length,
+                        cannotAssign: accountBatch.cannotAssign.length,
+                        notFound: accountBatch.notFound.length,
+                      })}
+                    </p>
+                  )}
+                  <BatchResultSummary data={assignResult} acceptedLabel="Jobs assigned" />
+                </>
               ) : (
                 <>
                   <div>
@@ -1165,7 +1379,12 @@ function InstallationRequests() {
                       required
                     />
                   </div>
-                  {installerId && (
+                  {installerId && mixedDiscos && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Meter capacity is worked out per disco, so it isn&apos;t shown for a selection across discos.
+                    </p>
+                  )}
+                  {installerId && !mixedDiscos && (
                     <MeterCapacitySummary
                       capacity={capacity}
                       loading={capacityLoading}

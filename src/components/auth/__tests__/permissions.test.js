@@ -46,7 +46,12 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
       PERMISSIONS.INSTALLATIONS.MANAGE,
       PERMISSIONS.SCHEDULE.VIEW,
       PERMISSIONS.USERS.VIEW,
+      PERMISSIONS.INSTALLERS.VIEW_STATUS,
     ].sort());
+  });
+
+  it('never gives an Installer the overview of other installers', () => {
+    expect(hasPermission(ROLES.INSTALLER, PERMISSIONS.INSTALLERS.VIEW_STATUS)).toBe(false);
   });
 
   it.each([
