@@ -73,13 +73,41 @@ describe('buildCompletedInstallationsReport', () => {
     expect(types).toMatchObject({ accountNumber: 'text', meterNumber: 'text', simNumber: 'text', rrr: 'text', amount: 'currency', installationDate: 'date' });
   });
 
-  it('drops columns that no row has, rather than shipping them blank', () => {
+  it('drops OPTIONAL columns no row has, but always keeps the core installation facts', () => {
     const { sheets } = buildCompletedInstallationsReport({ rows: [jed()], context });
     const keys = sheets[0].columns.map((c) => c.key);
     expect(keys).toContain('rrr');
     expect(keys).not.toContain('feederName');
-    expect(keys).not.toContain('installerName');
     expect(keys).not.toContain('simNumber');
+    // Kept even when blank for every row — a blank cell says "not recorded".
+    ['installerName', 'sealNumber', 'latitude', 'longitude', 'discoSupervisor', 'photoUrl', 'installationDate']
+      .forEach((k) => expect(keys).toContain(k));
+  });
+
+  it('always has an Installation Picture Link column, as a hyperlink', () => {
+    const withPhoto = multi({ installationPhotoUrl: 'https://api.memetering.com/api/v1/files/abc' });
+    const { sheets } = buildCompletedInstallationsReport({ rows: [withPhoto, jed()], context });
+    const col = sheets[0].columns.find((c) => c.key === 'photoUrl');
+    expect(col).toMatchObject({ header: 'Installation Picture Link', type: 'link' });
+    expect(sheets[0].rows.map((r) => r.photoUrl)).toContain('https://api.memetering.com/api/v1/files/abc');
+    expect(sheets[1].rows.find((r) => r.item === 'Installation pictures').value).toBe('1 of 2 have a picture link');
+  });
+
+  it('embeds a fetched picture in its own column, on the right row', () => {
+    const url = 'https://api.memetering.com/api/v1/files/abc';
+    const photos = new Map([[url, { buffer: new ArrayBuffer(4), extension: 'jpeg' }]]);
+    const { sheets } = buildCompletedInstallationsReport({ rows: [jed(), multi({ installationPhotoUrl: url })], context, photos });
+    expect(sheets[0].columns.find((c) => c.key === 'photo')).toMatchObject({ header: 'Installation Picture', type: 'image' });
+    expect(sheets[0].images).toHaveLength(1);
+    expect(sheets[0].rows[sheets[0].images[0].row].photoUrl).toBe(url);
+  });
+
+  it('leaves out payment columns without PAYMENTS.VIEW, and contact details for non-admins', () => {
+    const { sheets } = buildCompletedInstallationsReport({ rows: [jed()], context, includePayment: false, includeContact: false });
+    const keys = sheets[0].columns.map((c) => c.key);
+    ['rrr', 'orderId', 'amount', 'paymentStatus', 'datePaid', 'customerPhone', 'customerEmail']
+      .forEach((k) => expect(keys).not.toContain(k));
+    expect(sheets[1].rows.some((r) => /amount paid/i.test(r.item))).toBe(false);
   });
 
   it('summarises scope, counts, payments and meter matching', () => {

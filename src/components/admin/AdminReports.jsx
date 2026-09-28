@@ -14,6 +14,9 @@ import {
   RefreshCw,
   BarChart3,
   Eye,
+  LayoutDashboard,
+  Receipt,
+  ListChecks,
   Printer
 } from 'lucide-react';
 import { formatDateTime } from '../../utils/date';
@@ -23,6 +26,9 @@ import { downloadXlsx, COLUMN_TYPES } from '../../utils/xlsx';
 import { fetchAllRequests } from '../../utils/fetchAllRequests';
 import InfoModal from '../common/InfoModal';
 import StatusBadge from '../common/StatusBadge';
+import StatusTabs from '../common/StatusTabs';
+import ReportsOverview from './ReportsOverview';
+import RevenueTab from './RevenueTab';
 
 // Export fields — trimmed to only what the real JedCustomerRequest schema
 // actually returns (id, accountNumber, custNames, gsm, email, address,
@@ -118,7 +124,9 @@ const rowMatchesFilters = (row, { query, status, dateFrom, dateTo }) => {
 // client-side same as the table — see buildFullFilteredRows) and the
 // Installations page.
 
-function AdminReports() {
+// The JED/Remita request register — the original Reports page, now one tab of
+// it: every JedCustomerRequest, filterable, exportable to Excel and printable.
+function JedRequestsReport() {
   const { user } = useAuth();
   const { refreshSignal } = useDataRefresh();
   const [loading, setLoading] = useState(true);
@@ -131,7 +139,6 @@ function AdminReports() {
   const [printing, setPrinting] = useState(false);
   const [printRows, setPrintRows] = useState([]);
 
-  const [stats, setStats] = useState({ revenue: 0 });
   const [rows, setRows] = useState([]);
   const [pagination, setPagination] = useState({
     currentPage: 1, totalPages: 1, totalCount: 0, hasNext: false, hasPrev: false, limit: 50
@@ -161,16 +168,6 @@ function AdminReports() {
       try {
         setLoading(true);
         setError(null);
-
-        try {
-          const s = await JEDApiService.getDashboardStats();
-          const payload = s?.data || s || {};
-          setStats(prev => ({
-            revenue: payload.revenue || payload.totalRevenue || prev.revenue,
-          }));
-        } catch (err) {
-          console.debug('Reports: dashboard stats not available', err);
-        }
 
         const resp = await JEDApiService.getAllCustomerRequests({
           page: pagination.currentPage, limit: Number(pagination.limit) || 50
@@ -416,13 +413,10 @@ function AdminReports() {
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="p-2 bg-brand-100 dark:bg-brand-900/30 rounded-lg flex-shrink-0">
-            <BarChart3 className="w-6 h-6 text-brand-600 dark:text-brand-400" />
-          </div>
           <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900 dark:text-white">Admin Reports</h1>
-            <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 mt-1">
-              Comprehensive analytics and exportable installation data
+            <h2 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white">JED request register</h2>
+            <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 mt-0.5">
+              Every JED/Remita customer request, exportable to Excel or PDF
             </p>
           </div>
         </div>
@@ -461,17 +455,16 @@ function AdminReports() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
         {[
-          { label: 'Total Revenue', value: formatCurrencyNGN(stats.revenue), loading: false, error: null },
           {
-            label: 'Avg. Transaction',
+            label: 'Avg. JED payment',
             value: formatCurrencyNGN(avgTransactionStats.average),
             caption: `${avgTransactionStats.count.toLocaleString()} qualifying transaction${avgTransactionStats.count === 1 ? '' : 's'}`,
             loading: transactionStatsLoading,
             error: transactionStatsError,
           },
-          { label: 'Total Records', value: pagination.totalCount || rows.length, loading: false, error: null },
+          { label: 'JED requests', value: pagination.totalCount || rows.length, loading: false, error: null },
         ].map(({ label, value, caption, loading: cardLoading, error: cardError }) => (
           <div key={label} className="card p-4 sm:p-5">
             <h4 className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 font-medium">{label}</h4>
@@ -806,6 +799,45 @@ function AdminReports() {
       <p className="mt-3 text-xs text-gray-500">{printRows.length} record{printRows.length === 1 ? '' : 's'}</p>
     </div>
     </>
+  );
+}
+
+const REPORT_TABS = [
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'transactions', label: 'Payments & deals', icon: Receipt },
+  { id: 'jed', label: 'JED requests', icon: ListChecks },
+];
+
+/**
+ * Admin Reports (revamped 2026-09-27).
+ *   Overview          — system-wide installation, value and revenue figures,
+ *                       from the same hooks as the Dashboard (ReportsOverview)
+ *   Payments & deals  — every recognised payment record, both domains,
+ *                       filtered and paged server-side (the shared RevenueTab)
+ *   JED requests      — the JED/Remita request register with its exports
+ */
+function AdminReports() {
+  const [tab, setTab] = useState('overview');
+  return (
+    <div className="space-y-4 sm:space-y-6">
+      <div className="flex items-center gap-3 min-w-0 print:hidden">
+        <div className="p-2 bg-brand-100 dark:bg-brand-900/30 rounded-lg flex-shrink-0">
+          <BarChart3 className="w-6 h-6 text-brand-600 dark:text-brand-400" />
+        </div>
+        <div className="min-w-0">
+          <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900 dark:text-white">Admin Reports</h1>
+          <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 mt-1">
+            Live installation, payment and revenue data across every disco
+          </p>
+        </div>
+      </div>
+      <div className="card overflow-hidden print:hidden">
+        <StatusTabs tabs={REPORT_TABS} activeTab={tab} onChange={setTab} />
+      </div>
+      {tab === 'overview' && <ReportsOverview />}
+      {tab === 'transactions' && <RevenueTab defaultRange="all" />}
+      {tab === 'jed' && <JedRequestsReport />}
+    </div>
   );
 }
 

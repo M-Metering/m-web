@@ -88,3 +88,16 @@ describe('fetchAllPages (existing callers)', () => {
     expect(items).toEqual([{ id: 'u1' }]);
   });
 });
+
+describe('fetchAllPagesDetailed — a response with totalPages but no hasNext', () => {
+  it('follows totalPages instead of stopping after page 1', async () => {
+    const rows = Array.from({ length: 19 }, (_, i) => i);
+    const fetchPage = async ({ page }) => ({
+      data: rows.slice((page - 1) * 10, page * 10),
+      pagination: { currentPage: page, totalPages: 2, totalCount: 19 },
+    });
+    const { items, truncated } = await fetchAllPagesDetailed(fetchPage, {});
+    expect(items).toHaveLength(19);
+    expect(truncated).toBe(false);
+  });
+});

@@ -50,6 +50,7 @@ const ComplaintForm = lazy(() => import('./components/complaints/ComplaintForm')
 // screens above — see API_GAP_REPORT.md and utils/installationStatus.js.
 const ImportsPage = lazy(() => import('./components/admin/ImportsPage'));
 const AssignmentsPage = lazy(() => import('./components/admin/AssignmentsPage'));
+const InstallerJobStatus = lazy(() => import('./components/installers/InstallerJobStatus'));
 const MyJobs = lazy(() => import('./components/installations/MyJobs'));
 // Tabbed Settings page (Meter Types + API Keys) — replaces direct
 // MeterTypeSettings mount so both settings resources live under one route.
@@ -241,6 +242,9 @@ function AppContent() {
                     holds only the first, so it lands on the batch history
                     with no Dispatch form (the page enforces that itself too). */}
                 <Route path="/assignments" element={permissions.canViewAssignments ? <AssignmentsPage /> : <AccessDenied />} />
+                {/* Installer Job Status: Admin, Super Admin and Supervisor
+                    (operational figures only — no money). Installer denied. */}
+                <Route path="/installer-status" element={permissions.canViewInstallerStatus ? <InstallerJobStatus /> : <AccessDenied />} />
                 {/* Kept working for bookmarks and any external link: the
                     page moved into /installations as its default view. */}
                 <Route path="/installation-requests" element={<Navigate to="/installations" replace />} />

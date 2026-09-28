@@ -23,7 +23,7 @@ const navFor = (userRole) => {
 };
 
 const ADMIN_TIER = [
-  '/dashboard', '/installations', '/imports', '/assignments', '/schedule',
+  '/dashboard', '/installations', '/imports', '/assignments', '/installer-status', '/schedule',
   '/users', '/reports', '/payments', '/uploads', '/settings',
 ];
 
@@ -43,10 +43,11 @@ describe('Navigation — role matrix', () => {
   });
 
   // Per the backend's own scope for the role: installations and assignments in
-  // full, meters and the installer roster read-only, nothing else.
-  it('gives Supervisor its five items and no more', () => {
+  // full, meters and the installer roster read-only, plus the operational
+  // Installer Job Status overview (built only from those same reads).
+  it('gives Supervisor its six items and no more', () => {
     expect(navFor(ROLES.SUPERVISOR).sort()).toEqual(
-      ['/assignments', '/dashboard', '/installations', '/schedule', '/users']
+      ['/assignments', '/dashboard', '/installations', '/installer-status', '/schedule', '/users']
     );
   });
 
@@ -58,7 +59,7 @@ describe('Navigation — role matrix', () => {
 
   it('never shows an Installer an administrative page', () => {
     const installer = navFor(ROLES.INSTALLER);
-    ['/installations', '/imports', '/assignments', '/schedule', '/users', '/reports', '/payments', '/uploads', '/settings']
+    ['/installations', '/imports', '/assignments', '/installer-status', '/schedule', '/users', '/reports', '/payments', '/uploads', '/settings']
       .forEach((path) => expect(installer).not.toContain(path));
   });
 

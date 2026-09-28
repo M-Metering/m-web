@@ -122,6 +122,30 @@ describe('MeterSchedule — assign', () => {
     expect(within(cardFor('0239110006925')).queryByRole('button', { name: 'Assign' })).toBeNull();
   });
 
+  // The reported bug: a Three Phase meter dispatched from here still read
+  // "Available" and stayed assignable. The dispatch leaves `status` at
+  // AVAILABLE by design; the open batch is what says it's out.
+  it('shows a dispatched meter as Assigned, names the installer, and offers no second Assign', async () => {
+    permissions = { ...permissions, canViewAssignments: true };
+    jedApi.getAssignmentBatches.mockImplementation(async ({ status }) => page(status === 'ACTIVE'
+      ? [{ id: 40, status: 'ACTIVE', installerId: 'uuid-1', installerName: 'Musa Bello' }]
+      : []));
+    jedApi.getAssignmentBatch.mockResolvedValue({
+      success: true,
+      data: { id: 40, status: 'ACTIVE', items: [{ meterNumber: '0239110006917', phaseType: 'THREE PHASE', assignmentStatus: 'ASSIGNED' }] },
+    });
+    await renderPage();
+    await waitFor(() => expect(within(cardFor('0239110006917')).getByText('Assigned')).toBeTruthy());
+    const card = cardFor('0239110006917');
+    expect(within(card).getByText('With Musa Bello')).toBeTruthy();
+    expect(within(card).queryByText('Available')).toBeNull();
+    expect(within(card).queryByRole('button', { name: 'Assign' })).toBeNull();
+    // Only open batches are read, and the filter is sent to the server.
+    expect(jedApi.getAssignmentBatches).toHaveBeenCalledWith(expect.objectContaining({ assignmentType: 'METER', status: 'ACTIVE' }));
+    // The meter nobody holds is still Available and assignable.
+    expect(within(cardFor('0239110006909')).getByRole('button', { name: 'Assign' })).toBeTruthy();
+  });
+
   it('hides Assign from a role that cannot manage assignments', async () => {
     permissions = { canManageAssignments: false, isSuperAdmin: true, isAdmin: true, enforcesMeterCapacity: false };
     await renderPage();

@@ -1,34 +1,30 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermissions } from '../auth/usePermissions';
-import { useRevenueSummary, loadRevenueTransactions } from '../../hooks/useRevenueSummary';
+import { loadRevenueTransactions } from '../../hooks/useRevenueSummary';
+import { usePaymentRevenueSummary } from '../../hooks/usePaymentRevenueSummary';
+import RevenueSummaryPanel from './RevenueSummaryPanel';
+import { InstallationKpis, RecentInstallationsCard } from './DashboardInstallations';
+import { useInstallationTotals, useRecentInstallations } from '../../hooks/useDashboardInstallations';
 import { isCompletedInstallationRow } from '../../utils/financeSummary';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import JEDApiService from '../services/api';
 import { useNavigate } from 'react-router-dom';
 import { formatCurrencyNGN } from '../../utils/currency';
-import { formatDateTime, toDateInputValue } from '../../utils/date';
+import { toDateInputValue } from '../../utils/date';
 import { buildDailySeries } from '../../utils/trendAggregation';
 import TrendChart from './TrendChart';
-import StatusBadge from '../common/StatusBadge';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { downloadServerXlsx } from '../../utils/xlsx';
 import {
-  BarChart,
   Users,
-  CheckCircle,
-  Clock,
   AlertCircle,
-  ArrowUpRight,
-  ArrowDownRight,
   Download,
   FileText,
   Settings,
   X,
   LayoutDashboard,
-  RefreshCw,
-  Wallet,
-  BadgeCheck
+  RefreshCw
 } from 'lucide-react';
 
 // Reference dataviz palette slots (see the project's dataviz skill —
@@ -46,202 +42,6 @@ const TREND_RANGE_PRESETS = [
   { id: 30, label: '30 days' },
   { id: 90, label: '90 days' },
 ];
-
-// Stat Card Component - Mobile First
- 
-const StatCard = ({ title, value, icon: Icon, change, changeType = 'neutral' }) => (
-  <div className="card p-4 sm:p-6 flex flex-col transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5 dark:hover:shadow-black/30">
-    <div className="flex items-center justify-between mb-3">
-      <div className={`p-2 rounded-lg ${
-        changeType === 'positive' ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400' :
-        changeType === 'negative' ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' :
-        'bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400'
-      }`}>
-        <Icon className="w-4 h-4 sm:w-5 sm:h-5" />
-      </div>
-      {change !== undefined && change !== 0 && (
-        <div className={`flex items-center text-xs sm:text-sm font-medium ${
-          changeType === 'positive' ? 'text-green-600 dark:text-green-400' :
-          changeType === 'negative' ? 'text-red-600 dark:text-red-400' :
-          'text-brand-600 dark:text-brand-400'
-        }`}>
-          {changeType === 'positive' ? <ArrowUpRight className="w-3 h-3 sm:w-4 sm:h-4" /> :
-           changeType === 'negative' ? <ArrowDownRight className="w-3 h-3 sm:w-4 sm:h-4" /> : null}
-          <span>{Math.abs(change)}%</span>
-        </div>
-      )}
-    </div>
-    <h3 className="text-gray-500 dark:text-gray-400 text-xs sm:text-sm font-medium">{title}</h3>
-    <p className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1">{value}</p>
-  </div>
-);
-
-const METRIC_TONES = {
-  brand: 'bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400',
-  green: 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400',
-};
-
-/**
- * A money figure with its own caption. Same card shell as StatCard above, but
- * with a skeleton state and a second line for the record count.
- *
- * `break-words` and the one-column mobile grid are deliberate: a full NGN
- * amount such as ₦1,250,000.00 must stay readable, never clipped or
- * overlapping, down to the narrowest phone.
- */
-const PaymentMetricCard = ({ icon: Icon, tone = 'brand', label, value, detail, hint, loading = false }) => (
-  <div className="card p-4 sm:p-6 flex flex-col transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5 dark:hover:shadow-black/30">
-    <div className={`p-2 rounded-lg self-start mb-3 ${METRIC_TONES[tone] || METRIC_TONES.brand}`}>
-      <Icon className="w-4 h-4 sm:w-5 sm:h-5" />
-    </div>
-    <h3 className="text-gray-500 dark:text-gray-400 text-xs sm:text-sm font-medium">{label}</h3>
-    {loading ? (
-      <>
-        <div className="h-7 sm:h-8 w-32 mt-1 rounded bg-gray-200 dark:bg-gray-700 animate-pulse" aria-hidden="true" />
-        <span className="sr-only">Loading {label}</span>
-      </>
-    ) : (
-      <p className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1 break-words">{value}</p>
-    )}
-    {!loading && detail && (
-      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 break-words">{detail}</p>
-    )}
-    {hint && (
-      <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5 break-words">{hint}</p>
-    )}
-  </div>
-);
-
-/**
- * Resolve a display-ready request date. Real JedCustomerRequest schema
- * field is `dateRequested`; `datePaid`/`dateCompleted` are used as a
- * fallback for rows where it's genuinely absent from the row shape.
- */
-const getInstallDate = (install) => {
-  const raw = install?.dateRequested || install?.datePaid || install?.dateCompleted || null;
-  if (!raw) return '-';
-  return formatDateTime(raw);
-};
-
-// Recent Installations Table - Mobile Optimized
-const RecentInstallations = ({ installations, totalCount, onViewAll, onItemClick, showAmounts = true }) => (
-  <div className="card overflow-hidden">
-    <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-200 dark:border-gray-700">
-      <h3 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white">Recent Installations</h3>
-      <button 
-        onClick={onViewAll} 
-        className="text-xs sm:text-sm text-brand-600 hover:text-brand-700 font-medium"
-      >
-        View All ({totalCount})
-      </button>
-    </div>
-    
-    {/* Mobile Card View */}
-    <div className="sm:hidden divide-y divide-gray-200 dark:divide-gray-700">
-      {installations.length === 0 ? (
-        <div className="p-6 text-center text-gray-500 dark:text-gray-400 text-sm">
-          No installations found
-        </div>
-      ) : (
-        installations.map((install) => (
-          <button
-            key={install.id}
-            type="button"
-            onClick={() => onItemClick(install)}
-            className="w-full text-left p-4 hover:bg-gray-50 dark:bg-gray-900/50 transition-colors"
-          >
-            <div className="flex justify-between items-start mb-2">
-              <div>
-                <p className="font-medium text-gray-900 dark:text-white text-sm">{install.accountNumber}</p>
-                <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
-                  {install.custNames || install.applicantName || install.installer?.name || '-'}
-                </p>
-              </div>
-              <StatusBadge status={install.status} />
-            </div>
-            <div className="flex flex-col gap-2 mt-2">
-              <div className="flex justify-between items-center">
-                <span className="text-xs text-gray-500 dark:text-gray-400">
-                  {getInstallDate(install)}
-                </span>
-                {showAmounts && (
-                  <span className="font-semibold text-gray-900 dark:text-white text-sm">
-                    {formatCurrencyNGN(install.amount)}
-                  </span>
-                )}
-              </div>
-              {install.email && (
-                <div className="text-xs text-gray-600 dark:text-gray-400">
-                  Email: {install.email}
-                </div>
-              )}
-              {(install.rrr || install.paymentReference || install.paymentRef || install.remitaRef) && (
-                <div className="text-xs text-gray-600 dark:text-gray-400 truncate">
-                  RRR: {install.rrr || install.paymentReference || install.paymentRef || install.remitaRef}
-                </div>
-              )}
-            </div>
-          </button>
-        ))
-      )}
-    </div>
-
-    {/* Desktop Table View */}
-    <div className="hidden sm:block overflow-x-auto">
-      <table className="w-full">
-        <thead>
-          <tr className="text-left text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-200 dark:border-gray-700 text-xs sm:text-sm">
-            <th className="px-4 py-3 font-semibold">Account</th>
-            <th className="px-4 py-3 font-semibold">Customer</th>
-            <th className="px-4 py-3 font-semibold">Status</th>
-            {showAmounts && <th className="px-4 py-3 font-semibold text-right">Amount</th>}
-            <th className="px-4 py-3 font-semibold">Date</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-          {installations.length === 0 ? (
-            <tr>
-              <td colSpan={showAmounts ? 5 : 4} className="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm">
-                No installations found
-              </td>
-            </tr>
-          ) : (
-            installations.map((install) => (
-              <tr
-                key={install.id}
-                onClick={() => onItemClick(install)}
-                tabIndex={0}
-                role="button"
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    onItemClick(install);
-                  }
-                }}
-                className="hover:bg-gray-50 dark:bg-gray-900/50 transition-colors cursor-pointer"
-              >
-                <td className="px-4 py-3 text-gray-700 dark:text-gray-300 font-medium text-sm">{install.accountNumber}</td>
-                <td className="px-4 py-3 text-gray-700 dark:text-gray-300 text-sm">
-                  {install.custNames || install.applicantName || install.installer?.name || '-'}
-                </td>
-                <td className="px-4 py-3">
-                  <StatusBadge status={install.status} />
-                </td>
-                {showAmounts && (
-                  <td className="px-4 py-3 text-right font-semibold text-gray-900 dark:text-white text-sm">
-                    {formatCurrencyNGN(install.amount)}
-                  </td>
-                )}
-                <td className="px-4 py-3 text-gray-600 dark:text-gray-400 text-sm">
-                  {getInstallDate(install)}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
 
 // Export Modal Component
 const ExportModal = ({ isOpen, onClose, onExport }) => {
@@ -400,34 +200,31 @@ function AdminDashboard() {
   const showMoney = permissions.canViewPayments;
   const showAdminTools = permissions.isAdmin;
 
-  // Recognised revenue across both installation domains — the same records
-  // and the same server totals the Payments page's Revenue tab shows, so the
-  // two screens agree by construction. See hooks/useRevenueSummary.js for why
-  // this is the source and not the JED payment records.
-  // `enabled` carries the permission check, so a role without access to
-  // financial data issues no request at all rather than fetching and hiding.
-  const {
-    summary: payments,
-    loading: paymentsLoading,
-    error: paymentsError,
-    truncated: paymentsTruncated,
-    reload: reloadPayments,
-  } = useRevenueSummary({ enabled: showMoney });
   const { refreshSignal } = useDataRefresh();
-  const [stats, setStats] = useState({
-    pendingRequests: 0,
-    completedRequests: 0,
-    activeInstallers: 0,
-    totalRevenue: 0,
-  });
-  const [recentInstallations, setRecentInstallations] = useState([]);
-  const [requestsTotalCount, setRequestsTotalCount] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  // Installation KPIs and the recent list — two separate reads by design (see
+  // hooks/useDashboardInstallations.js): totals from server-side aggregates,
+  // the list from the newest few rows. Neither is derived from the other.
+  const installationTotals = useInstallationTotals({ enabled: true });
+  const recentInstallations = useRecentInstallations({ enabled: true });
+
+  // Total collected payments (the pending installations at meter-type prices)
+  // and revenue due — the same hook the Payments page, Reports and the
+  // Installations page use. `enabled` carries the permission check, so a role
+  // without access to financial data issues no request at all.
+  const paymentSummary = usePaymentRevenueSummary({ enabled: showMoney === true, totals: installationTotals.totals });
+
+  // GET /dashboard-stats now feeds only the Installers KPI. Its
+  // pendingRequests/completedRequests have no documented definition and cover
+  // JED requests only, so they are no longer shown (see
+  // utils/installationTotals.js for the definitions that replaced them). A
+  // failure is "Unavailable", never 0 — the old fallback counted the 5
+  // "recent" rows and presented that as the system total.
+  const [activeInstallers, setActiveInstallers] = useState(null);
+  const [installersLoading, setInstallersLoading] = useState(true);
+  const [installersError, setInstallersError] = useState(null);
   const [showExportModal, setShowExportModal] = useState(false);
-  // Manual refresh button — bumps this to re-run both fetch effects below
-  // (stats/recent installations and the trend chart), same pattern already
-  // used by AdminInstallations.jsx/InstallerDashboard.jsx's Refresh buttons.
+  // Manual refresh button — bumps this to re-run the fetch effects below, and
+  // reloads the hooks above.
   const [refreshKey, setRefreshKey] = useState(0);
 
   // Revenue / Installations trend — built entirely from real payment
@@ -440,74 +237,35 @@ function AdminDashboard() {
   const [trendTruncated, setTrendTruncated] = useState(null);
 
   useEffect(() => {
-    const fetchDashboardData = async () => {
+    if (!user) return undefined;
+    let cancelled = false;
+    (async () => {
+      setInstallersLoading(true);
+      setInstallersError(null);
       try {
-        setLoading(true);
-        setError(null);
-
-        const installationsResponse = await JEDApiService.getAllCustomerRequests({
-          page: 1,
-          limit: 5
-        });
-        const installations = Array.isArray(installationsResponse)
-          ? installationsResponse
-          : (installationsResponse?.data || []);
-        const paginationData = installationsResponse?.pagination || {};
-
-        setRecentInstallations(installations);
-        setRequestsTotalCount(paginationData.totalCount || installations.length);
-
-        try {
-          const statsResponse = await JEDApiService.getDashboardStats();
-          const payload = statsResponse?.data ?? statsResponse ?? {};
-          // Real GET /dashboard-stats returns exactly these 4 flat numbers
-          // — no percent-change/delta fields exist server-side, so none
-          // are fabricated here.
-          setStats({
-            pendingRequests: payload.pendingRequests ?? 0,
-            completedRequests: payload.completedRequests ?? 0,
-            activeInstallers: payload.activeInstallers ?? 0,
-            totalRevenue: payload.totalRevenue ?? 0,
-          });
-        } catch (statsError) {
-          // Fallback: count from the fetched page of requests using the real
-          // status enum (INITIATED/PAID/COMPLETED), not guessed lowercase values.
-          //
-          // `totalRevenue` is deliberately NOT computed here. It used to be
-          // summed from this page of requests — but that is only the 5 most
-          // recent rows, with no de-duplication and no invalid-amount handling,
-          // so it produced a confident-looking figure that was simply wrong,
-          // and it was a second implementation of a definition that already
-          // has one. A money figure we cannot compute correctly is reported as
-          // unavailable rather than estimated; the authoritative collected and
-          // revenue-due totals are in the Payments section below, from
-          // summarizeRemitaPayments over every Remita request.
-          console.warn('[Dashboard] Failed to fetch admin stats, counting from installations:', statsError.message);
-          setStats({
-            pendingRequests: installations.filter((inst) => inst.status === 'INITIATED' || inst.status === 'PAID').length,
-            completedRequests: installations.filter((inst) => inst.status === 'COMPLETED').length,
-            activeInstallers: 0,
-            totalRevenue: null,
-          });
-        }
+        const response = await JEDApiService.getDashboardStats();
+        const value = Number((response?.data ?? response ?? {}).activeInstallers);
+        if (!Number.isFinite(value)) throw new Error('activeInstallers missing from /dashboard-stats');
+        if (!cancelled) setActiveInstallers(value);
       } catch (err) {
-        console.error('Error fetching dashboard data:', err);
-        setError('Failed to load dashboard data. Please try again later.');
+        console.error('[Dashboard] Installer count failed:', err);
+        if (!cancelled) { setActiveInstallers(null); setInstallersError(getErrorMessage(err, "Couldn't load the installer count.")); }
       } finally {
-        setLoading(false);
+        if (!cancelled) setInstallersLoading(false);
       }
-    };
-
-    if (user) {
-      fetchDashboardData();
-    }
-    // NOTE: `recentInstallations` intentionally excluded — it's set inside
-    // this effect, so including it as a dependency caused a refetch loop.
-    // `refreshSignal` re-runs this on any app-wide data mutation (e.g. a
-    // bulk payment import) so stats/recent installations stay live without
-    // a full page reload — see DataRefreshContext. `refreshKey` re-runs it
-    // on a manual click of the header's Refresh button.
+    })();
+    return () => { cancelled = true; };
+    // refreshSignal: re-read after any app-wide mutation; refreshKey: the
+    // header's Refresh button. No polling.
   }, [user, refreshSignal, refreshKey]);
+
+  const refreshAll = () => {
+    setRefreshKey((k) => k + 1);
+    installationTotals.reload();
+    recentInstallations.reload();
+    if (showMoney) paymentSummary.reload();
+  };
+  const anyLoading = installationTotals.loading || recentInstallations.loading || installersLoading;
 
   // Trend charts — the SAME source as the totals above (recognised revenue),
   // windowed server-side to the selected range.
@@ -617,8 +375,8 @@ function AdminDashboard() {
     setShowExportModal(true);
   };
 
-  const handleRowClick = (install) => {
-    navigate(`/installations/${install.accountNumber}`);
+  const handleRowClick = (row) => {
+    navigate(`/installations/${row.accountNumber}`);
   };
 
   const handleManageUsers = () => {
@@ -628,34 +386,6 @@ function AdminDashboard() {
   const handleGoToSettings = () => {
     navigate('/settings');
   };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-brand-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400 text-sm">Loading dashboard...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="text-center max-w-md">
-          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-          <p className="text-gray-900 dark:text-white mb-4">{error}</p>
-          <button 
-            onClick={() => window.location.reload()}
-            className="px-6 py-2 bg-brand-500 text-gray-900 rounded-lg hover:bg-brand-600 transition-colors"
-          >
-            Try Again
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -676,12 +406,12 @@ function AdminDashboard() {
           </div>
           <div className="mt-4 sm:mt-0 flex items-center gap-2">
             <button
-              onClick={() => setRefreshKey((k) => k + 1)}
-              disabled={loading}
+              onClick={refreshAll}
+              disabled={anyLoading}
               aria-label="Refresh"
               className="p-2.5 sm:px-4 sm:py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 flex items-center gap-2 transition-colors"
             >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-4 h-4 ${anyLoading ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline text-sm font-medium">Refresh</span>
             </button>
             {showAdminTools && (
@@ -708,82 +438,33 @@ function AdminDashboard() {
             the endpoint and still read into `stats` below; nothing about the
             backend field was changed, it simply isn't shown here. Collected
             and due, which ARE defined, are in the section underneath. */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 lg:gap-6">
-          <StatCard title="Pending" value={stats.pendingRequests} icon={Clock} />
-          <StatCard title="Completed" value={stats.completedRequests} icon={CheckCircle} />
-          <StatCard title="Installers" value={stats.activeInstallers} icon={Users} />
-        </div>
+        {/* Installation KPIs — operational counts from server aggregates
+            (utils/installationTotals.js). Awaiting = installations an installer
+            holds (the sum of Installer Job Status' Awaiting column). No value
+            or payment figure here: that analysis lives in Admin Reports. */}
+        <InstallationKpis
+          totals={installationTotals.totals}
+          loading={installationTotals.loading}
+          error={installationTotals.error}
+          onRetry={installationTotals.reload}
+          activeInstallers={activeInstallers}
+          installersLoading={installersLoading}
+          installersError={installersError}
+          onRetryInstallers={() => setRefreshKey((k) => k + 1)}
+        />
 
-        {/* Payment & Revenue Summary — the two defined money figures, from
-            GET /external/jed/payments (the same records the Payments tab
-            shows) through summarizeRemitaPayments. Named explicitly rather
-            than "Revenue" so it can't be confused with the old KPI. */}
+        {/* Payment & Revenue Summary — the shared panel, fed by the one revenue
+            calculation (hooks/useRevenueSummary.js → utils/financeSummary.js).
+            The Payments and Installations pages render the same panel from the
+            same hook, so the figures agree by construction. */}
         {showMoney && (
-          <section aria-labelledby="dashboard-payments" className="space-y-2">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <h2 id="dashboard-payments" className="text-sm font-semibold text-gray-700 dark:text-gray-300">
-                Payment &amp; Revenue Summary
-              </h2>
-              {paymentsError && (
-                <button
-                  type="button"
-                  onClick={reloadPayments}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline"
-                >
-                  <RefreshCw className="w-3 h-3" /> Try again
-                </button>
-              )}
-            </div>
-
-            {paymentsError ? (
-              <div role="alert" className="card p-4 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
-                <p className="text-sm text-red-800 dark:text-red-300">{paymentsError}</p>
-              </div>
-            ) : (
-              <>
-                {/* One column on mobile so a long amount is never clipped. */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-                  <PaymentMetricCard
-                    icon={Wallet}
-                    tone="brand"
-                    label="Total collected payments"
-                    hint="Amount actually collected from qualifying paid transactions."
-                    loading={paymentsLoading}
-                    value={payments ? formatCurrencyNGN(payments.collected) : null}
-                    detail={payments
-                      ? `${payments.count.toLocaleString()} record${payments.count === 1 ? '' : 's'} counted`
-                      : null}
-                  />
-                  <PaymentMetricCard
-                    icon={BadgeCheck}
-                    tone="green"
-                    label="Revenue due to us"
-                    hint="Amount associated with completed installations."
-                    loading={paymentsLoading}
-                    value={payments ? formatCurrencyNGN(payments.revenueDue) : null}
-                    detail={payments
-                      ? `${payments.completedCount.toLocaleString()} completed installation${
-                        payments.completedCount === 1 ? '' : 's'}`
-                      : null}
-                  />
-                </div>
-
-                {/* A zero has to be explainable, not just displayed — and a
-                    total from these endpoints is never exact, so the estimated
-                    /unpriced caveat travels with it (see financeSummary.js). */}
-                {!paymentsLoading && payments && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {payments.count === 0
-                      ? 'No revenue recorded yet.'
-                      : 'Revenue due counts completed installations only; collected covers every recognised payment.'}
-                    {payments.note ? ` ${payments.note}` : ''}
-                    {paymentsTruncated && ' Not every record could be loaded, so these totals may be incomplete.'}
-                  </p>
-                )}
-              </>
-            )}
-          </section>
+          <RevenueSummaryPanel
+            id="dashboard-payments"
+            title="Payment & Revenue Summary"
+            collected={paymentSummary.collected}
+            revenue={paymentSummary.revenue}
+            onRetry={paymentSummary.reload}
+          />
         )}
 
         {/* Revenue / Installations Trend — built from real
@@ -858,11 +539,13 @@ function AdminDashboard() {
         <div className={`grid grid-cols-1 gap-4 sm:gap-6 ${showAdminTools ? 'lg:grid-cols-3' : ''}`}>
           {/* Recent Installations */}
           <div className={showAdminTools ? 'lg:col-span-2' : ''}>
-            <RecentInstallations 
-              installations={recentInstallations}
-              totalCount={requestsTotalCount}
-              onViewAll={() => navigate(permissions.canViewReports ? '/reports' : '/installations')}
-              onItemClick={handleRowClick}
+            <RecentInstallationsCard
+              recent={recentInstallations.recent}
+              loading={recentInstallations.loading}
+              error={recentInstallations.error}
+              onRetry={recentInstallations.reload}
+              onViewAll={() => navigate('/installations')}
+              onOpen={handleRowClick}
               showAmounts={showMoney}
             />
           </div>

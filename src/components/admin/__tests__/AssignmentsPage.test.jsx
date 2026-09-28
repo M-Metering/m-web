@@ -28,6 +28,7 @@ vi.mock('../../services/api', () => ({
     getUsers: vi.fn(),
     getMeters: vi.fn(),
     getMeterByNumber: vi.fn(),
+    searchMeters: vi.fn(),
     getAssignmentBatches: vi.fn(),
     getAssignmentBatch: vi.fn(),
     assignMeters: vi.fn(),
@@ -60,6 +61,7 @@ beforeEach(() => {
   jedApi.getUsers.mockResolvedValue(page([{ id: 'uuid-1', firstName: 'Musa', lastName: 'Bello', role: 'INSTALLER' }]));
   jedApi.getMeters.mockResolvedValue(page(METERS));
   jedApi.getMeterByNumber.mockRejectedValue(new Error('NOT_FOUND:Meter not found'));
+  jedApi.searchMeters.mockResolvedValue(page([]));
   jedApi.getInstallations.mockImplementation(async ({ status }) => page(OPEN_JOBS.filter((j) => j.status === status)));
   jedApi.getAssignmentBatches.mockResolvedValue(page([
     { id: 10, status: 'ACTIVE' },
@@ -118,16 +120,62 @@ describe('AssignmentsPage — meter serial picker', () => {
     expect(within(meterList()).getAllByRole('checkbox')).toHaveLength(2);
   });
 
-  it('pasting accepts only eligible serials and reports the rest', async () => {
+  it('pasting accepts only eligible serials and reports the rest, with the reason', async () => {
+    jedApi.getMeterByNumber.mockImplementation(async (n) => {
+      if (n === '0239110006909') return { success: true, data: METERS[0] };
+      throw new Error('NOT_FOUND:Meter not found');
+    });
     await renderPage();
     fireEvent.click(screen.getByRole('button', { name: /Paste serials/ }));
     fireEvent.change(screen.getByLabelText('Paste meter serial numbers'), {
       target: { value: '0239110006911\n0239110006909 9999999999999' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Add to selection' }));
-    expect(screen.getByText(/1 added\./)).toBeTruthy();
-    expect(screen.getByText('0239110006909, 9999999999999')).toBeTruthy();
+    expect(await screen.findByText(/1 added\./)).toBeTruthy();
+    expect(screen.getByText(
+      '0239110006909 (it is already with an installer), 9999999999999 (not in the meter inventory)'
+    )).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Remove meter 0239110006911' })).toBeTruthy();
+  });
+
+  // The reported bug: an AVAILABLE Three Phase meter that Meter Schedule finds
+  // (server-side search) but the paged GET /meters?status=AVAILABLE scan did
+  // not return. It must be found and offered, not reported as unassignable.
+  it('finds an available meter the paged scan missed, via the server-side search', async () => {
+    const missed = { id: 9, meterNumber: '0239110007001', phaseType: 'Three Phase', status: 'AVAILABLE' };
+    jedApi.searchMeters.mockResolvedValue(page([missed]));
+    await renderPage();
+    fireEvent.change(screen.getByPlaceholderText('Search meter serial number'), { target: { value: '0239110007001' } });
+    const row = await within(meterList()).findByText('0239110007001');
+    // No status filter on the search: the rule is applied client-side, so a
+    // meter isn't lost to an exact-match filter on the server.
+    expect(jedApi.searchMeters).toHaveBeenCalledWith({ q: '0239110007001', limit: 50 });
+    // "Three Phase" is the same type as "THREE PHASE" everywhere downstream.
+    expect(row.closest('label').textContent).toContain('THREE PHASE');
+  });
+
+  it('pasting a serial the scan missed resolves it exactly and adds it when dispatchable', async () => {
+    jedApi.getMeterByNumber.mockImplementation(async (n) => {
+      if (n === '0239110007002') {
+        return { success: true, data: { meterNumber: '0239110007002', phaseType: 'THREE PHASE', status: 'AVAILABLE' } };
+      }
+      throw new Error('NOT_FOUND:Meter not found');
+    });
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: /Paste serials/ }));
+    fireEvent.change(screen.getByLabelText('Paste meter serial numbers'), { target: { value: '0239110007002' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to selection' }));
+    expect(await screen.findByRole('button', { name: 'Remove meter 0239110007002' })).toBeTruthy();
+  });
+
+  it('never offers a meter an open dispatch batch says is with an installer, even when GET /meters omits assignmentStatus', async () => {
+    jedApi.getMeters.mockResolvedValue(page([
+      { id: 1, meterNumber: '0239110006909', phaseType: 'SINGLE PHASE', status: 'AVAILABLE' },
+      { id: 2, meterNumber: '0239110006911', phaseType: 'SINGLE PHASE', status: 'AVAILABLE' },
+    ]));
+    await renderPage();
+    const serials = within(meterList()).getAllByRole('checkbox').map((cb) => cb.closest('label').querySelector('.font-mono').textContent);
+    expect(serials).toEqual(['0239110006911']);
   });
 
   it('shows an error with retry when meters cannot load', async () => {

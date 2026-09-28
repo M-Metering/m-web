@@ -42,8 +42,38 @@ const upperKey = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toUp
 /**
  * Phase values arrive as "SINGLE PHASE" (multi-disco), "Single Phase" (JED)
  * or occasionally with underscores — one comparable form for all of them.
+ *
+ * Spreadsheet-sourced values are messier than that: the meter import keeps
+ * the raw cell (`keepRaw` in the disco's import mapping), so a Three Phase
+ * meter can be stored as "3 Phase", "3-PH", "THREE_PHASE" or "Three Phase
+ * Meter". Left alone, each of those is a different key, and a Three Phase
+ * meter no longer matches a Three Phase job — it gets refused for "no pending
+ * Three Phase installation" and hidden from the installer's report picker.
+ * Every spelling of the two real types collapses to the API's own enum value
+ * ('SINGLE PHASE' / 'THREE PHASE'); anything unrecognised is kept as-is
+ * (normalised for case and spacing) rather than guessed at.
  */
-export const normalizePhase = (value) => upperKey(String(value ?? '').replace(/[_-]+/g, ' '));
+const THREE_PHASE_RE = /^(3|THREE|TRIPLE)(PHASE|PH|P)?$/;
+const SINGLE_PHASE_RE = /^(1|ONE|SINGLE)(PHASE|PH|P)?$/;
+
+export const normalizePhase = (value) => {
+  const key = upperKey(String(value ?? '').replace(/[_-]+/g, ' '));
+  const compact = key.replace(/\bMETERS?\b/g, '').replace(/\s+/g, '');
+  if (THREE_PHASE_RE.test(compact)) return 'THREE PHASE';
+  if (SINGLE_PHASE_RE.test(compact)) return 'SINGLE PHASE';
+  return key;
+};
+
+/**
+ * The phase as an API enum value for a `phaseType`/`meterType` QUERY
+ * parameter, or undefined when the value isn't one of the two real types.
+ * An unrecognised value is omitted rather than sent, because an enum filter
+ * given a value outside its enum matches nothing (or 400s).
+ */
+export const toApiPhase = (value) => {
+  const key = normalizePhase(value);
+  return key === 'SINGLE PHASE' || key === 'THREE PHASE' ? key : undefined;
+};
 
 /**
  * A phase for display: 'THREE PHASE' → 'Three Phase'. One spelling everywhere

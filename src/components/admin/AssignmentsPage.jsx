@@ -33,7 +33,8 @@ import { fetchAllPages, fetchAllPagesDetailed } from '../../utils/fetchAllPages'
 import { getErrorMessage } from '../../utils/errorMessage';
 import { formatDateTime } from '../../utils/date';
 import { METER_ASSIGNMENT_STATUS } from '../../utils/installationStatus';
-import { toMeterOptions } from '../../utils/meterInventory';
+import { toMeterOptions, meterSerial } from '../../utils/meterInventory';
+import { useMeterHolders } from '../../hooks/useMeterHolders';
 import { meterSummaryLine } from '../../utils/meterDisplay';
 import MeterSerialPicker from '../installations/MeterSerialPicker';
 
@@ -107,7 +108,29 @@ function AssignmentsPage() {
     return () => { cancelled = true; };
   }, [activeTab, metersReload]);
 
-  const meterOptions = useMemo(() => toMeterOptions(meterRecords, dispatched), [meterRecords, dispatched]);
+  // Who holds which meter right now, from the open dispatch batches. GET
+  // /meters keeps a dispatched meter at status AVAILABLE and may not carry
+  // assignmentStatus, so without this a meter already with an installer would
+  // be offered again (the API then rejects it per row). Server state, re-read
+  // on every refreshSignal — not a client-side record of what was sent.
+  const {
+    holders, loading: holdersLoading, error: holdersError, reload: reloadHolders,
+  } = useMeterHolders({ enabled: canDispatch && activeTab === 'dispatch' });
+
+  // Dispatchable meters the picker found server-side that the paged scan
+  // didn't return. Merged into the records so they're ordinary options.
+  const handleDiscoveredMeters = useCallback((found) => {
+    setMeterRecords((prev) => {
+      const known = new Set(prev.map(meterSerial));
+      const extra = found.filter((m) => !known.has(meterSerial(m)));
+      return extra.length ? [...prev, ...extra] : prev;
+    });
+  }, []);
+
+  const meterOptions = useMemo(
+    () => toMeterOptions(meterRecords, dispatched, holders),
+    [meterRecords, dispatched, holders]
+  );
   // serial → phase type, so the capacity check can be applied per meter type
   // and the error can name the type and the number still needed.
   const phaseBySerial = useMemo(
@@ -310,16 +333,23 @@ function AssignmentsPage() {
               <MeterSerialPicker
                 id="assign-serials"
                 options={meterOptions}
-                loading={metersLoading}
+                loading={metersLoading || holdersLoading}
                 error={metersError}
-                onRetry={() => { jedApi.clearCache(); setMetersReload((k) => k + 1); }}
+                onRetry={() => { jedApi.clearCache(); setMetersReload((k) => k + 1); reloadHolders(); }}
                 value={serials}
                 onChange={(next) => { setSerials(next); setErrors((p) => ({ ...p, serials: undefined })); }}
                 disabled={submitting}
                 invalid={!!errors.serials}
                 capacity={capacity}
                 enforced={capacityEnforced}
+                holders={holders}
+                onDiscover={handleDiscoveredMeters}
               />
+              {holdersError && (
+                <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                  Couldn&apos;t check which meters are already with installers. A meter already dispatched will be refused when you submit.
+                </p>
+              )}
               {metersTruncated && (
                 <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">Not every meter could be listed. Search may miss some.</p>
               )}
