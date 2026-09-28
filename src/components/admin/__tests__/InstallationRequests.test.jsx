@@ -11,7 +11,8 @@ import jedApi from '../../services/api';
 import { downloadXlsx } from '../../../utils/xlsx';
 
 const ADMIN_PERMISSIONS = {
-  canViewInstallationRequests: true, canManageAssignments: true, canManageInstallations: true,
+  canViewInstallationRequests: true, canManageAssignments: true, canManageInstallations: true, canViewPayments: true,
+  canExportInstallations: true,
   isAdmin: true, isSuperAdmin: false, enforcesMeterCapacity: true,
 };
 let permissions = { ...ADMIN_PERMISSIONS };
@@ -27,6 +28,8 @@ vi.mock('../../services/api', () => ({
     getInstallations: vi.fn(),
     getInstallationStatistics: vi.fn(),
     getAllCustomerRequests: vi.fn(),
+    getRevenueTransactions: vi.fn(),
+    getMeterTypes: vi.fn(),
     getUsers: vi.fn(),
     getAssignmentBatches: vi.fn(),
     getAssignmentBatch: vi.fn(),
@@ -57,6 +60,17 @@ const REMITA = [
   { id: 14, accountNumber: '555', custNames: 'ABA REMITA', discoCode: 'ABA_POWER', status: 'COMPLETED', amount: 40000, rrr: 'R4', dateRequested: '2026-08-04T00:00:00Z' },
 ];
 
+// GET /finance/revenue/transactions — the one revenue source (see
+// utils/financeSummary.js). Mirrors the records above: JED's PAID and
+// COMPLETED Remita requests, the Aba-coded Remita request, and one Aba
+// installation recognised on completion.
+const REVENUE = [
+  { discoCode: 'JED001', source: 'jed_customer_request', reference: '477014', amount: 67000, sourceStatus: 'PAID' },
+  { discoCode: 'JED001', source: 'jed_customer_request', reference: '477015', amount: 50000, sourceStatus: 'COMPLETED' },
+  { discoCode: 'ABA_POWER', source: 'jed_customer_request', reference: '555', amount: 40000, sourceStatus: 'COMPLETED' },
+  { discoCode: 'ABA_POWER', source: 'installation_request', reference: '1009', amount: 100000, sourceStatus: 'INSTALLED' },
+];
+
 beforeEach(() => {
   permissions = { ...ADMIN_PERMISSIONS };
   vi.clearAllMocks();
@@ -68,8 +82,20 @@ beforeEach(() => {
     if (params.status) rows = rows.filter((r) => r.status === params.status);
     return page(rows);
   });
-  jedApi.getInstallationStatistics.mockResolvedValue({ success: true, data: { total: 3, pending: 2, assigned: 1 } });
-  jedApi.getAllCustomerRequests.mockResolvedValue(page(REMITA));
+  jedApi.getInstallationStatistics.mockResolvedValue({
+    success: true,
+    data: { total: 3, pending: 2, assigned: 1, inProgress: 0, installed: 0, exported: 0, failed: 0, cancelled: 0 },
+  });
+  jedApi.getAllCustomerRequests.mockImplementation(async (params = {}) =>
+    page(params.status ? REMITA.filter((r) => r.status === params.status) : REMITA));
+  // Configured meter prices (Settings → Meter Types).
+  jedApi.getMeterTypes.mockResolvedValue(page([
+    { id: 1, name: 'Single Phase', amount: 100000, isActive: true },
+    { id: 2, name: 'Three Phase', amount: 150000, isActive: true },
+  ]));
+  jedApi.getRevenueTransactions.mockResolvedValue({
+    ...page(REVENUE), meta: { totals: { amount: 257000, count: REVENUE.length } },
+  });
   jedApi.getUsers.mockResolvedValue(page([{ id: 'uuid-1', firstName: 'Musa', lastName: 'Bello', role: 'INSTALLER' }]));
   jedApi.getAssignmentBatches.mockResolvedValue(page([]));
   jedApi.assignInstallations.mockResolvedValue({ success: true, data: { assignedCount: 1, rejectedCount: 0, rejected: [] } });
@@ -96,16 +122,25 @@ describe('InstallationRequests — disco scope', () => {
     await screen.findByText('JED PAID');
 
     expect(tileValue('All')).toBe(7);
-    expect(tileValue('Pending')).toBe(2);
+    // The imported PENDING status is labelled for what it is...
+    expect(tileValue('Unassigned')).toBe(2);
+    // ...and "Pending installations" is the whole not-yet-installed
+    // population — the Dashboard's server aggregate: 2 unassigned + 1
+    // assigned + 1 paid JED request.
+    await waitFor(() => expect(tileValue('Pending installations')).toBe(4));
     expect(tileValue('Assigned')).toBe(1);
     expect(tileValue('Awaiting Installation')).toBe(1);
     expect(tileValue('Awaiting Payment')).toBe(1);
     expect(tileValue('Completed')).toBe(2);
 
-    expect(paymentValue('Total collected payments')).toMatch(/157,000/);
-    expect(paymentValue('Revenue due to us')).toMatch(/90,000/);
-    // One request per status query is gone — the scope is loaded once.
-    expect(jedApi.getInstallations).toHaveBeenCalledTimes(1);
+    // Collected = the pending installations at meter prices: 1001 and 1003
+    // Single Phase, 1002 and the paid JED request Three Phase → 2×100k +
+    // 2×150k. Due = completed revenue (50,000 + 40,000 + 100,000).
+    await waitFor(() => expect(paymentValue('Total collected payments')).toMatch(/500,000/));
+    expect(paymentValue('Revenue due to us')).toMatch(/190,000/);
+    // One request per status query is gone — the scope is loaded once (the
+    // shared valuation's status-filtered reads are separate).
+    expect(jedApi.getInstallations.mock.calls.filter(([p]) => !p.status)).toHaveLength(1);
   });
 
   it('JED shows JED requests across all statuses, and only those', async () => {
@@ -119,7 +154,8 @@ describe('InstallationRequests — disco scope', () => {
     expect(screen.getByText('JED UNPAID')).toBeTruthy();
     expect(screen.queryByText('ABA REMITA')).toBeNull();
     expect(tileValue('All')).toBe(3);
-    expect(paymentValue('Total collected payments')).toMatch(/117,000/);
+    // Only the paid JED request is pending in JED's scope: one Three Phase.
+    await waitFor(() => expect(paymentValue('Total collected payments')).toMatch(/150,000/));
     expect(paymentValue('Revenue due to us')).toMatch(/50,000/);
   });
 
@@ -129,20 +165,23 @@ describe('InstallationRequests — disco scope', () => {
     fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'ABA_POWER' } });
 
     await waitFor(() => expect(screen.queryByText('JED PAID')).toBeNull());
-    expect(jedApi.getInstallations).toHaveBeenLastCalledWith(expect.objectContaining({ discoCode: 'ABA_POWER' }));
+    expect(jedApi.getInstallations).toHaveBeenCalledWith(expect.objectContaining({ discoCode: 'ABA_POWER' }));
     expect(screen.getByText('ABA REMITA')).toBeTruthy();
     expect(tileValue('All')).toBe(4);
-    expect(paymentValue('Total collected payments')).toMatch(/40,000/);
-    expect(paymentValue('Revenue due to us')).toMatch(/40,000/);
+    // Due: Aba's Remita request (40,000) and completed installation (100,000).
+    // Collected: Aba's pending jobs at meter prices — 1001, 1003 Single and
+    // 1002 Three Phase; the Aba Remita request is completed, so not pending.
+    await waitFor(() => expect(paymentValue('Revenue due to us')).toMatch(/140,000/));
+    await waitFor(() => expect(paymentValue('Total collected payments')).toMatch(/350,000/));
   });
 
   it('switching status filters locally without refetching', async () => {
     renderPage();
     await screen.findByText('ADA OBI');
-    fireEvent.click(statTile('Pending'));
+    fireEvent.click(statTile('Unassigned'));
     expect(screen.queryByText('CHIDI EZE')).toBeNull();
     expect(screen.getByText('ADA OBI')).toBeTruthy();
-    expect(jedApi.getInstallations).toHaveBeenCalledTimes(1);
+    expect(jedApi.getInstallations.mock.calls.filter(([p]) => !p.status)).toHaveLength(1);
   });
 });
 
@@ -191,6 +230,73 @@ describe('InstallationRequests — upload-field filters, selection and assignmen
     }));
   });
 
+  it('pastes many account numbers, reports each kind, and assigns the valid ones in one bulk request', async () => {
+    jedApi.assignInstallations.mockResolvedValue({ success: true, data: { assignedCount: 2, rejectedCount: 0, rejected: [] } });
+    renderPage();
+    await screen.findByText('ADA OBI');
+    await screen.findByText('JED PAID');
+    // A leftover search must not hide pasted rows.
+    fireEvent.change(screen.getByLabelText('Search installation requests'), { target: { value: 'BAYO' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Paste account numbers/ }));
+    fireEvent.change(screen.getByLabelText(/Account numbers — one per line/), {
+      target: { value: '1001\n1002, 1003\t477014 9999\n1001' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Find accounts' }));
+
+    const report = screen.getByText(/account numbers checked/).closest('[role="status"]');
+    expect(report.textContent).toMatch(/5 account numbers checked \(1 duplicate removed\)/);
+    expect(report.textContent).toMatch(/2 found and ready to assign/);
+    expect(report.textContent).toMatch(/1 already assigned: 1003 \(Musa Bello\)/);
+    expect(report.textContent).toMatch(/477014 \(JED Remita request \(not assignable\)\)/);
+    expect(report.textContent).toMatch(/1 not found: 9999/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select 2 assignable' }));
+    await waitFor(() => expect(screen.getByText('2 selected')).toBeTruthy());
+    expect(screen.getByText('Showing 4 pasted accounts')).toBeTruthy();
+    expect(screen.queryByText('JED DONE')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Assign to installer/ }));
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() => expect(within(dialog).getByRole('option', { name: /Musa Bello/ })).toBeTruthy());
+    fireEvent.change(within(dialog).getByLabelText(/Installer/), { target: { value: 'uuid-1' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assign' }));
+
+    await waitFor(() => expect(jedApi.assignInstallations).toHaveBeenCalledTimes(1));
+    expect(jedApi.assignInstallations).toHaveBeenCalledWith({ discoCode: 'ABA_POWER', installerId: 'uuid-1', ids: [1, 2] });
+    expect(await within(dialog).findByText(
+      '2 installations assigned successfully. 1 was already assigned. 1 account number cannot currently be assigned. 1 account number was not found.'
+    )).toBeTruthy();
+  });
+
+  it('sends one bulk request per disco, and one failing disco does not undo the others', async () => {
+    jedApi.getDiscos.mockResolvedValue(page([{ code: 'ABA_POWER', name: 'Aba Power' }, { code: 'EKO', name: 'Eko' }]));
+    jedApi.getInstallations.mockResolvedValue(page([
+      ...ABA_JOBS,
+      { id: 7, accountNumber: '7001', customerName: 'EKO ONE', discoCode: 'EKO', status: 'PENDING', meterType: 'SINGLE PHASE', createdAt: '2026-09-10T09:00:00Z' },
+    ]));
+    jedApi.assignInstallations.mockImplementation(async ({ discoCode }) => {
+      if (discoCode === 'EKO') throw new Error('SERVER_ERROR:boom');
+      return { success: true, data: { assignedCount: 1, rejectedCount: 0, rejected: [] } };
+    });
+    renderPage();
+    await screen.findByText('EKO ONE');
+    fireEvent.click(screen.getByLabelText('Select account 1001'));
+    fireEvent.click(screen.getByLabelText('Select account 7001'));
+    expect(screen.getByText(/Across 2 discos/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Assign to installer/ }));
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() => expect(within(dialog).getByRole('option', { name: /Musa Bello/ })).toBeTruthy());
+    fireEvent.change(within(dialog).getByLabelText(/Installer/), { target: { value: 'uuid-1' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assign' }));
+
+    await waitFor(() => expect(jedApi.assignInstallations).toHaveBeenCalledTimes(2));
+    expect(jedApi.assignInstallations).toHaveBeenCalledWith({ discoCode: 'ABA_POWER', installerId: 'uuid-1', ids: [1] });
+    expect(jedApi.assignInstallations).toHaveBeenCalledWith({ discoCode: 'EKO', installerId: 'uuid-1', ids: [7] });
+    // The Aba job landed; the Eko one is reported against its own account.
+    expect(await within(dialog).findByText('7001')).toBeTruthy();
+  });
+
   it('explains instead of faking an assignment for a JED request', async () => {
     renderPage();
     await screen.findByText('JED PAID');
@@ -215,7 +321,7 @@ describe('InstallationRequests — Export Completed Installations', () => {
     expect(downloadXlsx.mock.calls[0][0]).toMatch(/^completed-installations-all-discos-\d{4}-\d{2}-\d{2}\.xlsx$/);
     expect(exportedAccounts()).toEqual(['477015', '555']);
     expect(exportedSheets().map((s) => s.name)).toEqual(['Completed Installations', 'Summary']);
-    expect(await screen.findByText('Exported 2 completed installations.')).toBeTruthy();
+    expect(await screen.findByText('Installation report exported successfully (2 completed installations).')).toBeTruthy();
   });
 
   it('JED scope exports no Aba records; Aba scope exports no JED records', async () => {
@@ -236,6 +342,61 @@ describe('InstallationRequests — Export Completed Installations', () => {
     expect(exportedAccounts()).toEqual(['555']);
     const summary = Object.fromEntries(exportedSheets()[1].rows.map((r) => [r.item.trim(), r.value]));
     expect(summary['DisCo scope']).toBe('Aba Power (ABA_POWER)');
+  });
+
+  it('filters the LIST by the actual installation date, and exports exactly those rows', async () => {
+    // Two completed JED requests: one completed at 23:30 local time on 5 Sep,
+    // one on 20 Sep. Their request and payment dates are deliberately far away.
+    jedApi.getAllCustomerRequests.mockImplementation(async (params = {}) => {
+      const late = new Date(2026, 8, 5, 23, 30).toISOString();
+      const rows = [
+        { id: 21, accountNumber: '600001', custNames: 'LATE NIGHT', discoCode: 'JED001', status: 'COMPLETED', amount: 1, dateRequested: '2026-01-01T00:00:00Z', datePaid: '2026-02-01T00:00:00Z', dateCompleted: late, meterNo: '0239110006909', sealNo: 'S1' },
+        { id: 22, accountNumber: '600002', custNames: 'LATER', discoCode: 'JED001', status: 'COMPLETED', amount: 1, dateRequested: '2026-09-05T00:00:00Z', dateCompleted: '2026-09-20T10:00:00Z', meterNo: '0239110006910', sealNo: 'S2' },
+      ];
+      return page(params.status ? rows.filter((r) => r.status === params.status) : rows);
+    });
+    renderPage();
+    await screen.findByText('LATE NIGHT');
+    fireEvent.change(screen.getByLabelText('Installed from'), { target: { value: '2026-09-05' } });
+    fireEvent.change(screen.getByLabelText('Installed to'), { target: { value: '2026-09-05' } });
+    // The list itself narrows — 23:30 on the 5th stays on the 5th.
+    await waitFor(() => expect(screen.queryByText('LATER')).toBeNull());
+    expect(screen.getByText('LATE NIGHT')).toBeTruthy();
+    expect(screen.queryByText('ADA OBI')).toBeNull();
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(downloadXlsx).toHaveBeenCalled());
+    expect(exportedAccounts()).toEqual(['600001']);
+  });
+
+  it('lets a Supervisor export, without any payment columns', async () => {
+    permissions = {
+      canViewInstallationRequests: true, canManageAssignments: true, canManageInstallations: true,
+      canExportInstallations: true, canViewPayments: false, isAdmin: false, isSupervisor: true,
+    };
+    renderPage();
+    await screen.findByText('JED DONE');
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(downloadXlsx).toHaveBeenCalled());
+    const keys = exportedSheets()[0].columns.map((c) => c.key);
+    ['rrr', 'amount', 'datePaid', 'customerPhone'].forEach((k) => expect(keys).not.toContain(k));
+    expect(keys).toContain('photoUrl');
+  });
+
+  it('offers no export to a role without INSTALLATIONS.EXPORT', async () => {
+    permissions = { ...ADMIN_PERMISSIONS, canExportInstallations: false };
+    renderPage();
+    await screen.findByText('JED DONE');
+    expect(screen.queryByRole('button', { name: /Export Completed Installations/ })).toBeNull();
+  });
+
+  it('says so plainly when the export fails', async () => {
+    downloadXlsx.mockRejectedValueOnce(new Error('ExcelJS: internal /tmp/path failure'));
+    renderPage();
+    await screen.findByText('JED DONE');
+    await waitFor(() => expect(screen.getByText('2 completed installations in scope')).toBeTruthy());
+    fireEvent.click(exportButton());
+    expect(await screen.findByText('Unable to export installation report.')).toBeTruthy();
+    expect(screen.queryByText(/tmp|ExcelJS/)).toBeNull();
   });
 
   it('applies the installation date range', async () => {
@@ -342,6 +503,15 @@ describe('InstallationRequests — a viewer without the manage permissions', () 
     expect(screen.queryByRole('button', { name: /Assign installer/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Export & mark sent|Export preview/ })).toBeNull();
     expect(screen.queryByText('Mark rows as sent (moves them to Exported)')).toBeNull();
+  });
+
+  it('shows a viewer without PAYMENTS.VIEW no money at all, and asks for none', async () => {
+    asSupervisor();
+    renderPage();
+    await screen.findByText('JED PAID');
+    expect(screen.queryByText('Total collected payments')).toBeNull();
+    expect(screen.queryByText(/67,000/)).toBeNull();
+    expect(jedApi.getRevenueTransactions).not.toHaveBeenCalled();
   });
 
   it('calls no mutating endpoint while the page is open', async () => {

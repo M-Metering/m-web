@@ -4,7 +4,7 @@ import { usePermissions } from '../auth/usePermissions';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import ConfirmationModal from '../common/ConfirmationModal';
 import {
-  Calendar, Clock, CheckCircle,
+  Calendar, CheckCircle,
   AlertCircle, FileText, Search, // Navigation and Filter icons removed — confirmed unused
   Zap,
   Cpu,
@@ -21,6 +21,7 @@ import {
   Trash2,
   Loader2,
   UserPlus,
+  Send,
   X
 } from 'lucide-react';
 import { formatDateOnly } from '../../utils/date';
@@ -33,8 +34,13 @@ import {
 } from '../../utils/meterDisplay';
 import {
   isAssignableMeter, meterDeletionBlockReason, partitionDeletableMeters, meterSerial,
+  meterAvailability, withMeterHolders,
 } from '../../utils/meterInventory';
 import AssignMeterModal from '../installations/AssignMeterModal';
+import { useMeterHolders } from '../../hooks/useMeterHolders';
+import { normalizePhase } from '../../utils/installationScope';
+import { useInstallationRecordsByMeter } from '../../hooks/useInstallationRecordsByMeter';
+import { DrillSummary, InstallationRecord, AssignedMetersList } from './MeterDrillDown';
 
 // Constants for better maintainability
 const METER_STATUS_OPTIONS = [
@@ -95,7 +101,8 @@ const METER_SEARCH_LIMIT = 100;
 
 const matchesActiveFilters = (meter, { status, phaseType } = {}) => {
   if (status && status !== 'ALL' && normalizeStatus(meter?.status) !== normalizeStatus(status)) return false;
-  if (phaseType && phaseType !== 'ALL' && normalizeStatus(meter?.phaseType) !== normalizeStatus(phaseType)) return false;
+  // Canonical phase, so a meter stored as '3 Phase' still matches THREE PHASE.
+  if (phaseType && phaseType !== 'ALL' && normalizePhase(meter?.phaseType) !== normalizePhase(phaseType)) return false;
   return true;
 };
 
@@ -433,37 +440,32 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
 // admin-tier only).
 const useMeterStatistics = (enabled = true) => {
   const { refreshSignal } = useDataRefresh();
+  // Exactly the fields GET /meters/statistics documents. A missing field is
+  // null ("—" on the card), never 0: the old "Pending" and "Paid" cards read
+  // fields this endpoint doesn't have and showed a made-up 0 (removed
+  // 2026-09-27).
   const [meterStats, setMeterStats] = useState({
-    totalMeters: 0,
-    available: 0,
-    installed: 0,
-    faulty: 0,
-    retired: 0,
-    singlePhase: 0,
-    threePhase: 0,
-    completed: 0,
-    paid: 0,
-    pending: 0
+    totalMeters: null, available: null, installed: null, faulty: null, retired: null, singlePhase: null, threePhase: null,
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hasPermission, setHasPermission] = useState(true);
 
   const normalizeStats = (data) => {
-    const stats = {
-      totalMeters: data.totalMeters ?? data.total_meters ?? data.totalMetersCount ?? data.total_meters_count ?? data.total ?? data.count ?? 0,
-      available: data.available ?? data.available_meters ?? data.availableMeters ?? data.available_count ?? data.availableCount ?? 0,
-      installed: data.installed ?? data.installed_meters ?? data.installedMeters ?? data.installed_count ?? data.installedCount ?? 0,
-      faulty: data.faulty ?? data.faulty_meters ?? data.faultyMeters ?? data.faulty_count ?? data.faultyCount ?? 0,
-      retired: data.retired ?? data.retired_meters ?? data.retiredMeters ?? data.retired_count ?? data.retiredCount ?? 0,
-      singlePhase: data.singlePhase ?? data.single_phase ?? data.singlePhaseMeters ?? data.single_phase_meters ?? 0,
-      threePhase: data.threePhase ?? data.three_phase ?? data.threePhaseMeters ?? data.three_phase_meters ?? 0,
-      completed: data.completed ?? data.completed_meters ?? data.completedMeters ?? data.completed_count ?? data.completedCount ?? 0,
-      paid: data.paid ?? data.paid_meters ?? data.paidMeters ?? data.paid_count ?? data.paidCount ?? 0,
-      pending: data.pending ?? data.pending_meters ?? data.pendingMeters ?? data.pending_count ?? data.pendingCount ?? 0
+    const count = (...values) => {
+      const v = values.find((x) => x !== undefined && x !== null && x !== '');
+      const n = v === undefined ? NaN : Number(v);
+      return Number.isFinite(n) ? n : null;
     };
-
-    return stats;
+    return {
+      totalMeters: count(data.totalMeters, data.total_meters, data.total),
+      available: count(data.available, data.availableMeters, data.available_meters),
+      installed: count(data.installed, data.installedMeters, data.installed_meters),
+      faulty: count(data.faulty, data.faultyMeters, data.faulty_meters),
+      retired: count(data.retired, data.retiredMeters, data.retired_meters),
+      singlePhase: count(data.singlePhase, data.single_phase),
+      threePhase: count(data.threePhase, data.three_phase),
+    };
   };
 
   const unwrapStatsResponse = (response) => {
@@ -530,23 +532,31 @@ const useMeterStatistics = (enabled = true) => {
 
 // Stats Cards Component
  
-const StatsCard = ({ title, value, icon: Icon, bgColor, iconColor, loading = false, error = false }) => (
-  <div className="card p-4 sm:p-6 hover:shadow-lg transition-shadow duration-200">
+// Each card is a drill-down: clicking it filters the inventory to exactly the
+// records it counts (see MeterSchedule below). `active` marks the open one.
+const StatsCard = ({ title, value, icon: Icon, bgColor, iconColor, loading = false, error = false, onClick, active = false, hint }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    aria-pressed={active}
+    className={`card p-4 sm:p-6 text-left w-full hover:shadow-lg transition-shadow duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+      active ? 'ring-2 ring-brand-500 dark:ring-brand-400' : ''
+    }`}
+  >
     <div className="flex items-center justify-between">
       <div className="min-w-0">
         <p className="text-gray-500 dark:text-gray-400 text-sm font-medium mb-1 truncate">{title}</p>
-        <p className={`text-2xl sm:text-3xl font-bold ${error ? 'text-red-600' : 'text-gray-900 dark:text-white'}`}>
-          {loading ? '...' : error ? 'Error' : value}
+        <p className={`text-2xl sm:text-3xl font-bold ${error ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-white'}`}>
+          {loading ? '...' : error ? 'Error' : value === null || value === undefined ? '—' : Number(value).toLocaleString()}
         </p>
-        {error && (
-          <p className="text-xs text-red-500 mt-1">Failed to load</p>
-        )}
+        {error && <p className="text-xs text-red-500 mt-1">Failed to load</p>}
+        {hint && !loading && !error && <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">{hint}</p>}
       </div>
       <div className={`${bgColor} rounded-full p-2 sm:p-3 flex-shrink-0 ml-4`}>
         <Icon className={`w-5 h-5 sm:w-6 sm:h-6 ${iconColor}`} />
       </div>
     </div>
-  </div>
+  </button>
 );
 
 // Meter Status Badge Component
@@ -560,19 +570,10 @@ const getMeterStatus = (meter) => {
     return 'INSTALLED';
   }
 
-  if (status === 'FAULTY') {
-    return 'FAULTY';
-  }
-
-  if (status === 'RETIRED') {
-    return 'RETIRED';
-  }
-
-  if (status === 'AVAILABLE') {
-    return 'AVAILABLE';
-  }
-
-  return status || 'AVAILABLE';
+  // Everything else — including ASSIGNED, which `status` alone never shows
+  // because a dispatch leaves it at AVAILABLE — comes from the shared rule.
+  // `meter.holder` is joined on by withMeterHolders (see MeterSchedule below).
+  return meterAvailability(meter, meter?.holder).key;
 };
 
 const getInstalledAtValue = (meter) => {
@@ -590,6 +591,12 @@ const MeterStatusBadge = ({ status }) => {
         return { bg: 'bg-red-100 dark:bg-red-900/30', text: 'text-red-800 dark:text-red-300', label: 'Faulty' };
       case 'RETIRED':
         return { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-800 dark:text-gray-200', label: 'Retired' };
+      // Out with an installer. Purple: not green (it is not on the shelf) and
+      // not brand gold (a status pill must not look like an action).
+      case 'ASSIGNED':
+        return { bg: 'bg-purple-100 dark:bg-purple-900/30', text: 'text-purple-800 dark:text-purple-300', label: 'Assigned' };
+      case 'LOST':
+        return { bg: 'bg-orange-100 dark:bg-orange-900/30', text: 'text-orange-800 dark:text-orange-300', label: 'Lost' };
       default:
         return { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-800 dark:text-gray-200', label: status || 'Unknown' };
     }
@@ -606,7 +613,8 @@ const MeterStatusBadge = ({ status }) => {
 // Phase Type Badge Component
 const PhaseTypeBadge = ({ phaseType }) => {
   const getPhaseConfig = (phaseType) => {
-    switch (phaseType) {
+    // Canonical form first, so "3 Phase" or "THREE_PHASE" reads as Three Phase.
+    switch (normalizePhase(phaseType)) {
       case 'SINGLE PHASE':
         // Cyan, not amber/gold — gold is now this app's brand colour (see
         // tailwind.config.js), so a phase-type badge doesn't collide with it.
@@ -633,7 +641,7 @@ const PhaseTypeBadge = ({ phaseType }) => {
 // Meter Card Component
 const MeterCard = ({
   meter, canDelete, canAssignMeters, deleting, onDeleteClick, onAssignClick,
-  selectable, selected, onToggleSelect,
+  selectable, selected, onToggleSelect, installation = null,
 }) => {
   const status = getMeterStatus(meter);
   // Dispatchable per the shared inventory rule (status AVAILABLE and not
@@ -682,8 +690,28 @@ const MeterCard = ({
           )}
         </div>
         <PhaseTypeBadge phaseType={meter.phaseType} />
+        {status === 'ASSIGNED' && (
+          <span className="text-[11px] text-gray-500 dark:text-gray-400 text-right">
+            {meter.holder?.installerName ? `With ${meter.holder.installerName}` : 'With an installer'}
+          </span>
+        )}
       </div>
     </div>
+
+    {/* The installation this meter went into — customer, installation and
+        installer — shown in the Installed drill-down (see MeterDrillDown.jsx). */}
+    {installation && status === 'INSTALLED' && (
+      <div className="mb-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700">
+        <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5">Installation</p>
+        <InstallationRecord
+          record={installation.index?.get(meterSerial(meter)) || null}
+          loading={installation.loading}
+          error={installation.error}
+          complete={installation.complete}
+          showPhone={installation.showPhone}
+        />
+      </div>
+    )}
 
     <div className="grid grid-cols-1 gap-2 text-xs sm:text-sm">
       {/* Make and Model are always shown, even when the record doesn't carry
@@ -795,6 +823,9 @@ const MeterTable = ({ meters, loading }) => {
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <MeterStatusBadge status={getMeterStatus(meter)} />
+                  {meter.holder?.installerName && (
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">With {meter.holder.installerName}</div>
+                  )}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
                   {orNotRecorded(manufacturedDateOf(meter))}
@@ -1253,7 +1284,7 @@ function deleteConfirmationMessage(meters) {
   return lines.join('\n\n');
 }
 
-const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canExportMeters, onDataChanged }) => {
+const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canExportMeters, onDataChanged, installation = null }) => {
   const { meters, loading, error, pagination, filters, fetchMeters, updateFilters, changePage, exportMeters } = meterInventory;
 
   // Deletion is scoped to what a Super Admin selected, one meter at a time
@@ -1511,6 +1542,7 @@ const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canE
                 selectable={canDeleteMeters && !meterDeletionBlockReason(meter)}
                 selected={selected.has(meterSerial(meter))}
                 onToggleSelect={toggleSelect}
+                installation={installation}
               />
             ))}
           </div>
@@ -1614,7 +1646,7 @@ function MeterSchedule() {
   //    the statistics call and the server-side export. A Supervisor reaches
   //    this page read-only (list, search, view) and gets a 403 on both, so
   //    they are not offered rather than offered and refused.
-  const { canManageAssignments, isSuperAdmin, canManageSchedule } = usePermissions();
+  const { canManageAssignments, canViewAssignments, isSuperAdmin, canManageSchedule, isAdmin } = usePermissions();
   const { notifyDataChanged } = useDataRefresh();
   const {
     meterStats, loading: statsLoading, error: statsError, refetch: refetchStats,
@@ -1624,96 +1656,86 @@ function MeterSchedule() {
   // can be told whether it's the currently-visible tab (see fix note above
   // the useMeterData hook definition).
   const [activeTab, setActiveTab] = useState('inventory');
+  const [drillOpen, setDrillOpen] = useState(false);
   const meterInventory = useMeterData({ searchTerm: '' }, activeTab === 'inventory');
   const meterQuery = useMeterData({ searchTerm: '' }, activeTab === 'query');
 
-  const statsCards = useMemo(() => {
-    const cards = [
-      { 
-        title: 'Total Meters', 
-        value: meterStats.totalMeters, 
-        icon: Database, 
-        bgColor: 'bg-brand-100 dark:bg-brand-900/30', 
-        iconColor: 'text-brand-600 dark:text-brand-400',
-        loading: statsLoading,
-        error: !!statsError
-      },
-      { 
-        title: 'Available', 
-        value: meterStats.available, 
-        icon: CheckCircle, 
-        bgColor: 'bg-green-100 dark:bg-green-900/30', 
-        iconColor: 'text-green-600 dark:text-green-400',
-        loading: statsLoading,
-        error: !!statsError
-      },
-      { 
-        title: 'Installed', 
-        value: meterStats.installed, 
-        icon: Wrench, 
-        bgColor: 'bg-purple-100 dark:bg-purple-900/30', 
-        iconColor: 'text-purple-600 dark:text-purple-400',
-        loading: statsLoading,
-        error: !!statsError
-      },
-      { 
-        title: 'Faulty', 
-        value: meterStats.faulty, 
-        icon: AlertTriangle, 
-        bgColor: 'bg-red-100 dark:bg-red-900/30', 
-        iconColor: 'text-red-600 dark:text-red-400',
-        loading: statsLoading,
-        error: !!statsError
-      },
-      { 
-        title: 'Retired', 
-        value: meterStats.retired, 
-        icon: Battery, 
-        bgColor: 'bg-gray-100 dark:bg-gray-700',
-        iconColor: 'text-gray-600 dark:text-gray-300',
-        loading: statsLoading,
-        error: !!statsError
-      },
-      { 
-        title: 'Pending', 
-        value: meterStats.pending, 
-        icon: Clock, 
-        bgColor: 'bg-brand-100 dark:bg-brand-900/30', 
-        iconColor: 'text-brand-600 dark:text-brand-400',
-        loading: statsLoading,
-        error: !!statsError
-      },
-      { 
-        title: 'Paid', 
-        value: meterStats.paid, 
-        icon: CheckCircle, 
-        bgColor: 'bg-teal-100 dark:bg-teal-900/30', 
-        iconColor: 'text-teal-600 dark:text-teal-400',
-        loading: statsLoading,
-        error: !!statsError
-      },
-      {
-        title: 'Single Phase',
-        value: meterStats.singlePhase,
-        icon: Zap,
-        bgColor: 'bg-cyan-100 dark:bg-cyan-900/30',
-        iconColor: 'text-cyan-600 dark:text-cyan-400',
-        loading: statsLoading,
-        error: !!statsError
-      },
-      { 
-        title: 'Three Phase', 
-        value: meterStats.threePhase, 
-        icon: Cpu, 
-        bgColor: 'bg-indigo-100 dark:bg-indigo-900/30', 
-        iconColor: 'text-indigo-600 dark:text-indigo-400',
-        loading: statsLoading,
-        error: !!statsError
-      }
-    ];
+  // Who holds each meter, from the open dispatch batches. A dispatch leaves
+  // `status` at AVAILABLE by design, and GET /meters doesn't document
+  // `assignmentStatus`, so without this join a meter already with an
+  // installer reads "Available" here and can be offered for assignment again.
+  // Gated on ASSIGNMENTS.VIEW (Admin, Super Admin, Supervisor) — the same
+  // permission that reads those batches on the Assignments page.
+  const { holders, loading: holdersLoading, error: holdersError } = useMeterHolders({ enabled: canViewAssignments === true });
+  const inventoryMeters = useMemo(
+    () => withMeterHolders(meterInventory.meters, holders),
+    [meterInventory.meters, holders]
+  );
+  const queryMeters = useMemo(
+    () => withMeterHolders(meterQuery.meters, holders),
+    [meterQuery.meters, holders]
+  );
 
+  // Card → the inventory filter it represents. Status and phase cards drill
+  // into GET /meters with that server-side filter, so the list's own total is
+  // the same query's count; "Assigned" drills into the open-dispatch index its
+  // count is taken from. The open card is DERIVED from the current filters,
+  // so it can never claim a filter the list isn't using.
+  const [showAssigned, setShowAssigned] = useState(false);
+  const invFilters = meterInventory.filters;
+  const cardMatches = (f) => !showAssigned
+    && invFilters.status === (f.status || 'ALL') && invFilters.phaseType === (f.phaseType || 'ALL');
+
+  const statsCards = useMemo(() => {
+    const base = { loading: statsLoading, error: !!statsError };
+    const cards = [
+      { id: 'total', title: 'Total Meters', value: meterStats.totalMeters, icon: Database, bgColor: 'bg-brand-100 dark:bg-brand-900/30', iconColor: 'text-brand-600 dark:text-brand-400', filter: {}, ...base },
+      { id: 'available', title: 'Available', value: meterStats.available, icon: CheckCircle, bgColor: 'bg-green-100 dark:bg-green-900/30', iconColor: 'text-green-600 dark:text-green-400', filter: { status: 'AVAILABLE' },
+        hint: holders?.size ? `incl. ${holders.size.toLocaleString()} with installers` : null, ...base },
+    ];
+    if (canViewAssignments) {
+      cards.push({ id: 'assigned', title: 'Assigned', value: holders ? holders.size : null, icon: Send, bgColor: 'bg-purple-100 dark:bg-purple-900/30', iconColor: 'text-purple-600 dark:text-purple-400',
+        assigned: true, loading: holdersLoading && !holders, error: !!holdersError, hint: 'Out with installers' });
+    }
+    cards.push(
+      { id: 'installed', title: 'Installed', value: meterStats.installed, icon: Wrench, bgColor: 'bg-purple-100 dark:bg-purple-900/30', iconColor: 'text-purple-600 dark:text-purple-400', filter: { status: 'INSTALLED' }, ...base },
+      { id: 'faulty', title: 'Faulty', value: meterStats.faulty, icon: AlertTriangle, bgColor: 'bg-red-100 dark:bg-red-900/30', iconColor: 'text-red-600 dark:text-red-400', filter: { status: 'FAULTY' }, ...base },
+      { id: 'retired', title: 'Retired', value: meterStats.retired, icon: Battery, bgColor: 'bg-gray-100 dark:bg-gray-700', iconColor: 'text-gray-600 dark:text-gray-300', filter: { status: 'RETIRED' }, ...base },
+      { id: 'single', title: 'Single Phase', value: meterStats.singlePhase, icon: Zap, bgColor: 'bg-cyan-100 dark:bg-cyan-900/30', iconColor: 'text-cyan-600 dark:text-cyan-400', filter: { phaseType: 'SINGLE PHASE' }, ...base },
+      { id: 'three', title: 'Three Phase', value: meterStats.threePhase, icon: Cpu, bgColor: 'bg-indigo-100 dark:bg-indigo-900/30', iconColor: 'text-indigo-600 dark:text-indigo-400', filter: { phaseType: 'THREE PHASE' }, ...base },
+    );
     return cards;
-  }, [meterStats, statsLoading, statsError]);
+  }, [meterStats, statsLoading, statsError, holders, holdersLoading, holdersError, canViewAssignments]);
+
+  const activeCard = statsCards.find((c) => (c.assigned ? showAssigned : cardMatches(c.filter) && c.id !== 'total'))
+    || (showAssigned ? null : statsCards.find((c) => c.id === 'total' && cardMatches(c.filter) && drillOpen));
+
+  const openCard = (card) => {
+    setActiveTab('inventory');
+    setDrillOpen(true);
+    if (card.assigned) { setShowAssigned(true); return; }
+    setShowAssigned(false);
+    meterInventory.updateFilters({
+      ...invFilters, status: card.filter.status || 'ALL', phaseType: card.filter.phaseType || 'ALL',
+    });
+  };
+  const closeCard = () => {
+    setShowAssigned(false);
+    setDrillOpen(false);
+    meterInventory.updateFilters({ ...invFilters, status: 'ALL', phaseType: 'ALL' });
+  };
+
+  // The Installed view joins each meter to its installation record.
+  const installedView = activeTab === 'inventory' && !showAssigned && invFilters.status === 'INSTALLED';
+  const installationLookup = useInstallationRecordsByMeter({ enabled: installedView });
+  const installation = installedView ? {
+    index: installationLookup.records?.index || null,
+    complete: installationLookup.records?.complete ?? false,
+    loading: installationLookup.loading && !installationLookup.records,
+    error: installationLookup.error,
+    // Customer phone numbers only for the admin tier.
+    showPhone: isAdmin === true,
+  } : null;
 
   const handleTabChange = useCallback((tabId) => {
     setActiveTab(tabId);
@@ -1748,9 +1770,9 @@ function MeterSchedule() {
       </div>
 
       {canManageSchedule && (
-        <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 sm:gap-4">
-          {statsCards.map((card, index) => (
-            <StatsCard key={index} {...card} />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          {statsCards.map((card) => (
+            <StatsCard key={card.id} {...card} active={activeCard?.id === card.id} onClick={() => openCard(card)} />
           ))}
         </div>
       )}
@@ -1773,9 +1795,24 @@ function MeterSchedule() {
         </div>
       </div>
 
-      {activeTab === 'inventory' && (
+      {activeTab === 'inventory' && activeCard && (
+        <DrillSummary
+          label={activeCard.title}
+          cardCount={activeCard.value ?? null}
+          listTotal={showAssigned ? (holders ? holders.size : null) : (meterInventory.loading ? null : meterInventory.pagination.total)}
+          searching={!showAssigned && !!invFilters.searchTerm?.trim()}
+          onClear={closeCard}
+        />
+      )}
+
+      {activeTab === 'inventory' && showAssigned && (
+        <AssignedMetersList holders={holders} loading={holdersLoading} error={holdersError} />
+      )}
+
+      {activeTab === 'inventory' && !showAssigned && (
         <MeterInventory
-          meterInventory={meterInventory}
+          installation={installation}
+          meterInventory={{ ...meterInventory, meters: inventoryMeters }}
           canDeleteMeters={isSuperAdmin}
           canAssignMeters={canManageAssignments}
           canExportMeters={canManageSchedule}
@@ -1784,7 +1821,7 @@ function MeterSchedule() {
       )}
 
       {activeTab === 'query' && (
-        <MeterQuery meterQuery={meterQuery} canExportMeters={canManageSchedule} />
+        <MeterQuery meterQuery={{ ...meterQuery, meters: queryMeters }} canExportMeters={canManageSchedule} />
       )}
     </div>
   );

@@ -92,6 +92,42 @@ the JED-era API had no assignment endpoint). It is now a real dispatch through
   re-sent, so a duplicate assignment record can't be created by a double submission.
 
 
+## Installation Export, Photos and the CSP (2026-09-28)
+
+- **Supervisor export is a single capability** (`INSTALLATIONS.EXPORT`), not a wider role: a test pins
+  that it grants no user, settings, payments, reports, imports or uploads access. The workbook is
+  built from rows the role can already read server-side; its payment columns are dropped without
+  PAYMENTS.VIEW and customer phone/email outside the admin tier. Note the JED request list still
+  returns `amount` to a Supervisor at the API (API_GAP_REPORT.md, gap AL).
+- **`img-src` now allows the API hosts** (`https://api.memetering.com`, `https://pharez-api.onrender.com`).
+  Uploaded installation photos are served from `/files/{token}` on the API host, so the previous
+  `img-src 'self' data:` blocked every uploaded photo's thumbnail. These files are public by design
+  (see "Uploaded Files Are Public"), and `connect-src` already trusted the same hosts.
+- **Embedding pictures in the export** fetches those public links with `credentials: 'omit'`; no
+  token is sent and no signed or temporary URL is created. Only JPEG/PNG (checked from the bytes) up
+  to 5 MB are embedded.
+
+## Financial Data, Installer Overview and Meter Holders (2026-09-27)
+
+- **Fixed: a Supervisor saw money on the Installations page.** The "Total collected payments" /
+  "Revenue due to us" cards and each JED row's amount were rendered for anyone who could open the
+  page, and Supervisor can. Both are now gated on `PAYMENTS.VIEW` (`canViewPayments`), and the revenue
+  read itself is skipped for a role without it — matching the Dashboard, which already worked this way.
+  `/finance/*` is a 403 for Supervisor server-side, so no data leaked from that endpoint; the leaked
+  figures came from the JED request list the page loads for other purposes.
+- **Financial and index reads now default OFF.** `useRevenueSummary` and `useMeterHolders` only read
+  when passed `enabled: true` exactly; previously `enabled` defaulted to true, so an undefined
+  permission flag (a typo, a missing field in a mock or a future role) would have switched a financial
+  read on. A test pins this.
+- **Installer Job Status** (`/installer-status`) is gated by `INSTALLERS.VIEW_STATUS` in `App.jsx`,
+  `Navigation.jsx` and the component itself. It shows no money. Every read behind it is one the
+  Supervisor already holds on the API (`GET /installations`, `GET /users?role=INSTALLER`,
+  `GET /assignments`), so it widens nothing server-side. Installer is denied — it is an overview of
+  other installers' work.
+- **Duplicate meter assignment is refused by the backend** (`POST /assignments/meters` rejects
+  already-assigned serials per row). The client-side holder index is a UX layer on top, never the
+  control.
+
 ## Uploaded Files Are Public To Anyone With The Link (2026-09-25)
 
 The API gained a general-purpose file store (`POST /uploads`), and this app now uses it for the

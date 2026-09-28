@@ -37,7 +37,10 @@ export const INSTALLATION_STATUS_ORDER = [
 ];
 
 export const INSTALLATION_STATUS_LABELS = Object.freeze({
-  PENDING: 'Pending',
+  // The API status PENDING = imported, not yet dispatched. Labelled by what it
+  // means so it can't be mistaken for "Pending Installations" (the whole
+  // not-yet-installed population, utils/installationTotals.js).
+  PENDING: 'Unassigned',
   ASSIGNED: 'Assigned',
   IN_PROGRESS: 'In Progress',
   INSTALLED: 'Installed',

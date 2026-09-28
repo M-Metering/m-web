@@ -54,7 +54,11 @@ export const PERMISSIONS = Object.freeze({
     // Multi-disco flow (2026-09-21): an Installer's own assigned jobs and the
     // meters in their hands (GET /installations/me/*, scoped by their JWT).
     // Distinct from VIEW/COMPLETE above, which cover the JED queue.
-    FIELD_JOBS: 'installations:field_jobs'
+    FIELD_JOBS: 'installations:field_jobs',
+    // Download the Completed Installations workbook (2026-09-28). Its own
+    // capability so a Supervisor can export without gaining anything else —
+    // the workbook is built from rows the role can already read.
+    EXPORT: 'installations:export'
   },
 
   // Multi-disco flow — admin-tier operations. Disco *configuration*
@@ -70,6 +74,15 @@ export const PERMISSIONS = Object.freeze({
   ASSIGNMENTS: {
     VIEW: 'assignments:view',
     MANAGE: 'assignments:manage'
+  },
+
+  // Installer Job Status (2026-09-27): every installer's workload and
+  // progress — jobs by status, meters in hand, completion rate. Operational
+  // data only; it carries no money, so it needs no PAYMENTS permission. Built
+  // entirely from reads the holder already has: GET /installations,
+  // GET /users?role=INSTALLER and GET /assignments.
+  INSTALLERS: {
+    VIEW_STATUS: 'installers:view_status'
   },
   
   // User management permissions
@@ -141,6 +154,7 @@ const ADMIN_TIER_PERMISSIONS = [
   PERMISSIONS.INSTALLATIONS.VIEW_ALL,
   PERMISSIONS.INSTALLATIONS.MANAGE,
   PERMISSIONS.INSTALLATIONS.COMPLETE,
+  PERMISSIONS.INSTALLATIONS.EXPORT,
 
   // Users - Full access (creating/editing ADMIN or SUPERADMIN accounts is
   // additionally gated to SUPERADMIN directly in UserManagement.jsx, per
@@ -183,7 +197,10 @@ const ADMIN_TIER_PERMISSIONS = [
   PERMISSIONS.IMPORTS.VIEW,
   PERMISSIONS.IMPORTS.RUN,
   PERMISSIONS.ASSIGNMENTS.VIEW,
-  PERMISSIONS.ASSIGNMENTS.MANAGE
+  PERMISSIONS.ASSIGNMENTS.MANAGE,
+
+  // Installer Job Status - every installer's workload
+  PERMISSIONS.INSTALLERS.VIEW_STATUS
 ];
 
 // Role-based permissions mapping
@@ -230,6 +247,9 @@ const ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.INSTALLATIONS.VIEW,
     PERMISSIONS.INSTALLATIONS.VIEW_ALL,
     PERMISSIONS.INSTALLATIONS.MANAGE,
+    // Export the Completed Installations workbook — installation data only;
+    // its payment columns need PAYMENTS.VIEW, which this role doesn't hold.
+    PERMISSIONS.INSTALLATIONS.EXPORT,
 
     // Assignments: every /assignments/* route, same as ADMIN.
     PERMISSIONS.ASSIGNMENTS.VIEW,
@@ -245,7 +265,12 @@ const ROLE_PERMISSIONS = Object.freeze({
     // installer" picker work for a Supervisor (GET /users?role=INSTALLER is
     // the only user-list access the API gives it). USERS.CREATE/UPDATE/
     // DELETE/MANAGE are all withheld.
-    PERMISSIONS.USERS.VIEW
+    PERMISSIONS.USERS.VIEW,
+
+    // Installer Job Status — operational only (jobs, meters, completion),
+    // no money. Every read behind it is one this role already holds:
+    // GET /installations, GET /users?role=INSTALLER, GET /assignments.
+    PERMISSIONS.INSTALLERS.VIEW_STATUS
   ]),
 
   [ROLES.INSTALLER]: new Set([
@@ -308,7 +333,8 @@ const PAGE_ACCESS = Object.freeze({
   // Renamed from 'installation-requests' when those two top-level items
   // merged; the permission itself is unchanged.
   installations: [PERMISSIONS.INSTALLATIONS.VIEW_ALL],
-  'my-jobs': [PERMISSIONS.INSTALLATIONS.FIELD_JOBS]
+  'my-jobs': [PERMISSIONS.INSTALLATIONS.FIELD_JOBS],
+  'installer-status': [PERMISSIONS.INSTALLERS.VIEW_STATUS]
 });
 
 // Permission check with caching

@@ -21,6 +21,8 @@ export const COLUMN_TYPES = Object.freeze({
   CURRENCY: 'currency', // NGN amount
   DATE: 'date', // plain calendar date ('YYYY-MM-DD' or an instant's local date)
   DATETIME: 'datetime', // instant, shown in the viewer's local time
+  LINK: 'link', // an http(s) URL: a clickable hyperlink whose text is the full URL
+  IMAGE: 'image', // a picture anchored in the cell (sheet.images); no cell text
 });
 
 const NUM_FMT = {
@@ -30,7 +32,15 @@ const NUM_FMT = {
   currency: '"₦"#,##0.00',
   date: 'dd mmm yyyy',
   datetime: 'dd mmm yyyy hh:mm',
+  link: '@',
+  image: '@',
 };
+
+const HTTP_URL_RE = /^https?:\/\/\S+$/i;
+// Row height (points) and picture size (pixels) for embedded pictures.
+const IMAGE_ROW_HEIGHT = 72;
+const IMAGE_PX = 90;
+const IMAGE_COLUMN_WIDTH = 15;
 
 const PLAIN_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -75,6 +85,14 @@ export function toCellValue(value, type = COLUMN_TYPES.TEXT) {
         ? null
         : wallClock(t.getFullYear(), t.getMonth(), t.getDate(), t.getHours(), t.getMinutes(), t.getSeconds());
     }
+    case COLUMN_TYPES.IMAGE:
+      return null;
+    case COLUMN_TYPES.LINK:
+      // Only a real web link becomes a hyperlink; anything else is kept as
+      // plain text rather than turned into a broken link.
+      return HTTP_URL_RE.test(String(value).trim())
+        ? { text: String(value).trim(), hyperlink: String(value).trim() }
+        : String(value);
     default:
       // Identifiers: never let a numeric-looking value become a number.
       return String(value);
@@ -84,12 +102,15 @@ export function toCellValue(value, type = COLUMN_TYPES.TEXT) {
 const displayLength = (v) => {
   if (v === null || v === undefined) return 0;
   if (v instanceof Date) return 17;
+  if (typeof v === 'object' && v.text) return String(v.text).length;
   return String(v).length;
 };
 
 /**
  * @typedef {{ header: string, key: string, type?: string, width?: number }} XlsxColumn
- * @typedef {{ name: string, columns: XlsxColumn[], rows: object[], autoFilter?: boolean }} XlsxSheet
+ * @typedef {{ row: number, key: string, buffer: ArrayBuffer, extension: 'jpeg'|'png' }} XlsxImage
+ *   row: 0-based data row; key: the IMAGE column it sits in
+ * @typedef {{ name: string, columns: XlsxColumn[], rows: object[], autoFilter?: boolean, images?: XlsxImage[] }} XlsxSheet
  */
 
 /** Populate an ExcelJS workbook from sheet definitions. */
@@ -107,7 +128,9 @@ export function fillWorkbook(workbook, sheets) {
       return {
         header: c.header,
         key: c.key,
-        width: c.width || Math.min(Math.max(longest + 2, 10), 60),
+        // A long URL is capped in width; it stays whole in the cell and in the
+        // formula bar, and a hyperlink cell never spills into its neighbour.
+        width: c.width || (type === COLUMN_TYPES.IMAGE ? IMAGE_COLUMN_WIDTH : Math.min(Math.max(longest + 2, 10), 60)),
         style: { numFmt: NUM_FMT[type] || NUM_FMT.text },
       };
     });
@@ -115,7 +138,21 @@ export function fillWorkbook(workbook, sheets) {
     sheet.rows.forEach((r) => {
       const values = {};
       sheet.columns.forEach((c) => { values[c.key] = toCellValue(r[c.key], c.type || COLUMN_TYPES.TEXT); });
-      ws.addRow(values);
+      const row = ws.addRow(values);
+      sheet.columns.forEach((c) => {
+        if (c.type === COLUMN_TYPES.LINK && values[c.key] && typeof values[c.key] === 'object') {
+          row.getCell(c.key).font = { color: { argb: 'FF1D4ED8' }, underline: true };
+        }
+      });
+    });
+
+    // Embedded pictures, each anchored in its row's IMAGE cell.
+    (sheet.images || []).forEach((img) => {
+      const col = sheet.columns.findIndex((c) => c.key === img.key);
+      if (col < 0 || !img.buffer) return;
+      const id = workbook.addImage({ buffer: img.buffer, extension: img.extension });
+      ws.addImage(id, { tl: { col: col + 0.1, row: img.row + 1 + 0.1 }, ext: { width: IMAGE_PX, height: IMAGE_PX } });
+      ws.getRow(img.row + 2).height = IMAGE_ROW_HEIGHT;
     });
 
     const header = ws.getRow(1);

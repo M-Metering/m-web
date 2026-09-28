@@ -108,6 +108,11 @@ export function usePermissions() {
     canViewAssignments: isAdmin || hasPermission(userRole, PERMISSIONS.ASSIGNMENTS.VIEW),
     canManageAssignments: isAdmin || hasPermission(userRole, PERMISSIONS.ASSIGNMENTS.MANAGE),
     canViewInstallationRequests: isAdmin || hasPermission(userRole, PERMISSIONS.INSTALLATIONS.VIEW_ALL),
+    // The Completed Installations workbook: Admin, Super Admin, Supervisor.
+    canExportInstallations: isAdmin || hasPermission(userRole, PERMISSIONS.INSTALLATIONS.EXPORT),
+    // Installer Job Status — Admin, Super Admin and Supervisor. Never an
+    // Installer: it is an overview of OTHER installers' work.
+    canViewInstallerStatus: isAdmin || hasPermission(userRole, PERMISSIONS.INSTALLERS.VIEW_STATUS),
 
     // Meter dispatch capacity rule (see utils/meterCapacity.js). An Admin may
     // only hand an installer meters the installer has matching open jobs for;

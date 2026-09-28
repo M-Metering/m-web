@@ -7,8 +7,13 @@ import {
 import jedApi from '../services/api';
 import ConfirmationModal from '../common/ConfirmationModal';
 import { getErrorMessage } from '../../utils/errorMessage';
+import { useDataRefresh } from '../contexts/DataRefreshContext';
 
 const MeterTypeSettings = () => {
+  // A price change re-values every pending installation (utils/meterPricing.js),
+  // so after each save the app-wide refresh fires and any open Dashboard,
+  // Reports or Installer Job Status re-reads at the new price.
+  const { notifyDataChanged } = useDataRefresh();
   const [meterTypes, setMeterTypes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -119,6 +124,7 @@ const MeterTypeSettings = () => {
       await jedApi.createMeterType(payload);
 
       await fetchMeterTypes();
+      notifyDataChanged();
       setFormData({ name: '', description: '', amount: '' });
       setIsCreating(false);
     } catch (err) {
@@ -148,6 +154,7 @@ const MeterTypeSettings = () => {
       await jedApi.updateMeterType(id, payload);
 
       await fetchMeterTypes();
+      notifyDataChanged();
       setEditingId(null);
       setFormData({ name: '', description: '', amount: '' });
     } catch (err) {
@@ -169,6 +176,7 @@ const MeterTypeSettings = () => {
       await jedApi.deleteMeterType(itemToDelete.id);
 
       await fetchMeterTypes();
+      notifyDataChanged();
       setItemToDelete(null); // Close modal on success
     } catch (err) {
       console.error('[Settings] Failed to delete meter type:', err);
@@ -177,7 +185,7 @@ const MeterTypeSettings = () => {
     } finally {
       setActionLoading(null);
     }
-  }, [itemToDelete, fetchMeterTypes]);
+  }, [itemToDelete, fetchMeterTypes, notifyDataChanged]);
 
   // Start editing
   const startEdit = (meterType) => {

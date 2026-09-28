@@ -20,8 +20,14 @@
 //  - If storage isn't configured on the deployment at all (503), the field
 //    falls back to accepting a pasted link, which is how this worked before
 //    uploads existed. An ops outage shouldn't cost the installer the photo.
+//  - TWO file inputs, on purpose (2026-09-27). `capture` on an <input
+//    type="file"> tells Android and iOS to skip the chooser and open the
+//    camera, which is why installers could not attach a photo they had already
+//    taken. So "Take photo" uses an input WITH `capture` and "Choose from
+//    gallery" one WITHOUT it. Both feed the same handler, so validation, the
+//    upload and the replace/delete rules are identical either way.
 import { useState, useRef } from 'react';
-import { Camera, Loader2, X, Upload, AlertCircle } from 'lucide-react';
+import { Camera, Loader2, Upload, AlertCircle, Image as ImageIcon } from 'lucide-react';
 import jedApi from '../services/api';
 import { getErrorMessage } from '../../utils/errorMessage';
 import {
@@ -56,7 +62,8 @@ function PhotoUploadField({
   entityId,
   coordinates,
 }) {
-  const inputRef = useRef(null);
+  const cameraRef = useRef(null);
+  const galleryRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
   // The stored file's numeric id, so a replacement can delete what it replaces.
@@ -145,11 +152,19 @@ function PhotoUploadField({
             <div className="flex gap-3 mt-1">
               <button
                 type="button"
-                onClick={() => inputRef.current?.click()}
+                onClick={() => cameraRef.current?.click()}
                 disabled={busy}
                 className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline disabled:opacity-50"
               >
-                Replace
+                Retake
+              </button>
+              <button
+                type="button"
+                onClick={() => galleryRef.current?.click()}
+                disabled={busy}
+                className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline disabled:opacity-50"
+              >
+                Choose another
               </button>
               <button
                 type="button"
@@ -162,27 +177,54 @@ function PhotoUploadField({
             </div>
           </div>
         </div>
+      ) : uploading ? (
+        <div role="status" className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm font-medium text-gray-700 dark:text-gray-200">
+          <Loader2 className="w-4 h-4 animate-spin" /> Uploading…
+        </div>
       ) : (
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          disabled={busy}
-          className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
-        >
-          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
-          {uploading ? 'Uploading…' : 'Take or choose a photo'}
-        </button>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => cameraRef.current?.click()}
+            disabled={busy}
+            className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+          >
+            <Camera className="w-4 h-4" /> Take photo
+          </button>
+          <button
+            type="button"
+            onClick={() => galleryRef.current?.click()}
+            disabled={busy}
+            className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+          >
+            <ImageIcon className="w-4 h-4" /> Choose from gallery
+          </button>
+        </div>
       )}
 
+      {/* Camera: `capture` opens the rear camera directly on a phone. */}
       <input
-        ref={inputRef}
-        id={id}
+        ref={cameraRef}
         type="file"
         accept={acceptAttribute(category)}
-        // Prompts the camera directly on a phone, which is where installers are.
         capture="environment"
         onChange={handleSelect}
         disabled={busy}
+        aria-label="Take a photo"
+        tabIndex={-1}
+        className="sr-only"
+      />
+      {/* Gallery: no `capture`, so the device offers its photo library and
+          files. It carries the field's id, so the form's label points here. */}
+      <input
+        ref={galleryRef}
+        id={id}
+        type="file"
+        accept={acceptAttribute(category)}
+        onChange={handleSelect}
+        disabled={busy}
+        aria-label="Choose a photo from the gallery"
+        tabIndex={-1}
         className="sr-only"
       />
 
