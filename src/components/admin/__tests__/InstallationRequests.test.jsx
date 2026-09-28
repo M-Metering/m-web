@@ -12,6 +12,7 @@ import { downloadXlsx } from '../../../utils/xlsx';
 
 const ADMIN_PERMISSIONS = {
   canViewInstallationRequests: true, canManageAssignments: true, canManageInstallations: true, canViewPayments: true,
+  canExportInstallations: true,
   isAdmin: true, isSuperAdmin: false, enforcesMeterCapacity: true,
 };
 let permissions = { ...ADMIN_PERMISSIONS };
@@ -320,7 +321,7 @@ describe('InstallationRequests — Export Completed Installations', () => {
     expect(downloadXlsx.mock.calls[0][0]).toMatch(/^completed-installations-all-discos-\d{4}-\d{2}-\d{2}\.xlsx$/);
     expect(exportedAccounts()).toEqual(['477015', '555']);
     expect(exportedSheets().map((s) => s.name)).toEqual(['Completed Installations', 'Summary']);
-    expect(await screen.findByText('Exported 2 completed installations.')).toBeTruthy();
+    expect(await screen.findByText('Installation report exported successfully (2 completed installations).')).toBeTruthy();
   });
 
   it('JED scope exports no Aba records; Aba scope exports no JED records', async () => {
@@ -341,6 +342,61 @@ describe('InstallationRequests — Export Completed Installations', () => {
     expect(exportedAccounts()).toEqual(['555']);
     const summary = Object.fromEntries(exportedSheets()[1].rows.map((r) => [r.item.trim(), r.value]));
     expect(summary['DisCo scope']).toBe('Aba Power (ABA_POWER)');
+  });
+
+  it('filters the LIST by the actual installation date, and exports exactly those rows', async () => {
+    // Two completed JED requests: one completed at 23:30 local time on 5 Sep,
+    // one on 20 Sep. Their request and payment dates are deliberately far away.
+    jedApi.getAllCustomerRequests.mockImplementation(async (params = {}) => {
+      const late = new Date(2026, 8, 5, 23, 30).toISOString();
+      const rows = [
+        { id: 21, accountNumber: '600001', custNames: 'LATE NIGHT', discoCode: 'JED001', status: 'COMPLETED', amount: 1, dateRequested: '2026-01-01T00:00:00Z', datePaid: '2026-02-01T00:00:00Z', dateCompleted: late, meterNo: '0239110006909', sealNo: 'S1' },
+        { id: 22, accountNumber: '600002', custNames: 'LATER', discoCode: 'JED001', status: 'COMPLETED', amount: 1, dateRequested: '2026-09-05T00:00:00Z', dateCompleted: '2026-09-20T10:00:00Z', meterNo: '0239110006910', sealNo: 'S2' },
+      ];
+      return page(params.status ? rows.filter((r) => r.status === params.status) : rows);
+    });
+    renderPage();
+    await screen.findByText('LATE NIGHT');
+    fireEvent.change(screen.getByLabelText('Installed from'), { target: { value: '2026-09-05' } });
+    fireEvent.change(screen.getByLabelText('Installed to'), { target: { value: '2026-09-05' } });
+    // The list itself narrows — 23:30 on the 5th stays on the 5th.
+    await waitFor(() => expect(screen.queryByText('LATER')).toBeNull());
+    expect(screen.getByText('LATE NIGHT')).toBeTruthy();
+    expect(screen.queryByText('ADA OBI')).toBeNull();
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(downloadXlsx).toHaveBeenCalled());
+    expect(exportedAccounts()).toEqual(['600001']);
+  });
+
+  it('lets a Supervisor export, without any payment columns', async () => {
+    permissions = {
+      canViewInstallationRequests: true, canManageAssignments: true, canManageInstallations: true,
+      canExportInstallations: true, canViewPayments: false, isAdmin: false, isSupervisor: true,
+    };
+    renderPage();
+    await screen.findByText('JED DONE');
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(downloadXlsx).toHaveBeenCalled());
+    const keys = exportedSheets()[0].columns.map((c) => c.key);
+    ['rrr', 'amount', 'datePaid', 'customerPhone'].forEach((k) => expect(keys).not.toContain(k));
+    expect(keys).toContain('photoUrl');
+  });
+
+  it('offers no export to a role without INSTALLATIONS.EXPORT', async () => {
+    permissions = { ...ADMIN_PERMISSIONS, canExportInstallations: false };
+    renderPage();
+    await screen.findByText('JED DONE');
+    expect(screen.queryByRole('button', { name: /Export Completed Installations/ })).toBeNull();
+  });
+
+  it('says so plainly when the export fails', async () => {
+    downloadXlsx.mockRejectedValueOnce(new Error('ExcelJS: internal /tmp/path failure'));
+    renderPage();
+    await screen.findByText('JED DONE');
+    await waitFor(() => expect(screen.getByText('2 completed installations in scope')).toBeTruthy());
+    fireEvent.click(exportButton());
+    expect(await screen.findByText('Unable to export installation report.')).toBeTruthy();
+    expect(screen.queryByText(/tmp|ExcelJS/)).toBeNull();
   });
 
   it('applies the installation date range', async () => {

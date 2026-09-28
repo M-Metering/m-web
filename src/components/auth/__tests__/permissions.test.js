@@ -47,7 +47,16 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
       PERMISSIONS.SCHEDULE.VIEW,
       PERMISSIONS.USERS.VIEW,
       PERMISSIONS.INSTALLERS.VIEW_STATUS,
+      PERMISSIONS.INSTALLATIONS.EXPORT,
     ].sort());
+  });
+
+  it('can export installations without gaining any admin-only module', () => {
+    expect(hasPermission(ROLES.SUPERVISOR, PERMISSIONS.INSTALLATIONS.EXPORT)).toBe(true);
+    [PERMISSIONS.USERS.CREATE, PERMISSIONS.SETTINGS.VIEW, PERMISSIONS.PAYMENTS.VIEW, PERMISSIONS.REPORTS.VIEW,
+      PERMISSIONS.IMPORTS.RUN, PERMISSIONS.UPLOADS.EXCEL]
+      .forEach((p) => expect(hasPermission(ROLES.SUPERVISOR, p)).toBe(false));
+    expect(hasPermission(ROLES.INSTALLER, PERMISSIONS.INSTALLATIONS.EXPORT)).toBe(false);
   });
 
   it('never gives an Installer the overview of other installers', () => {

@@ -92,6 +92,21 @@ the JED-era API had no assignment endpoint). It is now a real dispatch through
   re-sent, so a duplicate assignment record can't be created by a double submission.
 
 
+## Installation Export, Photos and the CSP (2026-09-28)
+
+- **Supervisor export is a single capability** (`INSTALLATIONS.EXPORT`), not a wider role: a test pins
+  that it grants no user, settings, payments, reports, imports or uploads access. The workbook is
+  built from rows the role can already read server-side; its payment columns are dropped without
+  PAYMENTS.VIEW and customer phone/email outside the admin tier. Note the JED request list still
+  returns `amount` to a Supervisor at the API (API_GAP_REPORT.md, gap AL).
+- **`img-src` now allows the API hosts** (`https://api.memetering.com`, `https://pharez-api.onrender.com`).
+  Uploaded installation photos are served from `/files/{token}` on the API host, so the previous
+  `img-src 'self' data:` blocked every uploaded photo's thumbnail. These files are public by design
+  (see "Uploaded Files Are Public"), and `connect-src` already trusted the same hosts.
+- **Embedding pictures in the export** fetches those public links with `credentials: 'omit'`; no
+  token is sent and no signed or temporary URL is created. Only JPEG/PNG (checked from the bytes) up
+  to 5 MB are embedded.
+
 ## Financial Data, Installer Overview and Meter Holders (2026-09-27)
 
 - **Fixed: a Supervisor saw money on the Installations page.** The "Total collected payments" /

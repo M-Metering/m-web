@@ -1,10 +1,12 @@
 // src/components/installations/ReportInstallationModal.jsx
 // Installer reports a completed installation: POST /installations/{id}/report.
 //
-// Body per the live spec — the API requires only `meterNumber`; the rest are
-// optional there but are exactly what the disco's response sheet is built
-// from, so the form asks for all of them. `sealNumber` is additionally
-// required by this form (business rule, 2026-09-21).
+// Body per the live spec — the API requires only `meterNumber`. The form
+// REQUIRES meter number, seal number, GPS coordinates, the installation
+// picture link and the DISCO supervisor (business rule, 2026-09-28); the
+// rules live in utils/installationReport.js. The API doesn't enforce the last
+// four yet (API_GAP_REPORT.md, gap AL). The report is one server transaction,
+// so a rejected or failed submission leaves the job exactly as it was.
 //
 // Two rules from the integration guide shape this form:
 //  1. The meter picker is populated from GET /installations/me/meters filtered
@@ -30,10 +32,11 @@ import { getErrorMessage } from '../../utils/errorMessage';
 import { toDateInputValue } from '../../utils/date';
 import { normalizePhase } from '../../utils/installationScope';
 import { fetchAllPages } from '../../utils/fetchAllPages';
-import { validateMeterNumber, METER_NUMBER_HINT } from '../../utils/meterNumber';
-import { validateSealNumber, isDuplicateSealError, DUPLICATE_SEAL_MESSAGE } from '../../utils/sealNumber';
-
-const MAX_NOTES = 500;
+import { METER_NUMBER_HINT } from '../../utils/meterNumber';
+import { isDuplicateSealError, DUPLICATE_SEAL_MESSAGE } from '../../utils/sealNumber';
+import {
+  validateInstallationReport, buildReportPayload, REPORT_FIELD_ORDER, MAX_NOTES,
+} from '../../utils/installationReport';
 
 const newForm = () => ({
   meterNumber: '',
@@ -159,52 +162,26 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
     );
   };
 
+  // Where to put the cursor for each field's error.
+  const FOCUS_TARGET = {
+    meterNumber: '#report-meter', sealNumber: '#report-seal', installationDate: '#report-date',
+    latitude: 'input[name="latitude"]', installationPhotoUrl: '#report-photo',
+    discoSupervisor: '#report-supervisor', notes: '#report-notes',
+  };
+
   const validate = () => {
-    const found = {};
-    if (!form.meterNumber.trim()) {
-      found.meterNumber = 'Select or enter the meter you installed.';
-    } else if (manualEntry) {
-      // Only a hand-typed serial is length-checked. A serial chosen from the
-      // picker came from the API and is passed through exactly as given —
-      // never padded, trimmed to a length or reformatted.
-      const check = validateMeterNumber(form.meterNumber);
-      if (!check.valid) found.meterNumber = check.error;
-    }
-
-    // Required by the business (the disco's response sheet has an APLE Seal
-    // Number column), although the API schema marks it optional. Also checked
-    // against the seals already recorded on this installer's own jobs.
-    const seal = validateSealNumber(form.sealNumber, usedSealKeys);
-    if (!seal.valid) found.sealNumber = seal.error;
-
-    if (form.installationDate) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(form.installationDate)) {
-        found.installationDate = 'Enter a valid date.';
-      } else if (form.installationDate > toDateInputValue()) {
-        found.installationDate = 'The installation date cannot be in the future.';
-      }
-    }
-
-    // Both coordinates or neither — a lone value is meaningless on the sheet.
-    const hasLat = form.latitude !== '';
-    const hasLng = form.longitude !== '';
-    if (hasLat !== hasLng) {
-      found.latitude = 'Enter both latitude and longitude, or leave both empty.';
-    } else if (hasLat) {
-      const lat = Number(form.latitude);
-      const lng = Number(form.longitude);
-      if (!Number.isFinite(lat) || Math.abs(lat) > 90) found.latitude = 'Latitude must be between -90 and 90.';
-      else if (!Number.isFinite(lng) || Math.abs(lng) > 180) found.latitude = 'Longitude must be between -180 and 180.';
-    }
-
-    if (form.installationPhotoUrl.trim() && !/^https?:\/\/\S+$/i.test(form.installationPhotoUrl.trim())) {
-      found.installationPhotoUrl = 'Enter a full link starting with http:// or https://';
-    }
-
-    if (form.notes.length > MAX_NOTES) found.notes = `Keep notes under ${MAX_NOTES} characters.`;
-
+    const found = validateInstallationReport(form, {
+      usedSealKeys,
+      // A serial picked from the installer's own assigned meters came from the
+      // API and is passed through exactly as given — only a hand-typed one is
+      // format-checked.
+      pickedFromList: !manualEntry,
+      today: toDateInputValue(),
+    });
     setErrors(found);
-    return Object.keys(found).length === 0;
+    const first = REPORT_FIELD_ORDER.find((f) => found[f]);
+    if (first) document.querySelector(FOCUS_TARGET[first])?.focus?.();
+    return !first;
   };
 
   const handleSubmit = async (e) => {
@@ -214,17 +191,8 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
     setSubmitting(true);
     setSubmitError(null);
 
-    // Only send what the installer actually filled in — the API treats every
-    // field but meterNumber as optional, and empty strings are not blanks.
-    const payload = { meterNumber: form.meterNumber.trim(), sealNumber: form.sealNumber.trim() };
-    if (form.installationDate) payload.installationDate = form.installationDate; // plain date, sent as-is
-    if (form.latitude !== '' && form.longitude !== '') {
-      payload.latitude = Number(form.latitude);
-      payload.longitude = Number(form.longitude);
-    }
-    if (form.installationPhotoUrl.trim()) payload.installationPhotoUrl = form.installationPhotoUrl.trim();
-    if (form.discoSupervisor.trim()) payload.discoSupervisor = form.discoSupervisor.trim();
-    if (form.notes.trim()) payload.notes = form.notes.trim();
+    // Exactly the documented body, every required field included.
+    const payload = buildReportPayload(form);
 
     try {
       await jedApi.reportInstallation(job.id, payload);
@@ -390,7 +358,7 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
           {/* GPS */}
           <div>
             <div className="flex items-center justify-between gap-2 mb-1.5">
-              <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">GPS location</span>
+              <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">GPS location<span className="text-red-600 dark:text-red-400" aria-hidden="true"> *</span><span className="sr-only"> (required)</span></span>
               <button
                 type="button"
                 onClick={captureLocation}
@@ -411,6 +379,7 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
                 disabled={submitting}
                 placeholder="Latitude"
                 aria-label="Latitude"
+                aria-required="true"
                 aria-invalid={!!errors.latitude}
                 className={`${inputClass('latitude')} font-mono`}
               />
@@ -423,6 +392,8 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
                 disabled={submitting}
                 placeholder="Longitude"
                 aria-label="Longitude"
+                aria-required="true"
+                aria-invalid={!!errors.latitude}
                 className={`${inputClass('longitude')} font-mono`}
               />
             </div>
@@ -433,6 +404,7 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
           <Field
             id="report-photo"
             label="Installation photo"
+            required
             error={errors.installationPhotoUrl}
           >
             {/* Uploaded straight to the API's file store, which returns the
@@ -454,7 +426,7 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
             />
           </Field>
 
-          <Field id="report-supervisor" label="Disco supervisor" error={errors.discoSupervisor}>
+          <Field id="report-supervisor" label="DISCO supervisor" required error={errors.discoSupervisor}>
             <input
               id="report-supervisor"
               name="discoSupervisor"
@@ -463,6 +435,8 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
               onChange={handleChange}
               disabled={submitting}
               placeholder="Name of the supervising disco officer"
+              aria-required="true"
+              aria-invalid={!!errors.discoSupervisor}
               className={inputClass('discoSupervisor')}
             />
           </Field>

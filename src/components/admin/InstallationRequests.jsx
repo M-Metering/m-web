@@ -51,6 +51,7 @@ import { getAvailableActions, getCoordinates } from '../../utils/installationSta
 import { revenueScopeFilter } from '../../utils/financeSummary';
 import { usePaymentRevenueSummary } from '../../hooks/usePaymentRevenueSummary';
 import { totalCollectedPayment } from '../../utils/meterPricing';
+import { fetchPhotosForEmbedding } from '../../utils/photoEmbed';
 import { useInstallationTotals } from '../../hooks/useDashboardInstallations';
 import {
   PENDING_INSTALLATION_FILTER, isPendingInstallationRow, filterByInstallationStatus,
@@ -420,9 +421,20 @@ function InstallationRequests() {
 
   // Import-date range applies before the status counts, so every tile, the
   // list, the totals and the exports all describe the same set of rows.
+  // Installation-date range (the actual installation date — completionDateOf:
+  // an imported job's plain installationDate, a JED request's dateCompleted
+  // as a LOCAL calendar date, so 23:30 stays on its own day). When set, the
+  // list is the completed installations installed in that range — exactly the
+  // rows the Completed Installations export then contains.
+  const applyInstalledRange = useCallback(
+    (rows) => (completedFrom || completedTo
+      ? filterByCompletionDate(rows.filter(isCompletedRow), completedFrom, completedTo)
+      : rows),
+    [completedFrom, completedTo]
+  );
   const attrFiltered = useMemo(
-    () => filterByImportDate(applyAttributeFilters(listRows, { attributes, search }), importedFrom, importedTo),
-    [listRows, attributes, search, importedFrom, importedTo]
+    () => applyInstalledRange(filterByImportDate(applyAttributeFilters(listRows, { attributes, search }), importedFrom, importedTo)),
+    [listRows, attributes, search, importedFrom, importedTo, applyInstalledRange]
   );
   const statusCounts = useMemo(() => countByStatus(attrFiltered), [attrFiltered]);
 
@@ -446,9 +458,9 @@ function InstallationRequests() {
     const out = {};
     ATTRIBUTE_FILTERS.forEach(({ field }) => {
       const others = { ...attributes, [field]: '' };
-      const base = filterByImportDate(
+      const base = applyInstalledRange(filterByImportDate(
         applyAttributeFilters(listRows, { attributes: others, search }), importedFrom, importedTo
-      );
+      ));
       const options = buildFilterOptions(base, field);
       const current = attributes[field];
       if (current && !options.some((o) => o.value === current)) {
@@ -457,14 +469,15 @@ function InstallationRequests() {
       out[field] = options;
     });
     return out;
-  }, [listRows, attributes, search, importedFrom, importedTo]);
+  }, [listRows, attributes, search, importedFrom, importedTo, applyInstalledRange]);
 
   const shownFilters = ATTRIBUTE_FILTERS.filter(
     (f) => f.always || filterOptions[f.field].some((o) => o.value !== NOT_RECORDED)
   );
   const activeFilterCount = Object.values(attributes).filter(Boolean).length
     + (search.trim() ? 1 : 0)
-    + (importedFrom || importedTo ? 1 : 0);
+    + (importedFrom || importedTo ? 1 : 0)
+    + (completedFrom || completedTo ? 1 : 0);
 
   const clearAllFilters = useCallback(() => {
     setAttributes(EMPTY_ATTRIBUTES);
@@ -472,6 +485,8 @@ function InstallationRequests() {
     setStatus('');
     setImportedFrom('');
     setImportedTo('');
+    setCompletedFrom('');
+    setCompletedTo('');
   }, []);
 
   // Scope change: filters from another disco don't carry over.
@@ -726,8 +741,8 @@ function InstallationRequests() {
     const byStatus = status && isCompletedRow({ source: statusOptions.find((s) => s.value === status)?.source, status })
       ? applyStatusFilter(attrFiltered, status)
       : attrFiltered;
-    return filterByCompletionDate(byStatus.filter(isCompletedRow), completedFrom, completedTo);
-  }, [attrFiltered, status, statusOptions, completedFrom, completedTo]);
+    return byStatus.filter(isCompletedRow);
+  }, [attrFiltered, status, statusOptions]);
 
   const handleExportCompleted = async () => {
     if (exportingCompleted || completedCandidates.length === 0) return;
@@ -776,17 +791,26 @@ function InstallationRequests() {
         filterNotes.push(`Installed ${completedFrom || '…'} to ${completedTo || '…'}`);
       }
 
+      // Pictures embedded where they can be fetched (JPEG/PNG from their
+      // permanent public links); every row keeps its picture link either way.
+      const { photos } = await fetchPhotosForEmbedding(completedCandidates.map((r) => r.raw?.installationPhotoUrl));
+
       const { sheets, count } = buildCompletedInstallationsReport({
         rows: completedCandidates,
         meterIndex,
         context: { scopeLabel, filters: filterNotes, generatedAt: new Date(), meterDetails },
+        // Payment columns need PAYMENTS.VIEW (a Supervisor exports without
+        // them); customer phone/email are for the admin tier, as on screen.
+        includePayment: permissions.canViewPayments === true,
+        includeContact: permissions.isAdmin === true,
+        photos,
       });
       const slug = (scope || 'all-discos').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'jed';
       await downloadXlsx(`completed-installations-${slug}-${new Date().toISOString().slice(0, 10)}.xlsx`, sheets);
-      setNotice(`Exported ${count.toLocaleString()} completed installation${count === 1 ? '' : 's'}.`);
+      setNotice(`Installation report exported successfully (${count.toLocaleString()} completed installation${count === 1 ? '' : 's'}).`);
     } catch (err) {
       console.error('[InstallationRequests] Completed export failed:', err);
-      setCompletedExportError("Couldn't create the export. Please try again.");
+      setCompletedExportError('Unable to export installation report.');
     } finally {
       setExportingCompleted(false);
     }
@@ -1204,9 +1228,12 @@ function InstallationRequests() {
           </div>
           )}
 
-          {/* Completed installations workbook — current disco scope, filters and search */}
+          {/* Completed installations — filter by installation date, then export
+              exactly the rows shown. INSTALLATIONS.EXPORT: Admin, Super Admin,
+              Supervisor. The date range also narrows the list above. */}
+          {permissions.canExportInstallations && (
           <fieldset className="pt-3 border-t border-gray-200 dark:border-gray-700">
-            <legend className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Completed installations report</legend>
+            <legend className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Completed installations — by installation date</legend>
             <div className="flex flex-col sm:flex-row sm:items-end gap-3">
               <div className="grid grid-cols-2 gap-3 sm:flex sm:gap-3">
                 <div>
@@ -1237,6 +1264,7 @@ function InstallationRequests() {
               <p role="alert" className="text-xs text-red-600 dark:text-red-400 mt-2">{completedExportError}</p>
             )}
           </fieldset>
+          )}
         </div>
 
         {canAssign && assignableVisible.length > 0 && (

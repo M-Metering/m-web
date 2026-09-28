@@ -54,7 +54,11 @@ export const PERMISSIONS = Object.freeze({
     // Multi-disco flow (2026-09-21): an Installer's own assigned jobs and the
     // meters in their hands (GET /installations/me/*, scoped by their JWT).
     // Distinct from VIEW/COMPLETE above, which cover the JED queue.
-    FIELD_JOBS: 'installations:field_jobs'
+    FIELD_JOBS: 'installations:field_jobs',
+    // Download the Completed Installations workbook (2026-09-28). Its own
+    // capability so a Supervisor can export without gaining anything else —
+    // the workbook is built from rows the role can already read.
+    EXPORT: 'installations:export'
   },
 
   // Multi-disco flow — admin-tier operations. Disco *configuration*
@@ -150,6 +154,7 @@ const ADMIN_TIER_PERMISSIONS = [
   PERMISSIONS.INSTALLATIONS.VIEW_ALL,
   PERMISSIONS.INSTALLATIONS.MANAGE,
   PERMISSIONS.INSTALLATIONS.COMPLETE,
+  PERMISSIONS.INSTALLATIONS.EXPORT,
 
   // Users - Full access (creating/editing ADMIN or SUPERADMIN accounts is
   // additionally gated to SUPERADMIN directly in UserManagement.jsx, per
@@ -242,6 +247,9 @@ const ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.INSTALLATIONS.VIEW,
     PERMISSIONS.INSTALLATIONS.VIEW_ALL,
     PERMISSIONS.INSTALLATIONS.MANAGE,
+    // Export the Completed Installations workbook — installation data only;
+    // its payment columns need PAYMENTS.VIEW, which this role doesn't hold.
+    PERMISSIONS.INSTALLATIONS.EXPORT,
 
     // Assignments: every /assignments/* route, same as ADMIN.
     PERMISSIONS.ASSIGNMENTS.VIEW,

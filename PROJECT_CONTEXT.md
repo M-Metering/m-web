@@ -437,6 +437,19 @@ jedc-meter-management/
   - **Fixed in `fetchAllPages`:** a response reporting `totalPages` without `hasNext` stopped after
     page 1 (19 pending records served 10 per page were valued as 10). It now follows `totalPages`.
 
+- **Report Installation, Supervisor export, completed-installation reporting (2026-09-28, third pass):**
+  - Report Installation requires meter number, seal number, GPS (both values, in range, not 0,0),
+    the uploaded picture link and the DISCO supervisor (`utils/installationReport.js`); the first
+    missing field is focused. The API still requires only the meter number (gap AL).
+  - `INSTALLATIONS.EXPORT` lets Admin, Super Admin and Supervisor export Completed Installations; the
+    Supervisor's workbook has no payment columns and no customer phone/email.
+  - "Installed from / to" now filters the list itself by the actual installation date (local day), and
+    the export contains exactly the listed rows.
+  - The workbook always has an **Installation Picture Link** hyperlink column, plus an embedded
+    **Installation Picture** where the photo could be fetched (JPEG/PNG). The picture column used to
+    disappear whenever no exported row had a photo, because empty columns were dropped.
+  - CSP `img-src` now allows the API hosts: uploaded photo thumbnails were being blocked in production.
+
 ## 6. Pending / Incomplete Features
 
 - **No per-installer statistics endpoint** — Installer Job Status groups filtered installation reads client-side (API_GAP_REPORT.md, gap AG).

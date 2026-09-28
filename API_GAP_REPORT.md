@@ -117,6 +117,23 @@ wanted:** expose an expected amount per pending installation (or a pending total
   dispatch), so the Assigned card counts the open dispatch batches. It also never returned the
   `pending`/`paid` fields the old cards displayed — those cards were removed.
 
+### New — Gap AL: the installation report requires only the meter number server-side
+
+- `POST /installations/{id}/report` requires only `meterNumber`. Since 2026-09-28 the business requires
+  seal number, GPS coordinates, the installation picture link and the DISCO supervisor too; the form
+  enforces all five, but a direct API call can still complete an installation without them.
+  **Backend change:** make `sealNumber`, `latitude`, `longitude`, `installationPhotoUrl` and
+  `discoSupervisor` required (and validate the coordinates' range and that the photo URL is one of
+  this deployment's `/files/{token}` links) on that endpoint, returning 400 per missing field.
+- `POST /external/jed/complete-installation` accepts exactly `sealNo`, `meterNo`, `accountNumber`
+  (and rejects unknown keys), so a JED completion cannot carry GPS, a picture or a supervisor at all.
+  **Backend change:** add those fields to the JED completion body if JED jobs must meet the same rule.
+- The Completed Installations export is built in the browser from `GET /installations` and
+  `GET /external/jed/requests`, which enforce each role's access server-side; there is no separate
+  export endpoint to manipulate. Payment columns are left out client-side for a role without
+  PAYMENTS.VIEW — but the JED request list itself returns `amount` to any role that can read it.
+  **Backend change:** omit payment fields from `/external/jed/requests` for SUPERVISOR.
+
 ### Bulk installation assignment — already supported
 
 `POST /assignments/installations` takes `accountNumbers[]` or `ids[]` and is partial-success

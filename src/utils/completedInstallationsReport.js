@@ -23,7 +23,7 @@ import { parseAmount } from './paymentSummary';
 import { COLUMN_TYPES } from './xlsx';
 import { meterMakeOf, meterModelOf, manufacturedDateOf } from './meterDisplay';
 
-const { TEXT, COORDINATE, CURRENCY, DATE, DATETIME } = COLUMN_TYPES;
+const { TEXT, COORDINATE, CURRENCY, DATE, DATETIME, LINK, IMAGE } = COLUMN_TYPES;
 
 export const isCompletedRow = (row) =>
   row.source === ROW_SOURCE.JED ? isCompletedStatus(row.status) : isInstalledStatus(row.status);
@@ -125,7 +125,12 @@ const COLUMNS = [
   ['latitude', 'Latitude', COORDINATE, (row) => getCoordinates(row.raw)?.latitude ?? null],
   ['longitude', 'Longitude', COORDINATE, (row) => getCoordinates(row.raw)?.longitude ?? null],
   ['discoSupervisor', 'DisCo Supervisor', TEXT, (row) => row.raw.discoSupervisor],
-  ['photoUrl', 'Installation Photo (URL)', TEXT, (row) => row.raw.installationPhotoUrl],
+  // The persisted picture link (the public /files/{token} URL the upload
+  // returned) as a clickable hyperlink whose full URL is also the cell text.
+  ['photoUrl', 'Installation Picture Link', LINK, (row) => row.raw.installationPhotoUrl],
+  // The picture itself, embedded when it could be fetched (see
+  // buildCompletedInstallationsReport's `photos`); the cell text is left empty.
+  ['photo', 'Installation Picture', IMAGE, () => null],
   ['notes', 'Installation Notes', TEXT, (row) => row.raw.notes],
   ['meterVendor', 'Meter Vendor', TEXT, (row) => row.raw.meterVendor],
   // Meter record (joined by serial from GET /meters)
@@ -142,14 +147,34 @@ const COLUMNS = [
 
 const isBlank = (v) => v === null || v === undefined || String(v).trim() === '';
 
+// Kept even when every exported row is blank — the installation facts the
+// report exists for. A blank cell then says "not recorded"; dropping the
+// column (the old behaviour) made it look as if the report had no such field,
+// which is how the picture column went missing.
+const ALWAYS_KEYS = new Set([
+  'accountNumber', 'customerName', 'customerAddress', 'status', 'installationDate', 'installerName',
+  'assignedAt', 'meterNumber', 'meterType', 'sealNumber', 'latitude', 'longitude', 'discoSupervisor',
+  'photoUrl',
+]);
+// Money: only for a role with PAYMENTS.VIEW (a Supervisor exports without it).
+const PAYMENT_KEYS = new Set(['rrr', 'orderId', 'amount', 'paymentStatus', 'datePaid']);
+// Customer contact details: admin tier only, as on screen.
+const CONTACT_KEYS = new Set(['customerPhone', 'customerEmail']);
+
 /**
  * @param {object} args
  * @param {object[]} args.rows - normalized rows, already scoped/filtered
  * @param {Map<string, object>} [args.meterIndex]
  * @param {{ scopeLabel: string, filters: string[], generatedAt: Date, meterDetails: string }} args.context
+ * @param {boolean} [args.includePayment] - PAYMENTS.VIEW
+ * @param {boolean} [args.includeContact] - admin tier
+ * @param {Map<string, { buffer: ArrayBuffer, extension: string }>|null} [args.photos]
+ *   picture URL → fetched image, to embed. Absent/null: no picture column.
  * @returns {{ sheets: import('./xlsx').XlsxSheet[], count: number }}
  */
-export function buildCompletedInstallationsReport({ rows, meterIndex = new Map(), context }) {
+export function buildCompletedInstallationsReport({
+  rows, meterIndex = new Map(), context, includePayment = true, includeContact = true, photos = null,
+}) {
   const completed = rows
     .filter(isCompletedRow)
     .map((row) => ({ row, date: completionDateOf(row) || '' }))
@@ -166,9 +191,23 @@ export function buildCompletedInstallationsReport({ rows, meterIndex = new Map()
     return out;
   });
 
+  const allowed = ([key]) => (includePayment || !PAYMENT_KEYS.has(key))
+    && (includeContact || !CONTACT_KEYS.has(key))
+    && (key !== 'photo' || !!photos);
   const columns = COLUMNS
-    .filter(([key]) => records.some((r) => !isBlank(r[key])))
+    .filter(allowed)
+    .filter(([key]) => key === 'photo' || ALWAYS_KEYS.has(key) || records.some((r) => !isBlank(r[key])))
     .map(([key, header, type]) => ({ header, key, type }));
+
+  // Embedded pictures, by data row.
+  const images = [];
+  if (photos) {
+    records.forEach((r, index) => {
+      const img = r.photoUrl ? photos.get(String(r.photoUrl)) : null;
+      if (img) images.push({ row: index, key: 'photo', buffer: img.buffer, extension: img.extension });
+    });
+  }
+  const withPicture = records.filter((r) => !isBlank(r.photoUrl)).length;
 
   // Summary
   const bySource = {};
@@ -191,7 +230,10 @@ export function buildCompletedInstallationsReport({ rows, meterIndex = new Map()
     { item: 'Completed installations', value: String(records.length) },
     ...Object.entries(bySource).map(([k, v]) => ({ item: `  ${k}`, value: String(v) })),
     ...Object.entries(byDisco).sort().map(([k, v]) => ({ item: `  DisCo ${k}`, value: String(v) })),
-    { item: 'Total amount paid (JED Remita requests)', value: `₦${paid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+    ...(includePayment
+      ? [{ item: 'Total amount paid (JED Remita requests)', value: `₦${paid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }]
+      : []),
+    { item: 'Installation pictures', value: `${withPicture} of ${records.length} have a picture link${photos ? `; ${images.length} embedded` : ''}` },
     { item: 'Meter details matched', value: `${matchedMeters} of ${records.length}${context.meterDetails ? ` (${context.meterDetails})` : ''}` },
     { item: 'Data completeness', value: 'Every record in the selected scope was loaded before export.' },
   ];
@@ -199,7 +241,7 @@ export function buildCompletedInstallationsReport({ rows, meterIndex = new Map()
   return {
     count: records.length,
     sheets: [
-      { name: 'Completed Installations', columns, rows: records },
+      { name: 'Completed Installations', columns, rows: records, images },
       {
         name: 'Summary',
         autoFilter: false,
