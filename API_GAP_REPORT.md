@@ -1,5 +1,128 @@
 # API Gap Report
 
+## 2026-09-28 (eighth pass): seal whitelist, picture uploads failing in production, Supervisor dashboard
+
+Live OpenAPI document re-pulled today (81 paths). No login was available from this workstation, so
+nothing below was exercised with a real account; the unauthenticated probes are stated exactly.
+
+### New — Gap AN: production file storage is not configured, so every picture upload fails
+
+**Observed today, unauthenticated, against `https://api.memetering.com/api/v1`:**
+
+| Request | Response |
+|---|---|
+| `GET /files/00000000-0000-4000-8000-000000000000` (well-formed token) | **`503 {"success":false,"message":"File storage not configured"}`** |
+| `GET /files/not-a-token` | `400` token validation (so the route is live; it is the storage behind it that is missing) |
+| `POST /uploads` with no body / a 3-byte file | `401` in ~1 s (auth runs first, as expected) |
+
+`POST /uploads` documents exactly this state as its `503` ("File storage not configured"). Every
+installer's photo upload therefore fails, and **no stored picture link can be opened either**. This
+is a deployment setting on the API server — the storage bucket/credentials the upload service reads —
+and **no frontend change can fix it**. The frontend request itself matches the spec: `POST`,
+multipart, the field name `files`, the bearer token, and no hand-set `Content-Type` (so the browser
+supplies the boundary).
+
+**Second observation, to confirm on the server (it may be this workstation's network):** any POST
+body larger than about 2 KB to `api.memetering.com` stalled and was reset after ~33 s — a 2 KB or
+23 KB multipart upload, and equally a 3 KB JSON body to `/auth/login` — while the same 2 KB multipart
+body to httpbin.org succeeded in 7 s. Tiny bodies were answered immediately. If the nginx/proxy logs
+show these requests never arriving, the cause is on the path to the server (a request-body limit, a
+proxy buffering setting, or an MTU problem) and it would break photo uploads **even after storage is
+configured**.
+
+**Backend/ops change needed:** configure the file storage on the production deployment, then confirm
+with a real login that `POST /uploads` returns `201` and the returned `url` opens. Check the proxy
+for the large-body stall at the same time.
+
+**What the frontend did (2026-09-28):**
+- **Removed the pasted-link fallback.** On a 503 the photo field used to offer "paste a link to the
+  photo instead". An installation report must carry a picture this system stored, so a failed upload
+  now means the job **cannot be reported yet**. Consequence: until storage is configured, installers
+  cannot report multi-disco installations at all. That is deliberate, and it is the reason this gap
+  is urgent.
+- **Oversized photos are resized in the browser** (`utils/imageCompression.js`). A phone camera's
+  full-size photo is often 5–12 MB, over the 5 MB limit, and was refused before any request was made.
+  It is now re-encoded (longest side 2560 px, JPEG) until it fits. The server recompresses anything over
+  300 KB anyway, so the stored copy loses nothing it would have kept.
+- **The upload has a 120 s timeout**, so a stalled connection ends in "The file couldn't be uploaded.
+  Please try again." instead of an endless "Uploading…".
+
+### New — Gap AM: there is no seal-number resource — the seal whitelist cannot be built
+
+The requested workflow is a controlled pool of valid seal numbers, assigned per installer, capped
+at `seals held ≤ meters held`, consumed on use, never reused. **The API has nothing for it**: no
+`/seals` path, no seal field on any assignment batch (`GET /assignments` types are METER and
+INSTALLATION), and `sealNumber` on `POST /installations/{id}/report` is an optional free-text string
+with no whitelist, ownership or uniqueness check (gaps **H** and **L**). The JED completion's `sealNo`
+is the same.
+
+**What the frontend did: nothing that pretends.** Per this project's rules (no invented endpoints,
+no browser storage standing in for business data), there is no whitelist screen, no seal picker and
+no seal "assignment". It would have nothing real to load and nowhere to save. Report Installation
+keeps its existing checks (required, trimmed, not already on this installer's own jobs, and a
+backend duplicate rejection turned into a plain message).
+
+**Backend change needed.** All enforcement must be server-side, because the rule spans installers
+and two submissions can race:
+
+1. **Model.** `Seal { id, sealNumber (unique, normalised: trimmed, case-insensitive), discoCode?,
+   status: AVAILABLE | ASSIGNED | USED | VOID, assignedTo (installer id, null unless ASSIGNED/USED),
+   assignedAt, usedAt, installationId (set when USED), importBatchId, createdAt }`.
+2. **Whitelist load.** `POST /seals/import` (spreadsheet or JSON list, partial success like the other
+   imports, rejecting duplicates of existing seals) and `GET /seals?status=&assignedTo=&search=`
+   (paginated, same envelope as the other lists). SUPERADMIN/ADMIN.
+3. **Assign.** `POST /assignments/seals { installerId, sealNumbers[] }`, SUPERADMIN/ADMIN/SUPERVISOR
+   (Supervisor already holds every other `/assignments/*` route). In one transaction, with the
+   installer's rows locked:
+   - every seal exists and is `AVAILABLE` (not assigned to anyone, not used);
+   - the installer exists, is active, and is an INSTALLER;
+   - `seals the installer holds unused + requested ≤ meters the installer holds` (the open METER
+     batch items, `assignmentStatus: ASSIGNED`). **Meters, not installations**, per the business rule;
+   - partial success is fine, but each rejected seal must say why, and nothing may push the
+     installer over the cap.
+4. **Return.** `POST /assignments/seals/return { sealNumbers[] }` → back to `AVAILABLE`, only when not
+   `USED`. **When a meter is returned** (`POST /assignments/meters/return`), the installer may be
+   left holding more unused seals than meters. The backend must then either refuse the meter return
+   until surplus seals are returned too, or return the surplus seals automatically in the same
+   transaction. Pick one and document it. A `USED` seal never returns to the pool.
+5. **Use.** `POST /installations/{id}/report` (and `POST /external/jed/complete-installation`) must
+   require `sealNumber`, and in the report's existing transaction check that the seal exists, is
+   `ASSIGNED`, and is assigned to the **calling** installer. It then marks the seal `USED` with the
+   installation's id. A unique constraint on the seal's usage (`installationId` + `sealNumber`
+   unique; a seal can be `USED` once) turns a concurrent double-submit into one success and one
+   documented `409`.
+6. **Installer read.** `GET /installations/me/seals`, like `/installations/me/meters`, so the report
+   form can offer a dropdown of the installer's own unused seals instead of free text.
+
+**When those exist, the frontend work is:** a Seals tab on Assignments (dispatch/return, from the
+whitelist, with the same per-installer capacity summary the meter dispatch shows), a seal dropdown
+in Report Installation fed by `GET /installations/me/seals`, and the `409` mapped to the existing
+"already used" message in `utils/sealNumber.js`.
+
+### Supervisor dashboard — two calls it could not make (frontend fix, not a gap)
+
+A Supervisor's Dashboard had two faults, both frontend:
+
+- **The Installations Completed chart never loaded.** The trend reads `GET /finance/revenue/transactions`,
+  which Supervisor can't call, so the fetch was skipped. But the chart's loading flag started `true`
+  and was never cleared, so it showed "No installations completed in this range." — a false zero. For
+  a role without `PAYMENTS.VIEW`, the chart now counts the completed installation records themselves:
+  `GET /installations?status=INSTALLED|EXPORTED` and `GET /external/jed/requests?status=COMPLETED`,
+  bucketed by `completionDateOf`, the same day the Installations page's "Installed from / to" filter
+  uses.
+- **The Installers card called `GET /dashboard-stats`.** That response also carries `totalRevenue`, and
+  the integration guide gives Supervisor no dashboard/finance access. For a role without
+  `PAYMENTS.VIEW` the card now reads the installer roster's `pagination.totalCount`
+  (`GET /users?role=INSTALLER&limit=1`), a read Supervisor holds. Admin and Super Admin still read
+  `activeInstallers`. The two can differ if `activeInstallers` means something narrower than "on the
+  roster"; the spec doesn't define it (gap **AI**).
+
+**User-management writes for Supervisor.** The integration guide says the API refuses Supervisor
+`POST /users`, `PUT /users/{id}`, `DELETE /users/{id}` and restore with `403`. That was **not**
+re-verified live today (no Supervisor login). The frontend never issues those calls for a Supervisor:
+the buttons aren't offered, and as of today the create and update handlers also refuse before the
+request, as delete already did.
+
 ## 2026-09-27 (seventh pass): meter state across modules, bulk account assignment, revenue definitions, installer job status
 
 Live OpenAPI document re-pulled today: **95 operations**. Nothing below was verifiable against real

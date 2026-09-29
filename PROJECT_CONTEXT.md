@@ -231,9 +231,9 @@ jedc-meter-management/
   - **The returned URL is public by design.** It points at `GET /files/{token}` — no authentication,
     a random UUID rather than the file's id. It is safe in an `<img src>`, an email or an exported
     spreadsheet cell, and must never be described to staff as private. See `Security.md`.
-  - **Graceful degradation:** if the deployment has no storage configured at all (503), the field
-    falls back to accepting a pasted link — the old workflow — rather than costing the installer the
-    photo. A 400 shows the server's own message (it names the fixable problem); a 502 offers a retry;
+  - **No fallback on a storage outage (since 2026-09-28):** if the deployment has no storage
+    configured (503), the upload fails and says so. The pasted-link fallback that used to appear here
+    was removed, because a report must carry a picture this system stored. A 400 shows the server's own message (it names the fixable problem); a 502 offers a retry;
     the raw 503 text is never shown, because it is an ops issue the operator can't act on.
   - **`/uploads/excel*` were removed by the same release** (they were documented but never deployed,
     so they had always 404'd). Consequences, both now fixed:
@@ -450,7 +450,28 @@ jedc-meter-management/
     disappear whenever no exported row had a photo, because empty columns were dropped.
   - CSP `img-src` now allows the API hosts: uploaded photo thumbnails were being blocked in production.
 
+- **Supervisor dashboard, picture upload, seal whitelist (2026-09-28, fourth pass):**
+  - **Supervisor dashboard fixed.** Its Installations Completed chart never loaded: the trend reads the
+    finance endpoints, which Supervisor can't call, and the skipped fetch left the chart showing a false
+    "No installations completed". For a role without `PAYMENTS.VIEW` it now counts completed
+    installation records by installation date (`loadCompletedInstallationDays`). The Installers card
+    no longer calls `/dashboard-stats` for that role, since the response carries `totalRevenue`; it
+    reads the installer roster's `totalCount` instead. A Supervisor also gets its own title and
+    shortcuts (Installations, Assignments, Installer Job Status) in place of the admin Quick Actions.
+  - **User management for Supervisor** stays view-only. The create and update handlers now refuse
+    without `canCreateUsers`/`canUpdateUsers` before any request, as delete already did, and a test
+    pins the read-only Users page.
+  - **Picture upload.** Production's file store answers `503 File storage not configured`, which no
+    frontend change can fix (API_GAP_REPORT.md, gap **AN**). Frontend changes: oversized camera photos
+    are resized in the browser (`utils/imageCompression.js`) instead of being refused at 5 MB; the
+    upload has a 120 s timeout; and the pasted-link fallback is gone.
+  - **Seal whitelist: not built.** The API has no seal resource, so there is nothing to load a whitelist
+    from or record an assignment in. The exact backend contract is gap **AM**.
+
 ## 6. Pending / Incomplete Features
+
+- **Installation pictures cannot be uploaded in production** — the API's file storage is not configured (`503`), and with the pasted-link fallback removed, installers cannot report a multi-disco installation until it is. Ops fix, `API_GAP_REPORT.md` gap **AN**.
+- **No seal-number whitelist.** Seals are free text on the report, checked only against the installer's own jobs; the whitelist, per-installer seal assignment (capped by meters held) and single use all need a backend seal resource. `API_GAP_REPORT.md` gap **AM**.
 
 - **No per-installer statistics endpoint** — Installer Job Status groups filtered installation reads client-side (API_GAP_REPORT.md, gap AG).
 - **A pending imported installation has no amount anywhere in the API**, so it adds ₦0 to "Total collected payments" (API_GAP_REPORT.md, 2026-09-27).

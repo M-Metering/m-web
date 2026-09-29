@@ -25,20 +25,25 @@ const INSTALLER = {
 let currentUser = SUPER_ADMIN;
 
 vi.mock('../../auth/usePermissions', () => ({
-  usePermissions: () => ({
-    user: currentUser,
-    isAdmin: true,
-    isAdminRole: currentUser.role === 'ADMIN',
-    isSuperAdmin: currentUser.role === 'SUPERADMIN',
-    canManageUsers: true,
+  usePermissions: () => {
     // Admin-tier: sees the page, creates and edits. The Super Admin-only rules
-    // (delete, password reset, privileged roles) are still asserted below via
-    // isSuperAdmin, exactly as before.
-    canViewUsers: true,
-    canCreateUsers: true,
-    canUpdateUsers: true,
-    canDeleteUsers: true,
-  }),
+    // (delete, password reset, privileged roles) are asserted below via
+    // isSuperAdmin. A Supervisor views the roster and holds no user write —
+    // the same flags usePermissions derives for it.
+    const adminTier = currentUser.role === 'ADMIN' || currentUser.role === 'SUPERADMIN';
+    return {
+      user: currentUser,
+      isAdmin: adminTier,
+      isAdminRole: currentUser.role === 'ADMIN',
+      isSuperAdmin: currentUser.role === 'SUPERADMIN',
+      isSupervisor: currentUser.role === 'SUPERVISOR',
+      canManageUsers: adminTier,
+      canViewUsers: true,
+      canCreateUsers: adminTier,
+      canUpdateUsers: adminTier,
+      canDeleteUsers: adminTier,
+    };
+  },
 }));
 
 vi.mock('../../services/api', () => ({
@@ -108,6 +113,34 @@ describe('UserManagement — Super Admin account protection', () => {
     expect(deleteButtonIn('ngozi@memetering.com')).toBeTruthy();
     // …but no delete is ever offered for, or sent for, the current account.
     expect(deleteButtonIn('boss@memetering.com')).toBeUndefined();
+    expect(jedApi.deleteUser).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserManagement — Supervisor is read-only', () => {
+  const SUPERVISOR = {
+    id: 'b0e1c2d3-0000-4000-8000-000000000009',
+    firstName: 'Tunde', lastName: 'Ade', email: 'tunde@memetering.com', phone: '08030000009',
+    role: 'SUPERVISOR',
+  };
+
+  it('offers no Add User, no edit and no delete — only View', async () => {
+    currentUser = SUPERVISOR;
+    jedApi.getUsers.mockResolvedValue({
+      success: true, data: [INSTALLER], pagination: { currentPage: 1, totalPages: 1, totalCount: 1, hasNext: false },
+    });
+    render(<UserManagement />);
+    await waitFor(() => expect(screen.getAllByText('ngozi@memetering.com').length).toBeGreaterThan(0));
+
+    expect(screen.queryByRole('button', { name: /Add User/ })).toBeNull();
+    const buttons = Array.from(rowFor('ngozi@memetering.com').querySelectorAll('button'));
+    expect(buttons.find((b) => b.title === 'View full profile')).toBeTruthy();
+    const edit = buttons.find((b) => /Edit user|Access Restricted/.test(b.title || '') && b.title !== 'View full profile');
+    expect(edit.disabled).toBe(true);
+    expect(deleteButtonIn('ngozi@memetering.com')?.disabled ?? true).toBe(true);
+
+    expect(jedApi.createUser).not.toHaveBeenCalled();
+    expect(jedApi.updateUser).not.toHaveBeenCalled();
     expect(jedApi.deleteUser).not.toHaveBeenCalled();
   });
 });

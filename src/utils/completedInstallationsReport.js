@@ -50,6 +50,18 @@ export function completionDateOf(row) {
     : localDate(r.installationDate) || localDate(r.reportedAt);
 }
 
+/**
+ * The completion date as a LOCAL-midnight Date, for bucketing by day. Built
+ * from the calendar parts, never `new Date('YYYY-MM-DD')`, which is UTC
+ * midnight and lands on the previous day west of Greenwich.
+ */
+export function completionDayOf(row) {
+  const d = completionDateOf(row);
+  if (!d) return null;
+  const [y, m, day] = d.split('-').map(Number);
+  return new Date(y, m - 1, day);
+}
+
 /** Keep rows whose completion date is within [from, to] (either may be ''). */
 export function filterByCompletionDate(rows, from, to) {
   if (!from && !to) return rows;

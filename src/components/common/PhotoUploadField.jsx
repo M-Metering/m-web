@@ -17,9 +17,14 @@
 //    /files/{token} route — a random token, not the file's id, and no auth —
 //    so it works in an <img src> and in a spreadsheet a disco employee opens.
 //    It is never parsed or rebuilt from an id.
-//  - If storage isn't configured on the deployment at all (503), the field
-//    falls back to accepting a pasted link, which is how this worked before
-//    uploads existed. An ops outage shouldn't cost the installer the photo.
+//  - If storage isn't configured on the deployment at all (503) the upload
+//    fails and says so. There is deliberately NO pasted-link fallback any more
+//    (removed 2026-09-28): an installation report must carry a picture this
+//    app actually stored, so a failed upload means the job can't be reported
+//    yet — never that some other link stands in for it.
+//  - A photo over the 5 MB limit is shrunk in the browser first
+//    (utils/imageCompression.js). Full-size phone camera shots are routinely
+//    larger than that and used to be refused before any request was made.
 //  - TWO file inputs, on purpose (2026-09-27). `capture` on an <input
 //    type="file"> tells Android and iOS to skip the chooser and open the
 //    camera, which is why installers could not attach a photo they had already
@@ -27,7 +32,7 @@
 //    gallery" one WITHOUT it. Both feed the same handler, so validation, the
 //    upload and the replace/delete rules are identical either way.
 import { useState, useRef } from 'react';
-import { Camera, Loader2, Upload, AlertCircle, Image as ImageIcon } from 'lucide-react';
+import { Camera, Loader2, AlertCircle, Image as ImageIcon } from 'lucide-react';
 import jedApi from '../services/api';
 import { getErrorMessage } from '../../utils/errorMessage';
 import {
@@ -38,6 +43,7 @@ import {
   uploadFailure,
   uploadedFiles,
 } from '../../utils/fileUpload';
+import { prepareUploadImage } from '../../utils/imageCompression';
 
 /**
  * @param {object} props
@@ -67,11 +73,8 @@ function PhotoUploadField({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
   // The stored file's numeric id, so a replacement can delete what it replaces.
-  // Only set for a file THIS field uploaded — never for a pasted link.
+  // Only set for a file THIS field uploaded.
   const [uploadedId, setUploadedId] = useState(null);
-  // Set when the deployment has no storage configured (503). The pasted-link
-  // fallback then appears; it is not offered otherwise.
-  const [storageUnavailable, setStorageUnavailable] = useState(false);
 
   const busy = disabled || uploading;
 
@@ -91,19 +94,20 @@ function PhotoUploadField({
     if (!file) return;
 
     setError(null);
-
-    // Fail fast in the browser. The server re-checks from the file's real
-    // bytes, so this is a courtesy, not the gate.
-    const { valid, reason } = validateUploadCandidate(file, category);
-    if (!valid) {
-      setError(reason);
-      return;
-    }
-
     const replacing = uploadedId;
     setUploading(true);
     try {
-      const response = await jedApi.uploadFiles([file], {
+      // Shrink an oversized photo first, then fail fast in the browser. The
+      // server re-checks from the file's real bytes, so this is a courtesy,
+      // not the gate.
+      const prepared = await prepareUploadImage(file);
+      const { valid, reason } = validateUploadCandidate(prepared, category);
+      if (!valid) {
+        setError(reason);
+        return;
+      }
+
+      const response = await jedApi.uploadFiles([prepared], {
         category,
         entityType,
         entityId: entityId != null ? String(entityId) : undefined,
@@ -115,13 +119,11 @@ function PhotoUploadField({
 
       onChange(stored.url);
       setUploadedId(stored.id);
-      setStorageUnavailable(false);
       // Only once the replacement is safely stored.
       await discardUploaded(replacing);
     } catch (err) {
       console.error('[PhotoUploadField] Upload failed:', err);
       const { message, useServerMessage } = uploadFailure(err?.status);
-      if (err?.status === 503) setStorageUnavailable(true);
       setError(useServerMessage ? getErrorMessage(err, "That file couldn't be uploaded.") : message);
     } finally {
       setUploading(false);
@@ -229,7 +231,7 @@ function PhotoUploadField({
       />
 
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        {allowedTypesLabel(category)}, up to 5 MB.
+        {allowedTypesLabel(category)}. Large photos are resized to fit the 5 MB limit.
       </p>
 
       {error && (
@@ -237,26 +239,6 @@ function PhotoUploadField({
           <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
           {error}
         </p>
-      )}
-
-      {/* Only when the deployment itself has no storage — see the header. */}
-      {storageUnavailable && (
-        <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-2.5">
-          <p className="text-xs text-amber-800 dark:text-amber-300 flex items-start gap-1.5">
-            <Upload className="w-3.5 h-3.5 shrink-0 mt-px" />
-            Uploads are unavailable right now. You can still paste a link to the photo instead.
-          </p>
-          <input
-            type="url"
-            inputMode="url"
-            value={value}
-            onChange={(e) => { onChange(e.target.value); setUploadedId(null); }}
-            disabled={disabled}
-            placeholder="https://…"
-            aria-label="Installation photo link"
-            className="form-input w-full px-3 py-2 text-sm mt-2"
-          />
-        </div>
       )}
     </div>
   );
