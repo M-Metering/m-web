@@ -1,27 +1,43 @@
 // src/utils/imageCompression.js
-// Shrink a photo that is too big for POST /uploads BEFORE it is sent.
+// Bring an installation photo within the API's 5 MB limit
+// (MAX_PHOTO_SIZE_BYTES) BEFORE it is sent to POST /uploads.
 //
-// Why this exists (2026-09-28): the API takes at most 5 MB per file, and the
-// field refused anything larger in the browser. A phone camera's full-size
-// JPEG is routinely 5-12 MB, so "Take photo" failed for exactly the installers
-// it was built for. The server already recompresses every image over 300 KB,
-// so re-encoding a large photo here loses nothing the stored copy would have
-// kept.
+// History: the target was 5 MB from 2026-09-28, 1 MB on 2026-10-01, and is
+// 5 MB again since 2026-10-02, matching the API. A full-size phone camera
+// shot can exceed it, and the server recompresses anything over 300 KB anyway.
 //
 // Rules:
-//   - A file already within the limit is sent UNCHANGED (byte for byte).
-//   - Only JPEG/PNG/WebP are touched — the types installation_photo accepts.
-//   - The longest side is capped at MAX_DIMENSION, then JPEG quality steps down
-//     until the result fits. If it still doesn't fit, or the browser can't
-//     decode the image, the ORIGINAL file is returned and the normal size check
-//     rejects it with its usual message. Nothing is ever faked.
+//   - A JPEG/PNG/WebP already within the limit is sent UNCHANGED (byte for byte).
+//   - Anything larger is re-encoded as JPEG: longest side 2048 px first,
+//     stepping quality down, then 1600 px. Never smaller than 1600 px, so a
+//     meter's digits and seal stay legible; if 1600 px at the lowest quality
+//     still doesn't fit, the ORIGINAL is returned and the size check refuses
+//     it with a clear message. Nothing is ever faked.
+//   - JPEG, not WebP: the Completed Installations export embeds the picture,
+//     and Excel embeds only JPEG/PNG (utils/photoEmbed.js). An installation
+//     photo has no use for PNG transparency; a transparent PNG is flattened
+//     onto white.
+//   - HEIC/HEIF (some Android galleries hand these over despite the picker's
+//     `accept`) is converted when the browser can decode it — Safari can,
+//     Chrome can't — and otherwise left for the type check to refuse.
 //   - Re-encoding drops EXIF. The photo's location travels separately, as the
 //     upload's own latitude/longitude fields.
-import { MAX_FILE_SIZE_BYTES } from './fileUpload';
+import { MAX_PHOTO_SIZE_BYTES } from './fileUpload';
 
-export const MAX_DIMENSION = 2560;
-const QUALITY_STEPS = [0.85, 0.72, 0.6];
-const COMPRESSIBLE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+export const MAX_DIMENSION = 2048;
+export const MIN_DIMENSION = 1600;
+// Tried in order until one fits. Quality first at full size, then smaller.
+const ATTEMPTS = [
+  { maxSide: MAX_DIMENSION, quality: 0.85 },
+  { maxSide: MAX_DIMENSION, quality: 0.75 },
+  { maxSide: MAX_DIMENSION, quality: 0.65 },
+  { maxSide: MIN_DIMENSION, quality: 0.75 },
+  { maxSide: MIN_DIMENSION, quality: 0.6 },
+];
+const PASS_THROUGH_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const CONVERTIBLE_TYPES = ['image/heic', 'image/heif'];
+
+const typeOf = (file) => String(file?.type || '').toLowerCase();
 
 /** Scale (width, height) so the longest side is at most `max`, keeping the aspect ratio. */
 export function scaledDimensions(width, height, max = MAX_DIMENSION) {
@@ -31,9 +47,12 @@ export function scaledDimensions(width, height, max = MAX_DIMENSION) {
   return { width: Math.round(width * ratio), height: Math.round(height * ratio) };
 }
 
-/** Whether a file needs (and can be given) a smaller copy before upload. */
-export function needsCompression(file, maxBytes = MAX_FILE_SIZE_BYTES) {
-  return Boolean(file) && file.size > maxBytes && COMPRESSIBLE_TYPES.includes(String(file.type || '').toLowerCase());
+/** Whether a file needs (and may be given) a re-encoded copy before upload. */
+export function needsCompression(file, maxBytes = MAX_PHOTO_SIZE_BYTES) {
+  if (!file) return false;
+  const type = typeOf(file);
+  if (CONVERTIBLE_TYPES.includes(type)) return true;
+  return file.size > maxBytes && PASS_THROUGH_TYPES.includes(type);
 }
 
 async function decodeImage(file) {
@@ -61,36 +80,37 @@ function encodeJpeg(image, { width, height }, quality) {
   // JPEG has no alpha: paint white first so a transparent PNG isn't black.
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, width, height);
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(image, 0, 0, width, height);
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
 }
 
 /**
- * The file to upload: the original when it already fits, otherwise a smaller
- * JPEG copy when one can be made, otherwise the original (which the size check
- * then rejects).
+ * The file to upload: the original when it already fits, otherwise a JPEG
+ * copy of at most `maxBytes` when one can be made at a legible size, otherwise
+ * the original (which the size/type check then refuses).
  *
  * @param {File} file
  * @param {{ maxBytes?: number, decode?: Function, encode?: Function }} [options]
  *   decode/encode are injectable for tests; the browser implementations are the default.
  * @returns {Promise<File>}
  */
-export async function prepareUploadImage(file, { maxBytes = MAX_FILE_SIZE_BYTES, decode = decodeImage, encode = encodeJpeg } = {}) {
+export async function prepareUploadImage(file, { maxBytes = MAX_PHOTO_SIZE_BYTES, decode = decodeImage, encode = encodeJpeg } = {}) {
   if (!needsCompression(file, maxBytes)) return file;
+  let image = null;
   try {
-    const image = await decode(file);
-    const size = scaledDimensions(image.width, image.height);
-    for (const quality of QUALITY_STEPS) {
-      const blob = await encode(image, size, quality);
+    image = await decode(file);
+    for (const { maxSide, quality } of ATTEMPTS) {
+      const blob = await encode(image, scaledDimensions(image.width, image.height, maxSide), quality);
       if (blob && blob.size > 0 && blob.size <= maxBytes) {
-        image.close?.();
         const name = String(file.name || 'photo').replace(/\.[a-z0-9]+$/i, '') + '.jpg';
         return new File([blob], name, { type: 'image/jpeg', lastModified: file.lastModified || Date.now() });
       }
     }
-    image.close?.();
   } catch (err) {
-    console.warn('[imageCompression] Could not make a smaller copy; sending the original for the size check:', err?.message);
+    console.warn('[imageCompression] Could not make a smaller copy; leaving the original for the size check:', err?.message);
+  } finally {
+    image?.close?.();
   }
   return file;
 }

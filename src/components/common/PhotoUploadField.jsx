@@ -22,9 +22,13 @@
 //    (removed 2026-09-28): an installation report must carry a picture this
 //    app actually stored, so a failed upload means the job can't be reported
 //    yet — never that some other link stands in for it.
-//  - A photo over the 5 MB limit is shrunk in the browser first
-//    (utils/imageCompression.js). Full-size phone camera shots are routinely
-//    larger than that and used to be refused before any request was made.
+//  - A photo over the API's 5 MB limit is compressed in the browser first
+//    (utils/imageCompression.js), and nothing over 5 MB is sent.
+//  - Coordinates go with the photo only when both are valid
+//    (validCoordinates). The form passes them as typed, and a half-entered
+//    value must not make the upload itself fail.
+//  - A failure only sets this field's own error. The rest of the report form
+//    lives in the parent and is never touched, so the installer just retries.
 //  - TWO file inputs, on purpose (2026-09-27). `capture` on an <input
 //    type="file"> tells Android and iOS to skip the chooser and open the
 //    camera, which is why installers could not attach a photo they had already
@@ -43,7 +47,9 @@ import {
   uploadFailure,
   uploadedFiles,
 } from '../../utils/fileUpload';
+import UploadedPhoto from './UploadedPhoto';
 import { prepareUploadImage } from '../../utils/imageCompression';
+import { validCoordinates } from '../../utils/installationReport';
 
 /**
  * @param {object} props
@@ -75,6 +81,10 @@ function PhotoUploadField({
   // The stored file's numeric id, so a replacement can delete what it replaces.
   // Only set for a file THIS field uploaded.
   const [uploadedId, setUploadedId] = useState(null);
+  // The url whose thumbnail couldn't be displayed. That is a display problem
+  // (see UploadedPhoto), not a failed upload: the photo is stored and its url
+  // is what the report submits, so the field still says "Photo attached".
+  const [previewFailedFor, setPreviewFailedFor] = useState(null);
 
   const busy = disabled || uploading;
 
@@ -111,8 +121,7 @@ function PhotoUploadField({
         category,
         entityType,
         entityId: entityId != null ? String(entityId) : undefined,
-        latitude: coordinates?.latitude,
-        longitude: coordinates?.longitude,
+        ...(validCoordinates(coordinates?.latitude, coordinates?.longitude) || {}),
       });
       const [stored] = uploadedFiles(response);
       if (!stored?.url) throw new Error('The server did not return a link for this photo.');
@@ -142,12 +151,23 @@ function PhotoUploadField({
     <div className="space-y-2">
       {value ? (
         <div className="flex items-start gap-3 rounded-lg border border-gray-200 dark:border-gray-700 p-2">
-          {/* The url is a public link, so it renders directly. */}
-          <img
-            src={value}
-            alt="Installation photo"
-            className="w-16 h-16 rounded object-cover bg-gray-100 dark:bg-gray-700 shrink-0"
-          />
+          {previewFailedFor === value ? (
+            <span
+              role="img"
+              aria-label="Installation photo (preview unavailable)"
+              title="Photo uploaded. The preview can't be shown here."
+              className="w-16 h-16 rounded bg-gray-100 dark:bg-gray-700 shrink-0 flex items-center justify-center text-gray-400"
+            >
+              <ImageIcon className="w-6 h-6" />
+            </span>
+          ) : (
+            <UploadedPhoto
+              src={value}
+              alt="Installation photo"
+              onError={() => setPreviewFailedFor(value)}
+              className="w-16 h-16 rounded object-cover bg-gray-100 dark:bg-gray-700 shrink-0"
+            />
+          )}
           <div className="min-w-0 flex-1">
             <p className="text-sm text-gray-900 dark:text-white">Photo attached</p>
             <p className="text-[11px] text-gray-500 dark:text-gray-400 break-all">{value}</p>
@@ -231,7 +251,7 @@ function PhotoUploadField({
       />
 
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        {allowedTypesLabel(category)}. Large photos are resized to fit the 5 MB limit.
+        {allowedTypesLabel(category)}, up to 5 MB. Larger photos are compressed automatically.
       </p>
 
       {error && (

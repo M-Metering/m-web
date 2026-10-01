@@ -54,6 +54,11 @@ describe('PhotoUploadField', () => {
     expect(jedApi.uploadFiles).toHaveBeenCalledTimes(1);
   });
 
+  it("loads the stored photo's thumbnail in CORS mode, so the API's CORP header can't block it", async () => {
+    render(<PhotoUploadField id="p" value="https://api.memetering.com/api/v1/files/0c0ffee0-0000-4000-8000-000000000001" onChange={vi.fn()} />);
+    expect(screen.getByAltText('Installation photo').getAttribute('crossorigin')).toBe('anonymous');
+  });
+
   it('applies the same validation to a gallery pick as to a camera shot', async () => {
     renderField();
     const pdf = new File(['%PDF'], 'doc.pdf', { type: 'application/pdf' });
@@ -72,12 +77,25 @@ describe('PhotoUploadField', () => {
     expect(jedApi.uploadFiles.mock.calls[0][0]).toEqual([resized]);
   });
 
-  it('still refuses a photo that could not be brought under 5 MB, without a request', async () => {
+  it('refuses a photo compression could not bring to 5 MB, without a request', async () => {
     const big = new File([new Uint8Array(9 * 1024 * 1024)], 'IMG_1.jpg', { type: 'image/jpeg' });
     renderField();
     fireEvent.change(screen.getByLabelText('Take a photo'), { target: { files: [big] } });
-    expect((await screen.findByRole('alert')).textContent).toMatch(/5 MB or smaller/);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/couldn't be reduced to 5 MB/);
     expect(jedApi.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("sends the photo's location only when both coordinates are valid", async () => {
+    const { rerender } = render(<PhotoUploadField id="p" value="" onChange={vi.fn()} coordinates={{ latitude: '5.1066', longitude: '7.' }} />);
+    fireEvent.change(screen.getByLabelText('Choose a photo from the gallery'), { target: { files: [jpeg()] } });
+    await waitFor(() => expect(jedApi.uploadFiles).toHaveBeenCalledTimes(1));
+    expect(jedApi.uploadFiles.mock.calls[0][1]).not.toHaveProperty('latitude');
+    expect(jedApi.uploadFiles.mock.calls[0][1]).not.toHaveProperty('longitude');
+
+    rerender(<PhotoUploadField id="p" value="" onChange={vi.fn()} coordinates={{ latitude: ' 5.1066', longitude: '7.3667 ' }} />);
+    fireEvent.change(screen.getByLabelText('Choose a photo from the gallery'), { target: { files: [jpeg()] } });
+    await waitFor(() => expect(jedApi.uploadFiles).toHaveBeenCalledTimes(2));
+    expect(jedApi.uploadFiles.mock.calls[1][1]).toMatchObject({ latitude: 5.1066, longitude: 7.3667 });
   });
 
   it('on a failed upload reports it and supplies no link at all — no pasted-link stand-in', async () => {

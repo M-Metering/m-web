@@ -15,10 +15,9 @@
 // validated and responsive, and simply start rendering as soon as that mapper
 // returns data for them.
 //
-// NOTE for whoever wires photos in: vercel.json's CSP is `img-src 'self'
-// data:`, so remote image URLs need their host added there. GPS *capture*
-// (navigator.geolocation) would additionally need `geolocation=()` relaxed in
-// the Permissions-Policy header — display of stored coordinates does not.
+// NOTE for whoever wires photos in: the CSP (vite.config.js) allows images
+// only from the app itself and the API origin, so a photo hosted anywhere else
+// needs its host added there.
 import { useState } from 'react';
 import {
   CalendarCheck,
@@ -31,6 +30,7 @@ import {
 } from 'lucide-react';
 import InfoModal from '../common/InfoModal';
 import { formatDateTime } from '../../utils/date';
+import UploadedPhoto from '../common/UploadedPhoto';
 
 function getCompletionFields(job) {
   return {
@@ -133,7 +133,7 @@ export function InstallationPhotos({ urls }) {
               className="aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-900/50 focus:outline-none focus:ring-2 focus:ring-brand-500"
               aria-label={`View installation photo ${index + 1}`}
             >
-              <img
+              <UploadedPhoto
                 src={src}
                 alt={`Installation photo ${index + 1}`}
                 loading="lazy"
@@ -147,7 +147,7 @@ export function InstallationPhotos({ urls }) {
 
       <InfoModal isOpen={!!preview} onClose={() => setPreview(null)} title="Installation Photo">
         {preview && (
-          <img
+          <UploadedPhoto
             src={preview}
             alt="Installation"
             className="w-full max-h-[70vh] object-contain rounded-lg"

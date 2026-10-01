@@ -258,9 +258,14 @@ restore, unlike users — so only delete a file the same flow just created.
 difference is that `components/common/PhotoUploadField.jsx` now produces that URL instead of the
 installer hosting the image elsewhere and pasting a link. **There is no pasted-link fallback** (removed
 2026-09-28): a failed upload means the job can't be reported yet, never that another link stands in.
-A photo over 5 MB is resized in the browser first (`utils/imageCompression.js`); one already within
-the limit is sent byte for byte. **As of 2026-09-28 production answers `503 File storage not
-configured`** — an ops fix on the API (API_GAP_REPORT.md, gap AN), not a frontend bug.
+An installation photo has the API's own limit, **5 MB** (`MAX_PHOTO_SIZE_BYTES` = `MAX_FILE_SIZE_BYTES`,
+since 2026-10-02); a larger one is compressed in the browser first (`utils/imageCompression.js`), one within
+it is sent byte for byte, and nothing larger is sent. **Caution:** the API's nginx has been measured refusing
+any request body over 1 MiB with a CORS-less 413 the browser sees as "Failed to fetch" (gap AP). Until its
+`client_max_body_size` is raised, photos between ~1 MB and 5 MB fail there. Show uploaded photos with
+`components/common/UploadedPhoto.jsx`, never a bare `<img>`: the API's `Cross-Origin-Resource-Policy:
+same-origin` blocks a plain image (gap AQ). The only authoritative API documentation is
+`https://api.memetering.com/api-docs`; the retired Render deployment's docs are obsolete.
 
 **`/uploads/excel`, `/uploads/excel-first-sheet` and `/uploads/excel-modified` are GONE** (removed
 2026-09-25; they were documented but never deployed, so every call 404'd). That prefix is file
@@ -445,5 +450,6 @@ things the API would allow. Loosen it only deliberately, and update this paragra
 ## Where to look next
 
 - `PROJECT_CONTEXT.md` — current feature inventory, folder structure, business rules.
+- `DEPLOYMENT.md` — host-neutral build and server requirements (SPA fallback, security headers, env vars).
 - `API_GAP_REPORT.md` — every place the desired workflow can't be fully implemented against the real API, why, and what backend change would be needed.
 - `CodeBaseAudit.md`, `Security.md`, `Architecture.md` — deeper structural/security/architectural review (see each for specifics; keep all of these and this file describing the *same* current system — update the relevant one(s) whenever you add, remove, or materially change a feature).

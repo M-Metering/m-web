@@ -8,6 +8,8 @@ import {
   validateUploadBatch,
   uploadFailure,
   uploadedFiles,
+  photoCrossOrigin,
+  MAX_PHOTO_SIZE_BYTES,
 } from '../fileUpload';
 
 // A stand-in for File: the util only reads name/type/size.
@@ -34,11 +36,19 @@ describe('validateUploadCandidate', () => {
   });
 
   it('enforces the documented 5 MB per-file limit and says the actual size', () => {
-    expect(validateUploadCandidate(file({ size: 5 * MB }), UPLOAD_CATEGORY.INSTALLATION_PHOTO).valid).toBe(true);
-    const tooBig = validateUploadCandidate(file({ size: 6.5 * MB }), UPLOAD_CATEGORY.INSTALLATION_PHOTO);
+    expect(validateUploadCandidate(file({ name: 'a.pdf', type: 'application/pdf', size: 5 * MB })).valid).toBe(true);
+    const tooBig = validateUploadCandidate(file({ name: 'a.pdf', type: 'application/pdf', size: 6.5 * MB }));
     expect(tooBig.valid).toBe(false);
     expect(tooBig.reason).toContain('6.5 MB');
     expect(tooBig.reason).toContain('5 MB or smaller');
+  });
+
+  it('caps an installation photo at the API\'s 5 MB — the size compression must reach', () => {
+    expect(MAX_PHOTO_SIZE_BYTES).toBe(5 * MB);
+    expect(validateUploadCandidate(file({ size: MAX_PHOTO_SIZE_BYTES }), UPLOAD_CATEGORY.INSTALLATION_PHOTO).valid).toBe(true);
+    const over = validateUploadCandidate(file({ size: MAX_PHOTO_SIZE_BYTES + 1 }), UPLOAD_CATEGORY.INSTALLATION_PHOTO);
+    expect(over.valid).toBe(false);
+    expect(over.reason).toMatch(/couldn't be reduced to 5 MB/);
   });
 
   it('rejects an empty file and a missing one', () => {
@@ -100,6 +110,8 @@ describe('uploadFailure — what the operator is told, per status', () => {
   it('explains 403 and 404 without technical detail', () => {
     expect(uploadFailure(403).message).toBe('You can only delete files you uploaded.');
     expect(uploadFailure(404).message).toBe('That file no longer exists.');
+    expect(uploadFailure(401)).toMatchObject({ retryable: false, useServerMessage: false });
+    expect(uploadFailure(401).message).toMatch(/session has expired/);
   });
 
   it('has a safe default for an unexpected status', () => {
@@ -146,5 +158,23 @@ describe('uploadedFiles', () => {
     expect(uploadedFiles([RECORD])).toHaveLength(1);
     expect(uploadedFiles({ data: [] })).toEqual([]);
     expect(uploadedFiles(null)).toEqual([]);
+  });
+});
+
+describe('photoCrossOrigin', () => {
+  const API = 'https://api.memetering.com';
+
+  it("asks for an API-hosted photo in CORS mode, past the API's Cross-Origin-Resource-Policy", () => {
+    expect(photoCrossOrigin('https://api.memetering.com/api/v1/files/0c0ffee0-0000-4000-8000-000000000001', API)).toBe('anonymous');
+  });
+
+  it('leaves a photo hosted anywhere else alone — CORS mode would break it there', () => {
+    expect(photoCrossOrigin('https://drive.google.com/uc?id=abc', API)).toBeUndefined();
+    expect(photoCrossOrigin('https://api.memetering.com.evil.example/x.jpg', API)).toBeUndefined();
+  });
+
+  it('is undefined for a value that is not a URL', () => {
+    expect(photoCrossOrigin('', API)).toBeUndefined();
+    expect(photoCrossOrigin('not a url', API)).toBeUndefined();
   });
 });

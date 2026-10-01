@@ -2,7 +2,7 @@
 
 An internal web application for **JEDC** (a Nigerian power distribution company) and its partner installers to manage the meter-installation lifecycle: customer meter requests, Remita payment collection, and installer job fulfillment. Branded on the login screen as **Masters Energy**.
 
-This is a staff tool (Admin / Super Admin / Installer roles) — there is no customer-facing self-service portal.
+This is a staff tool (Super Admin / Admin / Supervisor / Installer roles) — there is no customer-facing self-service portal.
 
 ## Tech Stack
 

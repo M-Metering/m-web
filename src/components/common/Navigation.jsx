@@ -17,9 +17,8 @@ import {
   Upload, Settings, X, CreditCard, ChevronsLeft, ChevronsRight,
   ClipboardList, MessageSquareWarning, FileSpreadsheet, Send, Wrench, HardHat
 } from 'lucide-react';
-import { useEffect, useCallback, useMemo, useState } from 'react';
+import { useEffect, useCallback, useMemo } from 'react';
 import { NavLink } from 'react-router-dom';
-import InfoModal from './InfoModal';
 import { ROLES, canAccessPage } from '../auth/permissions';
 
 // Role strings match the real API's User.role enum (uppercase). SUPERVISOR is
@@ -217,12 +216,7 @@ function NavItem({ item, onClick, collapsed }) {
 }
 
 function Navigation({ userRole, isOpen, onClose, collapsed = false, onToggleCollapse }) {
-  const [isSupportModalOpen, setSupportModalOpen] = useState(false);
-
-  useBodyScroll(isOpen || isSupportModalOpen);
-
-  const handleOpenSupportModal = useCallback(() => setSupportModalOpen(true), []);
-  const handleCloseSupportModal = useCallback(() => setSupportModalOpen(false), []);
+  useBodyScroll(isOpen);
 
   const handleLinkClick = useCallback(() => {
     if (window.navigator.vibrate) window.navigator.vibrate(50);
@@ -311,39 +305,7 @@ function Navigation({ userRole, isOpen, onClose, collapsed = false, onToggleColl
             <NavItem key={item.id} item={item} onClick={handleLinkClick} collapsed={collapsed} />
           ))}
         </nav>
-
-        {/* Support box — hidden in the collapsed rail; not enough room to
-            say anything useful at icon-only width. */}
-        <div className={`p-4 border-t border-gray-100 dark:border-white/10 flex-shrink-0 ${collapsed ? 'lg:hidden' : ''}`}>
-          <div className="bg-brand-50 dark:bg-brand-900/20 border border-brand-200 dark:border-brand-800 rounded-lg p-3">
-            <p className="text-xs font-semibold text-brand-900 dark:text-brand-300 mb-1">Need Help?</p>
-            <p className="text-xs text-brand-700 dark:text-brand-400 mb-2.5">Contact the support team</p>
-            <button
-              className="w-full px-3 py-2 bg-brand-500 text-gray-900 text-xs font-semibold rounded-lg hover:bg-brand-600 transition-colors"
-              onClick={handleOpenSupportModal}
-            >
-              Get Support
-            </button>
-          </div>
-        </div>
       </aside>
-
-      <InfoModal
-        isOpen={isSupportModalOpen}
-        onClose={handleCloseSupportModal}
-        title="Contact Support"
-      >
-        <div className="text-center text-sm text-gray-600 dark:text-gray-400">
-          <p className="mb-2">For any assistance or questions, please do not hesitate to reach out to our support team.</p>
-          <p>You can email us at:</p>
-          <a
-            href="mailto:support@jedc.com"
-            className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
-          >
-            support@jedc.com
-          </a>
-        </div>
-      </InfoModal>
     </>
   );
 }
