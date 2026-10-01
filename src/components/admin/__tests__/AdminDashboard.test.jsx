@@ -33,13 +33,17 @@ vi.mock('../../services/api', () => ({
     getInstallations: vi.fn(),
     getInstallationStatistics: vi.fn(),
     getDashboardStats: vi.fn(),
+    getUsers: vi.fn(),
     getRevenueTransactions: vi.fn(),
     getMeterTypes: vi.fn(),
   },
 }));
 
 const ADMIN = { isAdmin: true, canViewPayments: true, canViewReports: true };
-const SUPERVISOR = { isAdmin: false, isSupervisor: true, canViewPayments: false, canViewReports: false };
+const SUPERVISOR = {
+  isAdmin: false, isSupervisor: true, canViewPayments: false, canViewReports: false,
+  canViewAllInstallations: true, canViewAssignments: true, canViewInstallerStatus: true,
+};
 
 const STATS = { total: 31, pending: 10, assigned: 5, inProgress: 2, failed: 1, installed: 7, exported: 3, cancelled: 3 };
 const JED_COUNTS = { PAID: 2, COMPLETED: 4, INITIATED: 9 };
@@ -161,6 +165,70 @@ describe('Installation KPIs', () => {
     expect(screen.queryByText('Amount paid')).toBeNull();
     expect(jedApi.getRevenueTransactions).not.toHaveBeenCalled();
     expect(screen.queryByText(formatCurrencyNGN(67000))).toBeNull();
+  });
+});
+
+describe('Supervisor dashboard', () => {
+  const pad = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const COMPLETED_IMPORTED = [
+    { id: 1, status: 'INSTALLED', installationDate: today },
+    { id: 2, status: 'INSTALLED', installationDate: today },
+    { id: 3, status: 'INSTALLED', installationDate: '2020-01-01' }, // outside every range
+  ];
+  const EXPORTED_IMPORTED = [{ id: 4, status: 'EXPORTED', installationDate: today }];
+
+  beforeEach(() => {
+    permissions = { ...SUPERVISOR };
+    jedApi.getUsers.mockResolvedValue({ success: true, data: [{ id: 'i1', role: 'INSTALLER' }], pagination: { currentPage: 1, totalPages: 6, totalCount: 6 } });
+    jedApi.getInstallations.mockImplementation(async ({ status, page = 1, limit = 10 }) => {
+      if (status === 'INSTALLED') return pageOf(COMPLETED_IMPORTED, page, limit);
+      if (status === 'EXPORTED') return pageOf(EXPORTED_IMPORTED, page, limit);
+      return pageOf(IMPORTED, page, limit);
+    });
+    jedApi.getAllCustomerRequests.mockImplementation(async ({ status, page = 1, limit = 10 }) => {
+      if (status === 'COMPLETED' && limit > 1) {
+        return pageOf([{ id: 77, accountNumber: '477077', status: 'COMPLETED', dateCompleted: now.toISOString() }], page, limit);
+      }
+      if (status) return { success: true, data: JED_ROWS.slice(0, 1), pagination: { currentPage: 1, totalPages: JED_COUNTS[status], totalCount: JED_COUNTS[status] } };
+      return pageOf(JED_ROWS, page, limit);
+    });
+  });
+
+  it('loads every operational figure from reads the Supervisor holds — no finance, no /dashboard-stats', async () => {
+    renderDashboard();
+    expect(await kpi('Pending Installations')).toBe('20');
+    expect(await kpi('Completed Installations')).toBe('14');
+    // The installer roster's own totalCount.
+    expect(await kpi('Installers')).toBe('6');
+    expect(jedApi.getUsers).toHaveBeenCalledWith({ role: 'INSTALLER', page: 1, limit: 1 });
+    expect(jedApi.getDashboardStats).not.toHaveBeenCalled();
+    expect(jedApi.getRevenueTransactions).not.toHaveBeenCalled();
+    expect(jedApi.getMeterTypes).not.toHaveBeenCalled();
+  });
+
+  it('charts completed installations from the installation records instead of waiting forever', async () => {
+    renderDashboard();
+    // 2 INSTALLED + 1 EXPORTED + 1 JED COMPLETED today; the 2020 one is out of range.
+    const chart = await screen.findByRole('img', { name: /Installations Completed chart/ });
+    expect(chart).toBeTruthy();
+    expect(within(chart.closest('.card')).getByText('latest: 4')).toBeTruthy();
+    expect(screen.queryByText('Collected payments')).toBeNull();
+    expect(jedApi.getInstallations).toHaveBeenCalledWith(expect.objectContaining({ status: 'INSTALLED' }));
+    expect(jedApi.getInstallations).toHaveBeenCalledWith(expect.objectContaining({ status: 'EXPORTED' }));
+  });
+
+  it("offers the Supervisor's own pages as shortcuts, and no admin tools", async () => {
+    renderDashboard();
+    await kpi('Pending Installations');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Dashboard');
+    expect(screen.getByRole('button', { name: /Installations/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Assignments/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Installer Job Status/ })).toBeTruthy();
+    expect(screen.queryByText('Manage Users')).toBeNull();
+    expect(screen.queryByText('System Settings')).toBeNull();
+    expect(screen.queryByText('Generate Report')).toBeNull();
   });
 });
 

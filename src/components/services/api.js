@@ -49,6 +49,9 @@ function redactBodyForLogging(rawBody) {
   }
 }
 
+// POST /uploads is a raw fetch (multipart), outside makeRequest's timeout.
+const UPLOAD_TIMEOUT_MS = 120000;
+
 class JEDApiService {
   constructor() {
     this.config = API_CONFIG;
@@ -911,7 +914,19 @@ class JEDApiService {
     // boundary, and setting Content-Type by hand breaks the upload.
     delete headers['Content-Type'];
 
-    const response = await fetch(url, { method: 'POST', headers, body: form });
+    // A stalled connection must end in an error, not an endless "Uploading…".
+    // Generous, because this is a photo going up over a field mobile network.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(url, { method: 'POST', headers, body: form, signal: controller.signal });
+    } catch (err) {
+      if (err?.name === 'AbortError') throw new Error('Upload timed out');
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok) throw await this.uploadError(response);
     this.clearCache();
     return await response.json();

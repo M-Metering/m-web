@@ -17,9 +17,18 @@
 //    /files/{token} route — a random token, not the file's id, and no auth —
 //    so it works in an <img src> and in a spreadsheet a disco employee opens.
 //    It is never parsed or rebuilt from an id.
-//  - If storage isn't configured on the deployment at all (503), the field
-//    falls back to accepting a pasted link, which is how this worked before
-//    uploads existed. An ops outage shouldn't cost the installer the photo.
+//  - If storage isn't configured on the deployment at all (503) the upload
+//    fails and says so. There is deliberately NO pasted-link fallback any more
+//    (removed 2026-09-28): an installation report must carry a picture this
+//    app actually stored, so a failed upload means the job can't be reported
+//    yet — never that some other link stands in for it.
+//  - A photo over the API's 5 MB limit is compressed in the browser first
+//    (utils/imageCompression.js), and nothing over 5 MB is sent.
+//  - Coordinates go with the photo only when both are valid
+//    (validCoordinates). The form passes them as typed, and a half-entered
+//    value must not make the upload itself fail.
+//  - A failure only sets this field's own error. The rest of the report form
+//    lives in the parent and is never touched, so the installer just retries.
 //  - TWO file inputs, on purpose (2026-09-27). `capture` on an <input
 //    type="file"> tells Android and iOS to skip the chooser and open the
 //    camera, which is why installers could not attach a photo they had already
@@ -27,7 +36,7 @@
 //    gallery" one WITHOUT it. Both feed the same handler, so validation, the
 //    upload and the replace/delete rules are identical either way.
 import { useState, useRef } from 'react';
-import { Camera, Loader2, Upload, AlertCircle, Image as ImageIcon } from 'lucide-react';
+import { Camera, Loader2, AlertCircle, Image as ImageIcon } from 'lucide-react';
 import jedApi from '../services/api';
 import { getErrorMessage } from '../../utils/errorMessage';
 import {
@@ -38,6 +47,9 @@ import {
   uploadFailure,
   uploadedFiles,
 } from '../../utils/fileUpload';
+import UploadedPhoto from './UploadedPhoto';
+import { prepareUploadImage } from '../../utils/imageCompression';
+import { validCoordinates } from '../../utils/installationReport';
 
 /**
  * @param {object} props
@@ -67,11 +79,12 @@ function PhotoUploadField({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
   // The stored file's numeric id, so a replacement can delete what it replaces.
-  // Only set for a file THIS field uploaded — never for a pasted link.
+  // Only set for a file THIS field uploaded.
   const [uploadedId, setUploadedId] = useState(null);
-  // Set when the deployment has no storage configured (503). The pasted-link
-  // fallback then appears; it is not offered otherwise.
-  const [storageUnavailable, setStorageUnavailable] = useState(false);
+  // The url whose thumbnail couldn't be displayed. That is a display problem
+  // (see UploadedPhoto), not a failed upload: the photo is stored and its url
+  // is what the report submits, so the field still says "Photo attached".
+  const [previewFailedFor, setPreviewFailedFor] = useState(null);
 
   const busy = disabled || uploading;
 
@@ -91,37 +104,35 @@ function PhotoUploadField({
     if (!file) return;
 
     setError(null);
-
-    // Fail fast in the browser. The server re-checks from the file's real
-    // bytes, so this is a courtesy, not the gate.
-    const { valid, reason } = validateUploadCandidate(file, category);
-    if (!valid) {
-      setError(reason);
-      return;
-    }
-
     const replacing = uploadedId;
     setUploading(true);
     try {
-      const response = await jedApi.uploadFiles([file], {
+      // Shrink an oversized photo first, then fail fast in the browser. The
+      // server re-checks from the file's real bytes, so this is a courtesy,
+      // not the gate.
+      const prepared = await prepareUploadImage(file);
+      const { valid, reason } = validateUploadCandidate(prepared, category);
+      if (!valid) {
+        setError(reason);
+        return;
+      }
+
+      const response = await jedApi.uploadFiles([prepared], {
         category,
         entityType,
         entityId: entityId != null ? String(entityId) : undefined,
-        latitude: coordinates?.latitude,
-        longitude: coordinates?.longitude,
+        ...(validCoordinates(coordinates?.latitude, coordinates?.longitude) || {}),
       });
       const [stored] = uploadedFiles(response);
       if (!stored?.url) throw new Error('The server did not return a link for this photo.');
 
       onChange(stored.url);
       setUploadedId(stored.id);
-      setStorageUnavailable(false);
       // Only once the replacement is safely stored.
       await discardUploaded(replacing);
     } catch (err) {
       console.error('[PhotoUploadField] Upload failed:', err);
       const { message, useServerMessage } = uploadFailure(err?.status);
-      if (err?.status === 503) setStorageUnavailable(true);
       setError(useServerMessage ? getErrorMessage(err, "That file couldn't be uploaded.") : message);
     } finally {
       setUploading(false);
@@ -140,12 +151,23 @@ function PhotoUploadField({
     <div className="space-y-2">
       {value ? (
         <div className="flex items-start gap-3 rounded-lg border border-gray-200 dark:border-gray-700 p-2">
-          {/* The url is a public link, so it renders directly. */}
-          <img
-            src={value}
-            alt="Installation photo"
-            className="w-16 h-16 rounded object-cover bg-gray-100 dark:bg-gray-700 shrink-0"
-          />
+          {previewFailedFor === value ? (
+            <span
+              role="img"
+              aria-label="Installation photo (preview unavailable)"
+              title="Photo uploaded. The preview can't be shown here."
+              className="w-16 h-16 rounded bg-gray-100 dark:bg-gray-700 shrink-0 flex items-center justify-center text-gray-400"
+            >
+              <ImageIcon className="w-6 h-6" />
+            </span>
+          ) : (
+            <UploadedPhoto
+              src={value}
+              alt="Installation photo"
+              onError={() => setPreviewFailedFor(value)}
+              className="w-16 h-16 rounded object-cover bg-gray-100 dark:bg-gray-700 shrink-0"
+            />
+          )}
           <div className="min-w-0 flex-1">
             <p className="text-sm text-gray-900 dark:text-white">Photo attached</p>
             <p className="text-[11px] text-gray-500 dark:text-gray-400 break-all">{value}</p>
@@ -229,7 +251,7 @@ function PhotoUploadField({
       />
 
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        {allowedTypesLabel(category)}, up to 5 MB.
+        {allowedTypesLabel(category)}, up to 5 MB. Larger photos are compressed automatically.
       </p>
 
       {error && (
@@ -237,26 +259,6 @@ function PhotoUploadField({
           <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
           {error}
         </p>
-      )}
-
-      {/* Only when the deployment itself has no storage — see the header. */}
-      {storageUnavailable && (
-        <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-2.5">
-          <p className="text-xs text-amber-800 dark:text-amber-300 flex items-start gap-1.5">
-            <Upload className="w-3.5 h-3.5 shrink-0 mt-px" />
-            Uploads are unavailable right now. You can still paste a link to the photo instead.
-          </p>
-          <input
-            type="url"
-            inputMode="url"
-            value={value}
-            onChange={(e) => { onChange(e.target.value); setUploadedId(null); }}
-            disabled={disabled}
-            placeholder="https://…"
-            aria-label="Installation photo link"
-            className="form-input w-full px-3 py-2 text-sm mt-2"
-          />
-        </div>
       )}
     </div>
   );

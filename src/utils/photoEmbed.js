@@ -3,8 +3,10 @@
 //
 // The links are the permanent PUBLIC /files/{token} URLs POST /uploads
 // returned (see CLAUDE.md, "File uploads") — no credentials are sent or
-// needed, and nothing temporary (blob:/data:) is ever used. The CSP's
-// connect-src already allows the API host these live on.
+// needed, and nothing temporary (blob:/data:) is ever used. Each link answers
+// 302 to a signed URL on the storage bucket, so fetching it needs the bucket in
+// the CSP's connect-src (VITE_FILE_STORAGE_ORIGIN, see vite.config.js) and CORS
+// headers on the bucket. When either is missing the fetch fails and is skipped.
 //
 // Only JPEG and PNG are embedded — Excel can't display WebP — and the type is
 // read from the file's actual bytes, not its name. Anything that can't be

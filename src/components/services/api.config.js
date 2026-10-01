@@ -3,8 +3,7 @@
  * Base URL: https://api.memetering.com/api/v1
  * API Documentation: https://api.memetering.com/api-docs
  *
- * Migrated from https://pharez-api.onrender.com (Render) — the new host serves
- * the identical PharezAPI v1.0.0 spec. Override with VITE_API_BASE_URL.
+ * Override with VITE_API_BASE_URL (set at build time; see DEPLOYMENT.md).
  *
  * Enhanced with verification endpoints and better environment handling
  */
@@ -499,14 +498,9 @@ export const API_UTILS = {
       '/meters/customer-requests/export',
       '/uploads/',
       '/requests/export',
-      // The previous API host (pharez-api.onrender.com) was on Render's free
-      // tier, which spins the instance down after a period of inactivity
-      // and takes 30-60s to cold-start the next request. Login is usually
-      // the first request of a session, so it's the one most likely to hit
-      // a sleeping instance — the default 30s timeout was aborting before
-      // a cold start finished, surfacing as "Network error" on the very
-      // first sign-in attempt even on a good connection (the second click
-      // then succeeded because the instance was already awake by then).
+      // Login is the first request of a session and gets the longer
+      // timeout, so a slow first connection doesn't surface as a
+      // "Network error" on the very first sign-in attempt.
       '/auth/login'
     ];
 

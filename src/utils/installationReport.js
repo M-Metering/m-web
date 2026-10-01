@@ -45,6 +45,29 @@ const HTTP_URL_RE = /^https?:\/\/\S+$/i;
  *   (already a valid serial), so only presence is checked.
  * @returns {Record<string, string>} field → message; empty when valid
  */
+/** The GPS error for a typed latitude/longitude pair, or null when both are valid. */
+export function coordinateError(latitude, longitude) {
+  const lat = String(latitude ?? '').trim();
+  const lng = String(longitude ?? '').trim();
+  if (!lat && !lng) return REPORT_MESSAGES.gpsRequired;
+  if (!lat || !lng) return REPORT_MESSAGES.gpsBoth;
+  if (!DECIMAL_RE.test(lat) || Math.abs(Number(lat)) > 90) return REPORT_MESSAGES.latitudeRange;
+  if (!DECIMAL_RE.test(lng) || Math.abs(Number(lng)) > 180) return REPORT_MESSAGES.longitudeRange;
+  if (Number(lat) === 0 && Number(lng) === 0) return REPORT_MESSAGES.gpsZero;
+  return null;
+}
+
+/**
+ * The pair as numbers when it is valid, else null. For attaching a location
+ * to an uploaded photo: a half-typed or invalid pair is simply not sent, so
+ * it can't make the upload itself fail validation.
+ */
+export function validCoordinates(latitude, longitude) {
+  return coordinateError(latitude, longitude)
+    ? null
+    : { latitude: Number(String(latitude).trim()), longitude: Number(String(longitude).trim()) };
+}
+
 export function validateInstallationReport(form, { usedSealKeys = new Set(), pickedFromList = false, today } = {}) {
   const errors = {};
   const str = (v) => String(v ?? '').trim();
@@ -59,13 +82,8 @@ export function validateInstallationReport(form, { usedSealKeys = new Set(), pic
   const seal = validateSealNumber(form.sealNumber, usedSealKeys);
   if (!seal.valid) errors.sealNumber = seal.error;
 
-  const lat = str(form.latitude);
-  const lng = str(form.longitude);
-  if (!lat && !lng) errors.latitude = REPORT_MESSAGES.gpsRequired;
-  else if (!lat || !lng) errors.latitude = REPORT_MESSAGES.gpsBoth;
-  else if (!DECIMAL_RE.test(lat) || Math.abs(Number(lat)) > 90) errors.latitude = REPORT_MESSAGES.latitudeRange;
-  else if (!DECIMAL_RE.test(lng) || Math.abs(Number(lng)) > 180) errors.latitude = REPORT_MESSAGES.longitudeRange;
-  else if (Number(lat) === 0 && Number(lng) === 0) errors.latitude = REPORT_MESSAGES.gpsZero;
+  const gps = coordinateError(form.latitude, form.longitude);
+  if (gps) errors.latitude = gps;
 
   const photo = str(form.installationPhotoUrl);
   if (!photo) errors.installationPhotoUrl = REPORT_MESSAGES.photoRequired;

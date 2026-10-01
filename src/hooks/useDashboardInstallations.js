@@ -20,6 +20,9 @@
 //                                                    (JED — only pagination.totalCount is read)
 //   recent  GET /installations?page=…&limit=10       } first page and the last two
 //           GET /external/jed/requests?page=…&limit=10 } (edgePages — no sort param exists)
+//   Supervisor only (it has no finance or /dashboard-stats access):
+//     trend      GET /installations?status=INSTALLED|EXPORTED, GET /external/jed/requests?status=COMPLETED
+//     installers GET /users?role=INSTALLER&limit=1   (pagination.totalCount)
 // `/dashboard-stats` is no longer used for these two KPIs: its spec gives
 // "pending"/"completed" no definition, and it covers JED requests only, so it
 // read 0/0 while imported installation work existed (2026-09-26).
@@ -29,6 +32,8 @@ import { useDataRefresh } from '../components/contexts/DataRefreshContext';
 import { getErrorMessage } from '../utils/errorMessage';
 import { unwrapListResponse } from '../utils/unwrapListResponse';
 import { normalizeMultiRow, normalizeJedRow, JED_BUCKET } from '../utils/installationScope';
+import { fetchAllPagesDetailed } from '../utils/fetchAllPages';
+import { completionDayOf } from '../utils/completedInstallationsReport';
 import {
   summarizeInstallationTotals, jedTotalCount, edgePages, pickRecentRequests,
 } from '../utils/installationTotals';
@@ -86,6 +91,38 @@ export async function loadRecentInstallations(limit = 5) {
       jed.status === 'rejected' && 'JED requests',
     ].filter(Boolean),
   };
+}
+
+/**
+ * Every completed installation across both domains, each reduced to the day it
+ * was installed — the Installations Completed trend for a role that can't read
+ * the finance endpoints (Supervisor: GET /finance/* is 403 for it). Completed
+ * is the same definition as the Completed KPI (imported INSTALLED/EXPORTED +
+ * JED COMPLETED) and the day is the same one the Installations page's
+ * "Installed from / to" filter uses (completionDateOf).
+ */
+export async function loadCompletedInstallationDays() {
+  const [installed, exported, jed] = await Promise.all([
+    fetchAllPagesDetailed((p) => jedApi.getInstallations(p), { status: 'INSTALLED' }),
+    fetchAllPagesDetailed((p) => jedApi.getInstallations(p), { status: 'EXPORTED' }),
+    fetchAllPagesDetailed((p) => jedApi.getAllCustomerRequests(p), { status: 'COMPLETED' }),
+  ]);
+  const rows = [
+    ...installed.items.map(normalizeMultiRow),
+    ...exported.items.map(normalizeMultiRow),
+    ...jed.items.map((r) => normalizeJedRow(r, JED_BUCKET)),
+  ];
+  return {
+    rows: rows.map((row) => ({ completedOn: completionDayOf(row) })),
+    truncated: installed.truncated || exported.truncated || jed.truncated,
+  };
+}
+
+/** The installer roster's size (GET /users?role=INSTALLER), from the server's totalCount. */
+export async function loadInstallerRosterCount() {
+  const count = countOf(await jedApi.getUsers({ role: 'INSTALLER', page: 1, limit: 1 }));
+  if (count === null) throw new Error('totalCount missing from GET /users');
+  return count;
 }
 
 function useLoader(load, { enabled, fallbackMessage }) {

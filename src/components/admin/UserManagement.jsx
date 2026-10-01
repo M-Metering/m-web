@@ -522,6 +522,13 @@ function UserManagement() {
   }, [permissions.isSuperAdmin]);
 
   const handleCreateUser = useCallback(async (userData) => {
+    // The form is only offered with canCreateUsers; checked again here so the
+    // POST is never issued for a role without it (Supervisor, Installer). The
+    // API refuses it too (403) — this is not the boundary, just no request.
+    if (!permissions.canCreateUsers) {
+      setError('Access Restricted: your role cannot create user accounts.');
+      return;
+    }
     const role = userData.role.toUpperCase();
     // Client-side guard as a UX nicety (clear message instead of a raw
     // 403) — the backend remains the real authorization boundary here.
@@ -561,9 +568,13 @@ function UserManagement() {
     } finally {
       setActionLoading(null);
     }
-  }, [fetchUsers, permissions.isSuperAdmin]);
+  }, [fetchUsers, permissions.isSuperAdmin, permissions.canCreateUsers]);
 
   const handleUpdateUser = useCallback(async (userData) => {
+    if (!permissions.canUpdateUsers) {
+      setError('Access Restricted: your role cannot edit user accounts.');
+      return;
+    }
     const role = userData.role.toUpperCase();
     if (isPrivilegedRole(role) && !permissions.isSuperAdmin) {
       setError('Access Restricted: only a Super Administrator can assign the Supervisor, Admin or Super Admin role.');
@@ -630,7 +641,7 @@ function UserManagement() {
     } finally {
       setActionLoading(null);
     }
-  }, [editingUser, fetchUsers, permissions.isSuperAdmin]);
+  }, [editingUser, fetchUsers, permissions.isSuperAdmin, permissions.canUpdateUsers]);
 
   const handleDeleteUser = useCallback(async () => {
     if (!userToDelete) return;

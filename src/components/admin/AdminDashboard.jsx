@@ -5,7 +5,9 @@ import { loadRevenueTransactions } from '../../hooks/useRevenueSummary';
 import { usePaymentRevenueSummary } from '../../hooks/usePaymentRevenueSummary';
 import RevenueSummaryPanel from './RevenueSummaryPanel';
 import { InstallationKpis, RecentInstallationsCard } from './DashboardInstallations';
-import { useInstallationTotals, useRecentInstallations } from '../../hooks/useDashboardInstallations';
+import {
+  useInstallationTotals, useRecentInstallations, loadCompletedInstallationDays, loadInstallerRosterCount,
+} from '../../hooks/useDashboardInstallations';
 import { isCompletedInstallationRow } from '../../utils/financeSummary';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import JEDApiService from '../services/api';
@@ -24,7 +26,10 @@ import {
   Settings,
   X,
   LayoutDashboard,
-  RefreshCw
+  RefreshCw,
+  ClipboardList,
+  Send,
+  HardHat
 } from 'lucide-react';
 
 // Reference dataviz palette slots (see the project's dataviz skill —
@@ -184,6 +189,25 @@ const QuickActions = ({ onManageUsers, onGoToSettings, onExportData }) => (
   </div>
 );
 
+// A Supervisor's shortcuts: only the pages its role reaches, each behind the
+// same permission flag as its route in App.jsx.
+const SupervisorQuickActions = ({ permissions, navigate }) => (
+  <div className="card p-4 sm:p-6">
+    <h3 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white mb-4">Quick Actions</h3>
+    <div className="grid grid-cols-2 gap-3">
+      {permissions.canViewAllInstallations && (
+        <QuickActionButton icon={ClipboardList} label="Installations" onClick={() => navigate('/installations')} accent="brand" />
+      )}
+      {permissions.canViewAssignments && (
+        <QuickActionButton icon={Send} label="Assignments" onClick={() => navigate('/assignments')} accent="emerald" />
+      )}
+      {permissions.canViewInstallerStatus && (
+        <QuickActionButton icon={HardHat} label="Installer Job Status" onClick={() => navigate('/installer-status')} accent="violet" span2 />
+      )}
+    </div>
+  </div>
+);
+
 // AdminDashboard is only ever mounted for admin-tier users (App.jsx routes
 // installers to InstallerDashboard instead), so it no longer branches on
 // role internally — an earlier "installer view" code path here was dead
@@ -243,9 +267,17 @@ function AdminDashboard() {
       setInstallersLoading(true);
       setInstallersError(null);
       try {
-        const response = await JEDApiService.getDashboardStats();
-        const value = Number((response?.data ?? response ?? {}).activeInstallers);
-        if (!Number.isFinite(value)) throw new Error('activeInstallers missing from /dashboard-stats');
+        let value;
+        if (showMoney) {
+          const response = await JEDApiService.getDashboardStats();
+          value = Number((response?.data ?? response ?? {}).activeInstallers);
+          if (!Number.isFinite(value)) throw new Error('activeInstallers missing from /dashboard-stats');
+        } else {
+          // /dashboard-stats also returns totalRevenue and is outside the
+          // Supervisor's API scope, so a role without PAYMENTS.VIEW never
+          // calls it. The installer roster is a read it does hold.
+          value = await loadInstallerRosterCount();
+        }
         if (!cancelled) setActiveInstallers(value);
       } catch (err) {
         console.error('[Dashboard] Installer count failed:', err);
@@ -257,7 +289,7 @@ function AdminDashboard() {
     return () => { cancelled = true; };
     // refreshSignal: re-read after any app-wide mutation; refreshKey: the
     // header's Refresh button. No polling.
-  }, [user, refreshSignal, refreshKey]);
+  }, [user, showMoney, refreshSignal, refreshKey]);
 
   const refreshAll = () => {
     setRefreshKey((k) => k + 1);
@@ -288,6 +320,17 @@ function AdminDashboard() {
     setTrendLoading(true);
     setTrendError(null);
     try {
+      if (!showMoney) {
+        // A role without finance access (Supervisor) can't read the revenue
+        // records, so its Installations Completed chart counts the completed
+        // installation records themselves, by installation date. Without
+        // this branch the chart sat on "Loading" forever for a Supervisor.
+        const { rows, truncated } = await loadCompletedInstallationDays();
+        setTrendTruncated(truncated ? { shown: rows.length, total: null } : null);
+        setInstallationsSeries(buildDailySeries(rows, { dateField: 'completedOn', aggregate: 'count', days }));
+        return;
+      }
+
       const start = new Date();
       start.setDate(start.getDate() - (days - 1));
       // `to` is EXCLUSIVE on the finance endpoints, so it is tomorrow —
@@ -312,18 +355,15 @@ function AdminDashboard() {
     } finally {
       setTrendLoading(false);
     }
-  }, []);
+  }, [showMoney]);
 
   useEffect(() => {
-    // Gated on the payments permission, not just on being signed in: this
-    // reads GET /external/jed/payments, which is financial data. The charts
-    // built from it were already hidden from roles without PAYMENTS.VIEW, but
-    // the REQUEST was still going out — hiding a chart is not the same as not
-    // asking for the data behind it.
-    if (user && showMoney) {
-      fetchTrendData(trendDays);
-    }
-  }, [user, showMoney, trendDays, fetchTrendData, refreshSignal, refreshKey]);
+    // fetchTrendData picks the source by permission: the revenue records
+    // (financial data) only for a role with PAYMENTS.VIEW — hiding a chart is
+    // not the same as not asking for the data behind it — and the completed
+    // installation records otherwise.
+    if (user) fetchTrendData(trendDays);
+  }, [user, trendDays, fetchTrendData, refreshSignal, refreshKey]);
 
   // Every export endpoint is documented as returning an Excel (.xlsx) file
   // only — none accepts a `format` param. The modal used to offer a "CSV"
@@ -397,10 +437,12 @@ function AdminDashboard() {
             </div>
             <div>
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
-              Admin Dashboard
+              {showAdminTools ? 'Admin Dashboard' : 'Dashboard'}
             </h1>
             <p className="text-gray-600 dark:text-gray-400 mt-1 text-sm sm:text-base">
-              Monitor system performance and manage users
+              {showAdminTools
+                ? 'Monitor system performance and manage users'
+                : 'Monitor installations, assignments and installer progress'}
             </p>
           </div>
           </div>
@@ -533,12 +575,12 @@ function AdminDashboard() {
             </div>
           </div>
 
-        {/* Main Content Grid. Quick Actions is Users/Settings/Export — all
-            admin-tier — so a Supervisor gets the recent list full width
-            instead of a column of buttons that would only deny it. */}
-        <div className={`grid grid-cols-1 gap-4 sm:gap-6 ${showAdminTools ? 'lg:grid-cols-3' : ''}`}>
+        {/* Main Content Grid. The admin Quick Actions are Users/Settings/
+            Export — all admin-tier — so a Supervisor gets its own shortcuts
+            to the pages it does reach instead. */}
+        <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-3">
           {/* Recent Installations */}
-          <div className={showAdminTools ? 'lg:col-span-2' : ''}>
+          <div className="lg:col-span-2">
             <RecentInstallationsCard
               recent={recentInstallations.recent}
               loading={recentInstallations.loading}
@@ -551,15 +593,17 @@ function AdminDashboard() {
           </div>
 
           {/* Quick Actions */}
-          {showAdminTools && (
-            <div className="space-y-4 sm:space-y-6">
+          <div className="space-y-4 sm:space-y-6">
+            {showAdminTools ? (
               <QuickActions
                 onManageUsers={handleManageUsers}
                 onGoToSettings={handleGoToSettings}
                 onExportData={() => setShowExportModal(true)}
               />
-            </div>
-          )}
+            ) : (
+              <SupervisorQuickActions permissions={permissions} navigate={navigate} />
+            )}
+          </div>
         </div>
 
       {/* Export Modal — admin-tier only; nothing opens it otherwise. */}
