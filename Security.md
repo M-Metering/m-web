@@ -99,7 +99,7 @@ the JED-era API had no assignment endpoint). It is now a real dispatch through
   built from rows the role can already read server-side; its payment columns are dropped without
   PAYMENTS.VIEW and customer phone/email outside the admin tier. Note the JED request list still
   returns `amount` to a Supervisor at the API (API_GAP_REPORT.md, gap AL).
-- **`img-src` now allows the API hosts** (`https://api.memetering.com`, `https://pharez-api.onrender.com`).
+- **`img-src` now allows the API host** (`https://api.memetering.com`; since 2026-10-01 derived from `VITE_API_BASE_URL` in `vite.config.js`).
   Uploaded installation photos are served from `/files/{token}` on the API host, so the previous
   `img-src 'self' data:` blocked every uploaded photo's thumbnail. These files are public by design
   (see "Uploaded Files Are Public"), and `connect-src` already trusted the same hosts.
@@ -329,12 +329,33 @@ Two limits remain, and the frontend does not claim otherwise:
 
 ## Security Headers & Production Configuration
 
-**Fixed this pass.** These headers can only take effect at the actual HTTP-response level — a `<meta http-equiv>` tag in `index.html` cannot set `X-Frame-Options` or `Strict-Transport-Security` at all, and anything set only in React source (a header set from inside a component, for instance) never reaches the real network response the browser evaluates. For this app's Vercel static-SPA deployment, `vercel.json`'s `headers` block is the correct and only place to configure them — added there this pass, applied to every route (`"source": "/(.*)"`, alongside the pre-existing `/assets/(.*)` cache-control rule):
+**Current setup (2026-10-01).** Hosting moved from the Vercel test deployment to a standard platform,
+and `vercel.json`, where every header used to live, was retired. A provider-specific file only works on
+that provider, and on any other host the headers silently disappear. The policy is now split by what
+can carry it:
 
-- **`Content-Security-Policy`:** `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://api.memetering.com https://pharez-api.onrender.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests`. Scoped tightly to what this app actually loads (verified by a repo-wide search for `https://` references in source: only Google Fonts and the API host appear anywhere) — not a generic template. `style-src` includes `'unsafe-inline'` specifically because `TrendChart.jsx` sets a handful of dynamic inline `style={{...}}` values for chart colors (verified: 3 occurrences, all there) — without it those charts would silently lose their color under a strict CSP; tightening this further would mean refactoring those to CSS custom properties first, which wasn't in scope for this pass.
-- **`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()`, `Strict-Transport-Security: max-age=31536000; includeSubDomains`** — straightforward, low-risk hardening; this app uses none of the browser features being denied, and `frame-ancestors 'none'` (in the CSP) plus `X-Frame-Options: DENY` together cover clickjacking protection across both modern and legacy browsers.
-- **IMPORTANT — must be kept in sync with `VITE_API_BASE_URL`:** the CSP's `connect-src` lists `https://api.memetering.com` (that env var's default) plus the previous Render host `https://pharez-api.onrender.com`, kept only during the migration — remove it once the backend confirms Render is decommissioned. If a given deployment ever points `VITE_API_BASE_URL` at a different host, this CSP entry must be updated to match, or the browser will block every API call outright (a strict CSP violation, not a silent failure — it would be immediately obvious in the console and in a total API-call failure, not a subtle bug).
-- **Verified this pass against the exact production build, simulating Vercel's actual header/routing behavior locally** (no Vercel deploy access is available from this environment, so `vite preview` — which ignores `vercel.json` entirely — wasn't sufficient on its own): built the real production bundle (`npm run build`), served `dist/` from a small local static server that parses `vercel.json` itself and applies its `headers` rules by matching `source` patterns exactly the way Vercel does (confirmed via `curl -I` that both rule sets combine correctly — CSP/HSTS/etc. on every path, plus the asset `Cache-Control` rule additionally on `/assets/*`), then loaded it in a real browser. Result: Google Fonts loaded (`fonts.googleapis.com` → 200, `body`'s computed `font-family` resolved to `Inter`), the real login API call to `pharez-api.onrender.com` succeeded (200, not blocked by `connect-src`), the dashboard's revenue/installations trend charts rendered with their actual colors (confirmed inline `style="background-color: ..."` elements present and correctly colored, exercising the `'unsafe-inline'` allowance), and the browser reported **zero CSP violations** across the whole flow (login → dashboard → 90-day trend view). This is not a substitute for checking the real Vercel edge response once deployed (a hosting-platform misconfiguration unrelated to the `vercel.json` content itself — e.g. a stale cache, a conflicting platform-level header — couldn't be ruled out this way), but the header *policy itself* is now empirically confirmed correct against the real production bundle, not just reasoned about statically.
+- **`Content-Security-Policy` ships inside the built `index.html`** as a `<meta http-equiv>` tag,
+  generated at build time by `vite.config.js` (`cspMetaTag`, build only, because the dev server's React
+  refresh preamble is an inline script). It applies on any host with no server configuration:
+  `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: <API origin>; connect-src 'self'
+  <API origin>; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests`.
+  - **The API origin is derived from `VITE_API_BASE_URL`** (default `https://api.memetering.com`), the
+    same value the app calls. A deployment pointed at another API therefore can't have its own calls
+    blocked by a stale CSP, the failure mode this section used to warn about.
+  - The retired Render API host was **removed** from `connect-src` and `img-src`.
+  - `img-src` allows the API origin because uploaded photos are served from its `/files/{token}` route
+    (thumbnails, Completed Installations). `blob:` is for decoding a photo before it is compressed.
+  - `style-src 'unsafe-inline'` is for dynamic `style={{...}}` values (chart colours).
+  - **`script-src 'self'` has no `'unsafe-eval'`.** The only `Function(...)` uses in the bundle are
+    ExcelJS's global-object fallbacks (`self || window || Function("return this")()`), which never run
+    in a browser, and a `setImmediate` string branch nothing calls. Exports work under this policy.
+- **Response-only headers are the host's job**, listed in `DEPLOYMENT.md`: `X-Frame-Options: DENY` (plus
+  `frame-ancestors 'none'`, which a `<meta>` CSP cannot carry), `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(),
+  geolocation=(self), payment=()` and HSTS. `geolocation=(self)` is needed for "Use my location".
+  `camera=()` does not block "Take photo", which uses a file input and the phone's own camera app.
+  **Until the new host sets these, there is no clickjacking protection.**
 
 ## Sensitive Data
 
@@ -364,7 +385,7 @@ found 0 vulnerabilities
 |---|---|---|---|
 | 1 | Raw request/response bodies (including plaintext passwords and API-key secrets) logged to the browser console unconditionally, in every environment | HIGH | Fixed (prior pass) — redacted + gated behind dev-only flag |
 | 2 | `react-router`/`react-router-dom` 7.9.6 has multiple published HIGH-severity advisories | HIGH | **Fixed this pass** — `npm audit fix`, now 7.18.2, 0 vulnerabilities, non-breaking (declared range unchanged), lint/build/functional-regression verified |
-| 3 | `vercel.json` sets no security response headers (no CSP, `X-Content-Type-Options`, `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`, HSTS) | MEDIUM | **Fixed and verified** — full header set added to `vercel.json`; verified against the real production build via a local Vercel-header simulation (fonts, real API calls, and chart colors all confirmed working, zero CSP violations) — see Security Headers section. A live Vercel-edge check is still worth a quick confirmation on the next actual deploy, but the header policy itself is no longer just reasoned about statically. |
+| 3 | `vercel.json` sets no security response headers (no CSP, `X-Content-Type-Options`, `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`, HSTS) | MEDIUM | **Fixed, then moved (2026-10-01)** — the CSP is built into `index.html` by `vite.config.js`; the response-only headers must be set by the host (`DEPLOYMENT.md`). See Security Headers section. |
 | 4 | No client-side file-size/type limit on Excel/CSV uploads | MEDIUM | **Fixed this pass** — `src/utils/fileValidation.js`, 10MB cap + extension check, live-verified to block the request before it's sent |
 | 5 | JWT and a privileged API-key secret are both stored in plaintext `localStorage` — no current exploit path (no XSS found), but this is the blast radius if one is ever introduced | INFORMATIONAL | Open — architectural, monitor rather than "fix"; see "Backend Gaps" for the constraint that makes an alternative hard |
 | 6 | No client-side password complexity policy on login/change-password forms | INFORMATIONAL | Open — documented product decision, not an oversight |

@@ -21,7 +21,7 @@ There is no backend code in this repository — it is a frontend-only client tha
 - **Mobile-first sidebar navigation.** A single `Navigation.jsx` sidebar renders as an off-canvas drawer below the `lg` breakpoint and a persistent, collapsible column (icon-only rail or full-width) at `lg`+ — there is no separate desktop top-bar or mobile bottom-tab navigation.
 - **PWA via `vite-plugin-pwa`**, with an explicit `NetworkOnly` Workbox rule for all `/api/` routes — financial/installation data is never served stale.
 - **Route-level code splitting** via `React.lazy`/`Suspense`, with role-based route gating (`src/App.jsx`, `src/components/auth/permissions.js`).
-- **Deployment:** Vercel, static SPA hosting with a rewrite-to-`index.html` fallback (`vercel.json`) and long-cache headers for `/assets/`.
+- **Deployment:** static SPA on a standard host (since 2026-10-01; the Vercel test deployment is retired). `DEPLOYMENT.md` lists what the host must do: SPA fallback to `index.html`, asset caching, response-only security headers. The CSP is built into `index.html` (`vite.config.js`).
 
 ## 3. Technologies Used
 
@@ -231,9 +231,9 @@ jedc-meter-management/
   - **The returned URL is public by design.** It points at `GET /files/{token}` — no authentication,
     a random UUID rather than the file's id. It is safe in an `<img src>`, an email or an exported
     spreadsheet cell, and must never be described to staff as private. See `Security.md`.
-  - **Graceful degradation:** if the deployment has no storage configured at all (503), the field
-    falls back to accepting a pasted link — the old workflow — rather than costing the installer the
-    photo. A 400 shows the server's own message (it names the fixable problem); a 502 offers a retry;
+  - **No fallback on a storage outage (since 2026-09-28):** if the deployment has no storage
+    configured (503), the upload fails and says so. The pasted-link fallback that used to appear here
+    was removed, because a report must carry a picture this system stored. A 400 shows the server's own message (it names the fixable problem); a 502 offers a retry;
     the raw 503 text is never shown, because it is an ops issue the operator can't act on.
   - **`/uploads/excel*` were removed by the same release** (they were documented but never deployed,
     so they had always 404'd). Consequences, both now fixed:
@@ -450,7 +450,64 @@ jedc-meter-management/
     disappear whenever no exported row had a photo, because empty columns were dropped.
   - CSP `img-src` now allows the API hosts: uploaded photo thumbnails were being blocked in production.
 
+- **Supervisor dashboard, picture upload, seal whitelist (2026-09-28, fourth pass):**
+  - **Supervisor dashboard fixed.** Its Installations Completed chart never loaded: the trend reads the
+    finance endpoints, which Supervisor can't call, and the skipped fetch left the chart showing a false
+    "No installations completed". For a role without `PAYMENTS.VIEW` it now counts completed
+    installation records by installation date (`loadCompletedInstallationDays`). The Installers card
+    no longer calls `/dashboard-stats` for that role, since the response carries `totalRevenue`; it
+    reads the installer roster's `totalCount` instead. A Supervisor also gets its own title and
+    shortcuts (Installations, Assignments, Installer Job Status) in place of the admin Quick Actions.
+  - **User management for Supervisor** stays view-only. The create and update handlers now refuse
+    without `canCreateUsers`/`canUpdateUsers` before any request, as delete already did, and a test
+    pins the read-only Users page.
+  - **Picture upload.** Production's file store answers `503 File storage not configured`, which no
+    frontend change can fix (API_GAP_REPORT.md, gap **AN**). Frontend changes: oversized camera photos
+    are resized in the browser (`utils/imageCompression.js`) instead of being refused at 5 MB; the
+    upload has a 120 s timeout; and the pasted-link fallback is gone.
+  - **Seal whitelist: not built.** The API has no seal resource, so there is nothing to load a whitelist
+    from or record an assignment in. The exact backend contract is gap **AM**.
+
+- **Production cleanup and 1 MB photos (2026-10-01):**
+  - Removed the sidebar's "Need Help? / Get Support" card and its Contact Support modal (it pointed at
+    a placeholder `support@jedc.com`), and the Login screen's "Don't have an account? Contact
+    Administrator" line. "Forgot password?" and its notice are unchanged.
+  - **Installation photos are compressed to at most 1 MB** before upload: JPEG, longest side 2048 px
+    stepping quality down, then 1600 px, never smaller (meter digits stay legible). A photo already
+    ≤ 1 MB is sent untouched; HEIC is converted where the browser can decode it. If no legible copy
+    fits, the installer is told to retake or choose another photo. The 1 MB rule is client-side only
+    (gap **AO**).
+  - The photo's GPS is attached to the upload only when both coordinates are valid
+    (`validCoordinates`, the report's own rule), so a half-typed coordinate can't fail the upload.
+  - A failed upload leaves the rest of the report form intact; a test pins retry-then-submit.
+  - API re-audit: no new or changed endpoints on api.memetering.com; the Render docs are an older spec
+    and must not be used. Production metadata, manifest, icons and the built bundle carry no
+    AI/template/demo traces.
+
+- **Photo limit = the API's 5 MB (2026-10-02):** `MAX_PHOTO_SIZE_BYTES` is now `MAX_FILE_SIZE_BYTES`. Only a
+  photo over 5 MB is compressed; one within it is sent unchanged. This closes gap AO (client and server
+  limits now match) and re-exposes gap AP until the proxy allows 5 MB.
+
+- **Photo upload root cause, deployment move (2026-10-01, second pass):**
+  - **Root cause found:** the API's nginx rejects request bodies over 1 MiB, invisibly to the browser
+    (gap AP). Photos now compress to ≤ 1,000,000 bytes, so the whole request fits; proven in Chrome
+    against the live proxy.
+  - Uploaded photos render through `UploadedPhoto` (CORS mode, then plain), because the API's
+    `Cross-Origin-Resource-Policy: same-origin` blocked every preview (gap AQ). A 401 during upload now
+    says the session expired instead of "try again".
+  - Hosting moved off Vercel: `vercel.json` removed; the CSP is generated into `index.html` by
+    `vite.config.js` from `VITE_API_BASE_URL` (+ optional `VITE_FILE_STORAGE_ORIGIN`); `DEPLOYMENT.md`
+    lists the SPA fallback and the headers the host must set. `envDir: 'src'`: `src/.env` used to be
+    silently ignored. All references to the old Render API were removed.
+
 ## 6. Pending / Incomplete Features
+
+- **The API's nginx refuses request bodies over 1 MiB** (`413`, with no CORS headers, so browsers see a network failure). Since the photo limit went back to the API's 5 MB (2026-10-02), **photos between ~1 MB and 5 MB fail there**, as do spreadsheet uploads (meter workbook, disco imports) over ~1 MB. Raise `client_max_body_size` to at least `6m`. `API_GAP_REPORT.md` gap **AP**.
+- **Uploaded photos may not preview in the app** until the API sends `Cross-Origin-Resource-Policy: cross-origin` on `/files/{token}` (or the bucket sends CORS headers). The upload and the stored link are unaffected. Gap **AQ**.
+
+- **Photo uploads exist only in builds that include commit `c140d0a` (2026-09-26) onward.** The retired Vercel test site served `764daf9` (the `Workflow` branch head), which predates them; that is why uploads "failed" there. The API's file storage is configured.
+- **The 1 MB photo limit is enforced in the browser only**; the API accepts 5 MB. `API_GAP_REPORT.md` gap **AO**.
+- **No seal-number whitelist.** Seals are free text on the report, checked only against the installer's own jobs; the whitelist, per-installer seal assignment (capped by meters held) and single use all need a backend seal resource. `API_GAP_REPORT.md` gap **AM**.
 
 - **No per-installer statistics endpoint** — Installer Job Status groups filtered installation reads client-side (API_GAP_REPORT.md, gap AG).
 - **A pending imported installation has no amount anywhere in the API**, so it adds ₦0 to "Total collected payments" (API_GAP_REPORT.md, 2026-09-27).

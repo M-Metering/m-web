@@ -14,7 +14,13 @@ dist-ssr
 
 # Environment config — was previously tracked in git; see API_GAP_REPORT.md.
 # Kept out of version control going forward, use src/.env.example as a template.
+# Vite reads env files from src/ (envDir in vite.config.js); the root patterns
+# are a guard in case one is ever created there.
 src/.env
+src/.env.*
+.env
+.env.*
+!src/.env.example
 
 # Editor directories and files
 .vscode/*

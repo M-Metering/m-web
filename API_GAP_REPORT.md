@@ -1,5 +1,227 @@
 # API Gap Report
 
+## 2026-10-01 (ninth pass): production re-audit — uploads, 1 MB photos, API docs
+
+### Which API document is authoritative
+
+**<https://api.memetering.com/api-docs> is the only authoritative API documentation** (95
+operations). The retired Render deployment of the API serves an obsolete 54-operation spec without
+`POST /uploads`, Supervisor, finance, search or multi-disco routes, and its `POST /uploads` answers
+`404`. It must not be used; every reference to it was removed from this repository on 2026-10-01.
+The app is built against api.memetering.com (the default in `api.config.js`).
+
+### API re-audit result: nothing new, nothing misused
+
+The api.memetering.com spec is unchanged since 2026-09-28 apart from its `servers` list. Checked
+mechanically: all 75 paths in `api.config.js` `ENDPOINTS` exist in the spec with the HTTP method
+`api.js` uses. The five spec paths the frontend doesn't call are the Remita webhooks
+(`/external/jed/remita/webhook`, `/webhooks/*`) and two server-to-server lookups
+(`/external/jed/requests/status/{status}`, already covered by `?status=`, and
+`/external/jed/status/order/{orderId}`, retired with its diagnostic tab). There is still **no seal
+endpoint** (gap AM) and no new dashboard, statistics or Supervisor endpoint, so nothing was integrated.
+
+### Gap AN update: storage IS configured now
+
+`GET /files/{well-formed token}` now answers `404 File not found` (it was `503 File storage not
+configured` on 2026-09-28), so the API's file storage is live. The large-request stall reported on
+09-28 was this workstation's connection: on 10-01, 200 KB and 900 KB multipart bodies reached the
+server and were answered (`401` for a fake token) in 1–4 s. **Still unverified:** a real authenticated
+upload, because no account was available here.
+
+### Why uploads still "failed" on the test site: it predated the upload feature
+
+The Vercel test deployment (now retired) was serving commit `764daf9` of 2026-09-23, the head of the
+`Workflow` branch. That is before File Upload Integration (`c140d0a`, 2026-09-26), so its bundle had
+no `POST /uploads` code at all: installers were still asked to paste a link. Hosting has moved to a
+standard platform (see `DEPLOYMENT.md`). The upload exists in production only once a build of a
+branch containing `c140d0a` and the 2026-10-01 work is deployed.
+
+### New — Gap AP: the API's proxy rejects any upload over 1 MiB — the real reason photos failed
+
+The nginx in front of `api.memetering.com` refuses any request **body** over 1,048,576 bytes with
+`413 Request Entity Too Large` (measured 2026-10-01: a 1,048,000-byte file reached the API, a
+1,048,576-byte one did not). That is nginx's default `client_max_body_size 1m`, and it overrides the
+**5 MB** the spec documents. The 413 page carries **no CORS headers**, so a browser reports it as a failed
+network request (`TypeError: Failed to fetch`), never as a 413. Every full-size phone photo (2–6 MB)
+therefore failed with "The file couldn't be uploaded. Please try again.", and retrying could never work.
+
+**Frontend fix (2026-10-01), reversed 2026-10-02:** photos were compressed to at most 1,000,000 bytes so
+the whole request fit under the proxy, verified in Chrome (a photo at that cap reached the API, a 1.1 MB
+one failed exactly as installers saw). On 2026-10-02 the photo limit was set to the API's documented
+5 MB at the product owner's request. **So this gap now blocks photo uploads again: every photo between
+~1 MB and 5 MB is refused by the proxy** until the backend change below is made. Re-measuring on
+2026-10-02 was not possible from this workstation (its connection to the API stalled).
+
+**Still affected:** spreadsheet uploads go through the same proxy: `POST /meters/upload` and the disco
+imports (`POST /imports/{discoCode}/…`). Any workbook over ~1 MB fails the same opaque way.
+**Backend/ops change needed:** raise `client_max_body_size` to at least `6m` (the documented 5 MB plus
+multipart overhead) on the API's nginx, and add CORS headers to error responses (`add_header … always`)
+so a refusal reaches the app as a status it can explain.
+
+### New — Gap AQ: uploaded photos can't be displayed in the app as configured
+
+`GET /files/{token}` answers `302` to a signed URL on the storage bucket, and like every API response
+it carries `Cross-Origin-Resource-Policy: same-origin`. Reproduced in Chrome with the same three-hop
+chain:
+
+| | plain `<img>` | `crossOrigin="anonymous"` |
+|---|---|---|
+| API sends `CORP: same-origin` (today), bucket sends no CORS | blocked | blocked |
+| `CORP: same-origin`, bucket sends CORS | blocked | loads |
+| API sends `CORP: cross-origin` on `/files`, bucket sends no CORS | loads | blocked |
+
+The upload itself is unaffected, and the stored link is correct and opens fine as a page. Only the
+in-app preview (and the export's embedded picture) depends on this. The frontend now tries both modes
+(`components/common/UploadedPhoto.jsx`), and a preview that still can't load shows a neutral tile
+while the field keeps saying "Photo attached". The CSP's `img-src` allows `https:` because the bucket
+host is undocumented.
+**Backend change needed:** send `Cross-Origin-Resource-Policy: cross-origin` on `GET /files/{token}` (with
+Helmet: `crossOriginResourcePolicy: { policy: 'cross-origin' }` on that route). That makes the plain
+image load whatever the bucket's CORS settings. To embed photos in exports as well, give the bucket
+a CORS rule allowing GET from the app's origin, and set `VITE_FILE_STORAGE_ORIGIN` to the bucket's
+origin when building.
+
+### CLOSED 2026-10-02 — Gap AO: the 1 MB photo limit is client-side only
+
+**Closed by aligning the app with the API.** The installation-photo limit is now the API's own 5 MB
+(`MAX_PHOTO_SIZE_BYTES` = `MAX_FILE_SIZE_BYTES`), so client and server enforce the same rule and no
+server change is needed. The 2026-10-01 entry below is kept for history. **Gap AP (the 1 MiB proxy) now
+matters for photos again:** a photo between ~1 MB and 5 MB passes the app's check and is refused by
+the proxy until `client_max_body_size` is raised.
+
+#### Original entry (2026-10-01)
+
+Installation photos are compressed in the browser to at most 1 MB (`utils/imageCompression.js`),
+and nothing larger is sent. The API still accepts up to **5 MB** per file. It already verifies the
+type from the file's bytes and recompresses images over 300 KB, so it is not unsafe, but a direct
+API call can store a larger file.
+**Backend change needed:** for `category=installation_photo`, reject files over 1 MB with a
+`400` that names the limit (and, if wanted, a maximum pixel size). The frontend already maps a
+`400` to the server's own message.
+
+## 2026-09-28 (eighth pass): seal whitelist, picture uploads failing in production, Supervisor dashboard
+
+Live OpenAPI document re-pulled today (81 paths). No login was available from this workstation, so
+nothing below was exercised with a real account; the unauthenticated probes are stated exactly.
+
+### New — Gap AN: production file storage is not configured, so every picture upload fails
+
+**Observed today, unauthenticated, against `https://api.memetering.com/api/v1`:**
+
+| Request | Response |
+|---|---|
+| `GET /files/00000000-0000-4000-8000-000000000000` (well-formed token) | **`503 {"success":false,"message":"File storage not configured"}`** |
+| `GET /files/not-a-token` | `400` token validation (so the route is live; it is the storage behind it that is missing) |
+| `POST /uploads` with no body / a 3-byte file | `401` in ~1 s (auth runs first, as expected) |
+
+`POST /uploads` documents exactly this state as its `503` ("File storage not configured"). Every
+installer's photo upload therefore fails, and **no stored picture link can be opened either**. This
+is a deployment setting on the API server — the storage bucket/credentials the upload service reads —
+and **no frontend change can fix it**. The frontend request itself matches the spec: `POST`,
+multipart, the field name `files`, the bearer token, and no hand-set `Content-Type` (so the browser
+supplies the boundary).
+
+**Second observation, to confirm on the server (it may be this workstation's network):** any POST
+body larger than about 2 KB to `api.memetering.com` stalled and was reset after ~33 s — a 2 KB or
+23 KB multipart upload, and equally a 3 KB JSON body to `/auth/login` — while the same 2 KB multipart
+body to httpbin.org succeeded in 7 s. Tiny bodies were answered immediately. If the nginx/proxy logs
+show these requests never arriving, the cause is on the path to the server (a request-body limit, a
+proxy buffering setting, or an MTU problem) and it would break photo uploads **even after storage is
+configured**.
+
+**Backend/ops change needed:** configure the file storage on the production deployment, then confirm
+with a real login that `POST /uploads` returns `201` and the returned `url` opens. Check the proxy
+for the large-body stall at the same time.
+
+**What the frontend did (2026-09-28):**
+- **Removed the pasted-link fallback.** On a 503 the photo field used to offer "paste a link to the
+  photo instead". An installation report must carry a picture this system stored, so a failed upload
+  now means the job **cannot be reported yet**. Consequence: until storage is configured, installers
+  cannot report multi-disco installations at all. That is deliberate, and it is the reason this gap
+  is urgent.
+- **Oversized photos are resized in the browser** (`utils/imageCompression.js`). A phone camera's
+  full-size photo is often 5–12 MB, over the 5 MB limit, and was refused before any request was made.
+  It is now re-encoded (longest side 2560 px, JPEG) until it fits. The server recompresses anything over
+  300 KB anyway, so the stored copy loses nothing it would have kept.
+- **The upload has a 120 s timeout**, so a stalled connection ends in "The file couldn't be uploaded.
+  Please try again." instead of an endless "Uploading…".
+
+### New — Gap AM: there is no seal-number resource — the seal whitelist cannot be built
+
+The requested workflow is a controlled pool of valid seal numbers, assigned per installer, capped
+at `seals held ≤ meters held`, consumed on use, never reused. **The API has nothing for it**: no
+`/seals` path, no seal field on any assignment batch (`GET /assignments` types are METER and
+INSTALLATION), and `sealNumber` on `POST /installations/{id}/report` is an optional free-text string
+with no whitelist, ownership or uniqueness check (gaps **H** and **L**). The JED completion's `sealNo`
+is the same.
+
+**What the frontend did: nothing that pretends.** Per this project's rules (no invented endpoints,
+no browser storage standing in for business data), there is no whitelist screen, no seal picker and
+no seal "assignment". It would have nothing real to load and nowhere to save. Report Installation
+keeps its existing checks (required, trimmed, not already on this installer's own jobs, and a
+backend duplicate rejection turned into a plain message).
+
+**Backend change needed.** All enforcement must be server-side, because the rule spans installers
+and two submissions can race:
+
+1. **Model.** `Seal { id, sealNumber (unique, normalised: trimmed, case-insensitive), discoCode?,
+   status: AVAILABLE | ASSIGNED | USED | VOID, assignedTo (installer id, null unless ASSIGNED/USED),
+   assignedAt, usedAt, installationId (set when USED), importBatchId, createdAt }`.
+2. **Whitelist load.** `POST /seals/import` (spreadsheet or JSON list, partial success like the other
+   imports, rejecting duplicates of existing seals) and `GET /seals?status=&assignedTo=&search=`
+   (paginated, same envelope as the other lists). SUPERADMIN/ADMIN.
+3. **Assign.** `POST /assignments/seals { installerId, sealNumbers[] }`, SUPERADMIN/ADMIN/SUPERVISOR
+   (Supervisor already holds every other `/assignments/*` route). In one transaction, with the
+   installer's rows locked:
+   - every seal exists and is `AVAILABLE` (not assigned to anyone, not used);
+   - the installer exists, is active, and is an INSTALLER;
+   - `seals the installer holds unused + requested ≤ meters the installer holds` (the open METER
+     batch items, `assignmentStatus: ASSIGNED`). **Meters, not installations**, per the business rule;
+   - partial success is fine, but each rejected seal must say why, and nothing may push the
+     installer over the cap.
+4. **Return.** `POST /assignments/seals/return { sealNumbers[] }` → back to `AVAILABLE`, only when not
+   `USED`. **When a meter is returned** (`POST /assignments/meters/return`), the installer may be
+   left holding more unused seals than meters. The backend must then either refuse the meter return
+   until surplus seals are returned too, or return the surplus seals automatically in the same
+   transaction. Pick one and document it. A `USED` seal never returns to the pool.
+5. **Use.** `POST /installations/{id}/report` (and `POST /external/jed/complete-installation`) must
+   require `sealNumber`, and in the report's existing transaction check that the seal exists, is
+   `ASSIGNED`, and is assigned to the **calling** installer. It then marks the seal `USED` with the
+   installation's id. A unique constraint on the seal's usage (`installationId` + `sealNumber`
+   unique; a seal can be `USED` once) turns a concurrent double-submit into one success and one
+   documented `409`.
+6. **Installer read.** `GET /installations/me/seals`, like `/installations/me/meters`, so the report
+   form can offer a dropdown of the installer's own unused seals instead of free text.
+
+**When those exist, the frontend work is:** a Seals tab on Assignments (dispatch/return, from the
+whitelist, with the same per-installer capacity summary the meter dispatch shows), a seal dropdown
+in Report Installation fed by `GET /installations/me/seals`, and the `409` mapped to the existing
+"already used" message in `utils/sealNumber.js`.
+
+### Supervisor dashboard — two calls it could not make (frontend fix, not a gap)
+
+A Supervisor's Dashboard had two faults, both frontend:
+
+- **The Installations Completed chart never loaded.** The trend reads `GET /finance/revenue/transactions`,
+  which Supervisor can't call, so the fetch was skipped. But the chart's loading flag started `true`
+  and was never cleared, so it showed "No installations completed in this range." — a false zero. For
+  a role without `PAYMENTS.VIEW`, the chart now counts the completed installation records themselves:
+  `GET /installations?status=INSTALLED|EXPORTED` and `GET /external/jed/requests?status=COMPLETED`,
+  bucketed by `completionDateOf`, the same day the Installations page's "Installed from / to" filter
+  uses.
+- **The Installers card called `GET /dashboard-stats`.** That response also carries `totalRevenue`, and
+  the integration guide gives Supervisor no dashboard/finance access. For a role without
+  `PAYMENTS.VIEW` the card now reads the installer roster's `pagination.totalCount`
+  (`GET /users?role=INSTALLER&limit=1`), a read Supervisor holds. Admin and Super Admin still read
+  `activeInstallers`. The two can differ if `activeInstallers` means something narrower than "on the
+  roster"; the spec doesn't define it (gap **AI**).
+
+**User-management writes for Supervisor.** The integration guide says the API refuses Supervisor
+`POST /users`, `PUT /users/{id}`, `DELETE /users/{id}` and restore with `403`. That was **not**
+re-verified live today (no Supervisor login). The frontend never issues those calls for a Supervisor:
+the buttons aren't offered, and as of today the create and update handlers also refuse before the
+request, as delete already did.
+
 ## 2026-09-27 (seventh pass): meter state across modules, bulk account assignment, revenue definitions, installer job status
 
 Live OpenAPI document re-pulled today: **95 operations**. Nothing below was verifiable against real
@@ -554,9 +776,9 @@ integration.
 ## 2026-09-21 (second pass): installation management, disco filtering, payments, capacity
 
 **Verified against:** `GET https://api.memetering.com/api-docs/swagger.json` (85 operations). The
-brief pointed at `https://pharez-api.onrender.com`, but that host still serves the old 54-operation
-spec with **none** of the `/discos`, `/imports`, `/assignments` or `/installations` routes, so this
-app keeps `api.memetering.com`. Every route returns `401 Access token required` without a JWT, and
+brief pointed at the old Render deployment, but that host serves an obsolete 54-operation spec with
+**none** of the `/discos`, `/imports`, `/assignments` or `/installations` routes, so this app keeps
+`api.memetering.com`. Every route returns `401 Access token required` without a JWT, and
 no credentials were available for this pass. So response *shapes* come from the spec, and the
 earlier guide-based integration and live behaviour (e.g. the actual text of a completion 400) were
 **not** re-observed.
@@ -638,7 +860,7 @@ closed by the new flow existing alongside it, not by JED changing.
   `/uploads/excel*` still 404 on both hosts.
 
 
-This documents where the desired ME-Metering workflow cannot be fully implemented against the real Pharez API (`https://pharez-api.onrender.com/api-docs`, verified against its OpenAPI spec) — as opposed to places where the frontend was simply calling the API incorrectly (those were fixed directly, not listed here). These are backend feature requests, not frontend bugs.
+This documents where the desired ME-Metering workflow cannot be fully implemented against the real Pharez API (at the time, its retired Render deployment; the current documentation is <https://api.memetering.com/api-docs>) — as opposed to places where the frontend was simply calling the API incorrectly (those were fixed directly, not listed here). These are backend feature requests, not frontend bugs.
 
 ## Complaints / issue reporting — re-verified 2026-09-21: still no endpoint (Installer Complaint Form added as UI-only)
 
@@ -650,7 +872,7 @@ This documents where the desired ME-Metering workflow cannot be fully implemente
 1. `POST /complaints` (Installer JWT) — body along the lines of `accountNumber` (optional/nullable), `category` (enum: Customer Unavailable, Incorrect Customer Information, Location/Address Issue, Meter or Equipment Issue, Safety Concern, Network/Technical Issue, Access Restriction, Missing Materials, Other), `priority` (`LOW|MEDIUM|HIGH|CRITICAL`), `impact` (`BLOCKING|DELAYING|NONE`), `issueAt` (date-time, not in the future), `description` (10–1000 chars), `remarks` (≤500, optional). The installer id **must be taken from the JWT server-side**, never trusted from the body. These names are the UI's, not a contract — the backend should define the real schema.
 2. `GET /complaints` — Installer sees only their own; Admin/SuperAdmin see all, with filters `status`, `priority`, `installerId`, date range, `accountNumber`, and pagination (`page`, `limit` ≤ 100).
 3. `PATCH /complaints/{id}` (Admin/SuperAdmin only) — `status` (e.g. `OPEN|IN_REVIEW|RESOLVED`), `resolutionNotes`/`adminRemarks`. A timeline/updates field so an Installer can see progress.
-4. Optional attachments (multipart or hosted URLs) — and, if images are served to the browser, the CSP `img-src` in `vercel.json` must allow the host (see the Completed Installation notes below).
+4. Optional attachments (multipart or hosted URLs) — and, if images are served to the browser, the CSP `img-src` (now generated in `vite.config.js`) must allow the host (see the Completed Installation notes below).
 5. Documented in the OpenAPI schema with the same `bearerAuth` + role rules as the rest of the API.
 
 **Related backend items found in this audit** (details and evidence in `Security.md`, "Hardening pass 2026-09-21"): confirm role enforcement on `POST /meters/upload` and `POST /uploads/*` for the Installer role (the Uploads tab is now hidden/blocked client-side for Installers, but this was not tested against the backend); `GET /external/jed/requests/{accountNumber}` is documented as unauthenticated (it 401s live) and returns RRR/amount/contact fields to any authenticated user including Installers, unlike `/requests/installer`; `POST /apikeys` requires `keyName` per the spec but the UI sends `name`.
@@ -716,7 +938,7 @@ The live spec was pulled again from both hosts and is **byte-identical** to the 
 **What's needed from the backend** (then wire the keys in `getCompletionFields()` in `src/components/installation/CompletionDetails.jsx`, the single mapping point — the GPS link and photo grid/preview components are already built and validated, and start rendering the moment that mapper returns data):
 1. Accept and persist on `POST /external/jed/complete-installation`: `installerId`/`installerName` (ideally derived server-side from the JWT rather than trusted from the client), `supervisor`, `latitude` + `longitude` (or a `gps: {latitude, longitude}` object), and installation photos (multipart upload, or an array of already-hosted image URLs).
 2. Return those fields on `JedCustomerRequest` (`GET /requests`, `/requests/{accountNumber}`) and, for installers, on `/requests/installer`, and document them in the OpenAPI schema.
-3. Photos must be servable to the browser: URLs reachable over `https` (or `data:image/*` URIs). **Infra note:** `vercel.json`'s CSP is `img-src 'self' data:`, so the image host must be added there; and if GPS is ever *captured* in the browser (`navigator.geolocation`) the `Permissions-Policy` header currently denies `geolocation` and `camera` and would need relaxing. Displaying stored coordinates needs neither (the map link is a plain `https://www.google.com/maps?q=lat,lng` anchor).
+3. Photos must be servable to the browser: URLs reachable over `https` (or `data:image/*` URIs). **Infra note (historical):** the CSP's `img-src` must allow the image host; it now lives in `vite.config.js` and allows the API origin; and if GPS is ever *captured* in the browser (`navigator.geolocation`) the `Permissions-Policy` header currently denies `geolocation` and `camera` and would need relaxing. Displaying stored coordinates needs neither (the map link is a plain `https://www.google.com/maps?q=lat,lng` anchor).
 
 No completion form fields for GPS/photos/supervisor were added — there is nothing for them to submit to.
 
@@ -769,7 +991,7 @@ Investigating a "Route not found" error on Upload Paid Customers → Validate Fi
 
 ## Reconfirmed 2026-08-25 (installer assignment / meter assignment / paid-customer import work)
 
-Before implementing installer assignment, meter assignment, and a "paid customer upload" workflow, the live spec was pulled directly from the production server (`GET https://pharez-api.onrender.com/api-docs/json` redirects to the Swagger UI; the actual OpenAPI document is embedded in `.../api-docs/swagger-ui-init.js` — there is no separate `/api-docs.json`/`/openapi.json` route) and diffed against this report. Still exactly **45 endpoints**, same as every prior check:
+Before implementing installer assignment, meter assignment, and a "paid customer upload" workflow, the live spec was pulled directly from the then-production server (its `/api-docs/json` redirects to the Swagger UI; the actual OpenAPI document is embedded in `.../api-docs/swagger-ui-init.js` — there is no separate `/api-docs.json`/`/openapi.json` route) and diffed against this report. Still exactly **45 endpoints**, same as every prior check:
 
 ```
 POST /apikeys                                  GET /apikeys                          GET /apikeys/{id}

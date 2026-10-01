@@ -371,22 +371,8 @@ function Login({ onLogin }) {
           </form>
 
           {/* Footer */}
-          <div className="text-center space-y-4 pt-2">
-            <p className="text-sm text-slate-400">
-              Don't have an account?{' '}
-              <button
-                type="button"
-                onClick={() => setModalContent({
-                  isOpen: true,
-                  title: 'Account Creation',
-                  message: 'New user accounts must be created by a system administrator. Please contact support for assistance.' })}
-                className="font-semibold text-brand-400 hover:text-brand-300 hover:underline transition-colors"
-              >
-                Contact Administrator
-              </button>
-            </p>
-
-            <p className="text-xs text-slate-600 lg:hidden">
+          <div className="text-center pt-2 lg:hidden">
+            <p className="text-xs text-slate-600">
               © {new Date().getFullYear()} ME Metering System. All rights reserved.
             </p>
           </div>

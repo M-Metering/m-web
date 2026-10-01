@@ -132,3 +132,35 @@ describe('ReportInstallationModal — every required field', () => {
     expect(onReported).not.toHaveBeenCalled();
   });
 });
+
+describe('ReportInstallationModal — a failed photo upload', () => {
+  it('keeps everything already entered, blocks submission, and lets the installer retry', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    jedApi.uploadFiles.mockRejectedValueOnce(Object.assign(new Error('Upload failed: 500'), { status: 500 }));
+    const onReported = await open();
+    fireEvent.change(screen.getByLabelText(/Seal number/), { target: { value: 'APLE0099123' } });
+    await fillRequired({ photo: false });
+
+    const file = new File([new Uint8Array([0xff, 0xd8, 0xff])], 'site.jpg', { type: 'image/jpeg' });
+    fireEvent.change(screen.getByLabelText('Choose a photo from the gallery'), { target: { files: [file] } });
+    expect((await screen.findByRole('alert')).textContent).toMatch(/couldn't be uploaded/);
+
+    // Nothing the installer typed was lost.
+    expect(screen.getByLabelText(/Meter installed/).value).toBe('0239110006909');
+    expect(screen.getByLabelText(/Seal number/).value).toBe('APLE0099123');
+    expect(screen.getByLabelText('Latitude').value).toBe('5.106600');
+    expect(screen.getByLabelText(/DISCO supervisor/).value).toBe(' Engr. Okafor ');
+
+    // No picture, no report.
+    fireEvent.click(screen.getByRole('button', { name: /Submit installation/ }));
+    expect(await screen.findByText(/An installation picture is required/)).toBeTruthy();
+    expect(jedApi.reportInstallation).not.toHaveBeenCalled();
+
+    // Retry succeeds and the report goes through with the stored link.
+    fireEvent.change(screen.getByLabelText('Choose a photo from the gallery'), { target: { files: [file] } });
+    await screen.findByText('Photo attached');
+    fireEvent.click(screen.getByRole('button', { name: /Submit installation/ }));
+    await waitFor(() => expect(jedApi.reportInstallation).toHaveBeenCalledWith(7, expect.objectContaining({ installationPhotoUrl: PHOTO_URL })));
+    expect(onReported).toHaveBeenCalled();
+  });
+});
