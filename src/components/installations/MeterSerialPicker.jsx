@@ -22,6 +22,7 @@ import { Search, X, Loader2, RefreshCw, ClipboardPaste } from 'lucide-react';
 import jedApi from '../services/api';
 import {
   isAssignableMeter, matchPastedSerials, meterSerial, meterPhase, undispatchableReason,
+  countOptionsByPhase, availableCountLabel,
 } from '../../utils/meterInventory';
 import { meterMakeModel } from '../../utils/meterDisplay';
 import { phaseCapacity } from '../../utils/meterCapacity';
@@ -100,6 +101,10 @@ function MeterSerialPicker({
     return options.filter((o) => (!phase || o.phaseType === phase) && (!term || o.serial.includes(term)));
   }, [options, query, phase]);
   const shown = matches.slice(0, MAX_SHOWN);
+  // Per-phase totals for the dropdown and the count line, so a phase filter
+  // never shows the all-phase figure.
+  const phaseCounts = useMemo(() => countOptionsByPhase(options), [options]);
+  const phaseTotal = phase ? (phaseCounts.get(phase) || 0) : options.length;
 
   // Search the WHOLE inventory server-side for the typed serial (or SIM)
   // fragment, not just the rows the paged scan happened to return. Debounced;
@@ -266,13 +271,13 @@ function MeterSerialPicker({
         {phases.length > 1 && (
           <select value={phase} onChange={(e) => setPhase(e.target.value)} disabled={disabled}
             aria-label="Filter meters by phase" className="form-input px-3 py-2 text-sm">
-            <option value="">All phases</option>
+            <option value="">All phases ({options.length.toLocaleString()})</option>
             {/* A meter type the installer has no eligible installation for is
                 offered as disabled rather than hidden — an operator needs to
                 see that Three Phase exists and why it can't be picked. */}
             {phases.map((p) => (
               <option key={p} value={p} disabled={!!phaseBlockedReason(p)}>
-                {formatPhaseLabel(p)}{phaseBlockedReason(p) ? ' — unavailable' : ''}
+                {formatPhaseLabel(p)} ({(phaseCounts.get(p) || 0).toLocaleString()}){phaseBlockedReason(p) ? ' — unavailable' : ''}
               </option>
             ))}
           </select>
@@ -333,9 +338,10 @@ function MeterSerialPicker({
 
       <div className="p-2 border-t border-gray-200 dark:border-gray-700 flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          {matches.length > MAX_SHOWN
-            ? `Showing ${MAX_SHOWN} of ${matches.length.toLocaleString()} — type to narrow`
-            : `${options.length.toLocaleString()} available`}
+          {availableCountLabel({
+            matches: matches.length, total: phaseTotal, maxShown: MAX_SHOWN,
+            phaseLabel: phase ? formatPhaseLabel(phase) : null, searching: !!query.trim(),
+          })}
           {value.length > 0 && ` · ${value.length} selected`}
         </p>
         <button type="button" onClick={() => { setPasteOpen((v) => !v); setPasteResult(null); }} disabled={disabled}

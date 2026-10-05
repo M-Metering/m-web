@@ -34,6 +34,15 @@ import { unwrapListResponse } from '../utils/unwrapListResponse';
 import { normalizeMultiRow, normalizeJedRow, JED_BUCKET } from '../utils/installationScope';
 import { fetchAllPagesDetailed } from '../utils/fetchAllPages';
 import { completionDayOf } from '../utils/completedInstallationsReport';
+import { isPermissionError } from '../utils/apiResult';
+
+// JED's Remita requests are outside some roles' API scope (SUPERVISOR gets a
+// 403 on /external/jed/*). Such a read resolves to null — "not this role's" —
+// and the figures say they exclude JED. Any other failure still fails.
+const unlessForbidden = (promise) => promise.catch((err) => {
+  if (isPermissionError(err)) return null;
+  throw err;
+});
 import {
   summarizeInstallationTotals, jedTotalCount, edgePages, pickRecentRequests,
 } from '../utils/installationTotals';
@@ -43,11 +52,11 @@ const RECENT_PAGE_SIZE = 10;
 
 /** One read of the system-wide pending/completed counts. */
 export async function loadInstallationTotals() {
-  const [importedStats, ...jed] = await Promise.all([
+  const [importedStats, jed] = await Promise.all([
     jedApi.getInstallationStatistics({}),
-    ...JED_STATUSES.map((status) => jedApi.getAllCustomerRequests({ status, page: 1, limit: 1 })),
+    unlessForbidden(Promise.all(JED_STATUSES.map((status) => jedApi.getAllCustomerRequests({ status, page: 1, limit: 1 })))),
   ]);
-  const jedCounts = Object.fromEntries(JED_STATUSES.map((s, i) => [s, jedTotalCount(jed[i])]));
+  const jedCounts = jed === null ? null : Object.fromEntries(JED_STATUSES.map((s, i) => [s, jedTotalCount(jed[i])]));
   return summarizeInstallationTotals({ importedStats, jedCounts });
 }
 
@@ -73,10 +82,13 @@ async function readEdges(fetchPage) {
  * the other still shows, with the failure named. Both failing is an error.
  */
 export async function loadRecentInstallations(limit = 5) {
-  const [imported, jed] = await Promise.allSettled([
+  const [imported, jedRead] = await Promise.allSettled([
     readEdges((p) => jedApi.getInstallations(p)),
     readEdges((p) => jedApi.getAllCustomerRequests(p)),
   ]);
+  // A role that may not read JED requests gets none, not a failure notice.
+  const jedForbidden = jedRead.status === 'rejected' && isPermissionError(jedRead.reason);
+  const jed = jedForbidden ? { status: 'fulfilled', value: { rows: [], total: 0 } } : jedRead;
   if (imported.status === 'rejected' && jed.status === 'rejected') throw imported.reason;
   const rows = [
     ...(imported.status === 'fulfilled' ? imported.value.rows.map(normalizeMultiRow) : []),
@@ -102,11 +114,12 @@ export async function loadRecentInstallations(limit = 5) {
  * "Installed from / to" filter uses (completionDateOf).
  */
 export async function loadCompletedInstallationDays() {
-  const [installed, exported, jed] = await Promise.all([
+  const [installed, exported, jedRead] = await Promise.all([
     fetchAllPagesDetailed((p) => jedApi.getInstallations(p), { status: 'INSTALLED' }),
     fetchAllPagesDetailed((p) => jedApi.getInstallations(p), { status: 'EXPORTED' }),
-    fetchAllPagesDetailed((p) => jedApi.getAllCustomerRequests(p), { status: 'COMPLETED' }),
+    unlessForbidden(fetchAllPagesDetailed((p) => jedApi.getAllCustomerRequests(p), { status: 'COMPLETED' })),
   ]);
+  const jed = jedRead || { items: [], truncated: false };
   const rows = [
     ...installed.items.map(normalizeMultiRow),
     ...exported.items.map(normalizeMultiRow),

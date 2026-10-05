@@ -284,3 +284,50 @@ export function matchPastedSerials(options, raw) {
     rejected: pasted.filter((s) => !eligible.has(s)),
   };
 }
+
+/**
+ * Dispatchable meters per canonical phase, from toMeterOptions output.
+ * @returns {Map<string, number>} phase ('SINGLE PHASE' | 'THREE PHASE' | other) → count
+ */
+export function countOptionsByPhase(options = []) {
+  const counts = new Map();
+  options.forEach((o) => { const p = o.phaseType || ''; counts.set(p, (counts.get(p) || 0) + 1); });
+  return counts;
+}
+
+/**
+ * The picker's count line. It must describe the list the operator is looking
+ * at: with a phase selected, that phase's dispatchable meters — never the
+ * all-phase total (the 2026-10-05 "418 Three Phase available" report was the
+ * all-phase total shown under a Three Phase filter).
+ * @param {{ matches: number, total: number, phaseLabel?: string|null,
+ *   searching?: boolean, maxShown: number }} args
+ */
+export function availableCountLabel({ matches, total, phaseLabel = null, searching = false, maxShown }) {
+  const what = phaseLabel ? `${phaseLabel} meters` : 'meters';
+  if (matches > maxShown) return `Showing ${maxShown.toLocaleString()} of ${matches.toLocaleString()} available ${what} — type to narrow`;
+  if (searching) return `${matches.toLocaleString()} matching of ${total.toLocaleString()} available ${what}`;
+  return `${matches.toLocaleString()} available ${what}`;
+}
+
+/**
+ * Meters on the shelf — status AVAILABLE and NOT out with an installer — from
+ * GET /meters/statistics' `available` minus the open-dispatch index.
+ *
+ * The API leaves a dispatched meter at status AVAILABLE by design, so the
+ * server's `available` also counts every meter an installer holds; shown as
+ * "Available" beside an "Assigned" card, those meters were counted twice.
+ * Every held meter is status AVAILABLE (once installed it becomes USED and
+ * leaves the index), so the subtraction is exact under the API's own rules.
+ * This is the same population the Assignments picker offers ("N available
+ * meters", all phases), so the two screens reconcile.
+ *
+ * @param {number|null} statsAvailable - /meters/statistics `available`
+ * @param {Map|null} holders - indexMeterHolders output; null = unknown
+ * @returns {number|null} null when either figure is unknown — never a guess
+ */
+export function shelfAvailableCount(statsAvailable, holders) {
+  if (statsAvailable === null || statsAvailable === undefined || !Number.isFinite(Number(statsAvailable))) return null;
+  if (!holders) return null;
+  return Math.max(0, Number(statsAvailable) - holders.size);
+}

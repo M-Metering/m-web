@@ -268,7 +268,8 @@ export function buildCompletedInstallationsReport({
 }
 
 // ---------------------------------------------------------------------------
-// Installation details for ONE installed meter (Meter Schedule → Installed).
+// Installation details for ONE installed meter (Meter Schedule → Installed,
+// Installer Job Status → Jobs/Meters).
 //
 // Reads each field through the export's own column definitions above, so the
 // screen and the workbook can never disagree about which API field is the
@@ -276,20 +277,43 @@ export function buildCompletedInstallationsReport({
 // doesn't carry comes back null — nothing is filled in.
 // ---------------------------------------------------------------------------
 const DETAIL_KEYS = [
-  'source', 'disco', 'status', 'accountNumber', 'customerName', 'customerPhone', 'customerAddress',
-  'meterType', 'installationDate', 'completedAt', 'installerName', 'installerId', 'assignedAt',
-  'sealNumber', 'latitude', 'longitude', 'photoUrl', 'discoSupervisor', 'notes',
+  'source', 'disco', 'installationId', 'status', 'accountNumber', 'customerName', 'customerPhone',
+  'customerAddress', 'region', 'area', 'feederName', 'transformerName', 'installationPosition',
+  'requestDate', 'datePaid', 'meterNumber', 'meterType', 'installationDate', 'completedAt',
+  'installerName', 'installerId', 'assignedAt', 'sealNumber', 'latitude', 'longitude', 'photoUrl',
+  'discoSupervisor', 'notes',
 ];
 const COLUMN_BY_KEY = new Map(COLUMNS.map((c) => [c[0], c]));
 
-/** @param {object} row - a normalised row (normalizeMultiRow / normalizeJedRow) */
+/**
+ * @param {object} row - a normalised row (normalizeMultiRow / normalizeJedRow)
+ * @returns {object} one value per DETAIL_KEYS entry (null when not recorded),
+ *   plus `row`, the normalised row itself, for actions on the record (e.g.
+ *   utils/installationRevert.js). `datePaid` is a payment field: show it only
+ *   to a role with PAYMENTS.VIEW, as the export does.
+ */
 export function installationDetailsOf(row) {
   const out = {};
   DETAIL_KEYS.forEach((key) => {
     const value = COLUMN_BY_KEY.get(key)[3](row, null);
     out[key] = value === undefined || value === '' ? null : value;
   });
+  out.row = row;
   return out;
+}
+
+/**
+ * Search installation details (installationDetailsOf output) by meter number,
+ * account, customer name or installer, and optionally one installer exactly.
+ */
+export function filterInstallationDetails(records = [], { query = '', installer = '' } = {}) {
+  const needle = query.trim().toLowerCase();
+  return records.filter((r) => {
+    if (installer && (r.installerName || '') !== installer) return false;
+    if (!needle) return true;
+    return [r.meterNumber, r.accountNumber, r.customerName, r.installerName]
+      .some((v) => v && String(v).toLowerCase().includes(needle));
+  });
 }
 
 /**

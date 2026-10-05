@@ -12,7 +12,6 @@
 // are written in one transaction. One bad file fails the whole request and
 // nothing partial is saved — so a failed upload never needs cleaning up.
 
-import { API_CONFIG } from '../components/services/api.config';
 
 /** Documented categories. `category` is free text; these are the ones we send. */
 export const UPLOAD_CATEGORY = Object.freeze({
@@ -27,16 +26,26 @@ export const UPLOAD_ENTITY = Object.freeze({
 
 export const MAX_FILES_PER_UPLOAD = 5;
 export const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
-// An installation photo has the same limit as the API: 5 MB per file
-// (2026-10-02; it was 1 MB from 2026-10-01). A photo over it is compressed in
-// the browser first (utils/imageCompression.js), and nothing larger is sent.
+// THE limit for an installation photo: 3.5 MiB (3,670,016 bytes), the one
+// value the whole photo pipeline uses (2026-10-02). It leaves 1.5 MB of headroom
+// under the API's 5 MB per-file limit. A photo within it is uploaded as it is;
+// a larger one is compressed in the browser first (utils/imageCompression.js),
+// and nothing larger is ever sent.
+export const MAX_PHOTO_SIZE_BYTES = 3.5 * 1024 * 1024;
+
+// The size of the ONE smaller retry (shouldRetrySmaller) after a large photo's
+// upload got no response at all.
 //
-// CAUTION — the API's nginx proxy has been measured refusing any request BODY
-// over 1 MiB (1,048,576 bytes) with a 413 that carries no CORS headers, so the
-// browser reports it only as "Failed to fetch". Until that proxy allows the
-// documented 5 MB (client_max_body_size ≥ 6m), a photo between ~1 MB and 5 MB
-// passes this check and still fails at the proxy. API_GAP_REPORT.md, gap AP.
-export const MAX_PHOTO_SIZE_BYTES = MAX_FILE_SIZE_BYTES;
+// Why it exists: until 2026-10-02 the API's nginx refused any request BODY over
+// 1 MiB with a 413 carrying no CORS headers, which the browser reports only as
+// a failed request. That is why photos up to ~910 KB uploaded and larger ones
+// failed (API_GAP_REPORT.md, gap AP). Measured again on 2026-10-02 the proxy
+// accepted 10 MB bodies, so that limit is gone. The retry stays because the
+// same symptom (no response) is also what a dropped or timed-out upload on a
+// weak mobile link looks like, and a ~1 MB photo takes a quarter of the time
+// of a 3.5 MB one. 1,000,000 bytes also fits under the old 1 MiB limit, with
+// ~48 KB left for the multipart headers and form fields, should it ever return.
+export const RETRY_PHOTO_SIZE_BYTES = 1000 * 1000;
 
 // The server checks real bytes; these are the matching extension/mime hints for
 // the file picker and the fail-fast check. installation_photo is images only —
@@ -73,8 +82,8 @@ export function validateUploadCandidate(file, category = UPLOAD_CATEGORY.GENERAL
   if (file.size === 0) return { valid: false, reason: 'The selected file is empty.' };
 
   if (isPhotoCategory(category) && file.size > MAX_PHOTO_SIZE_BYTES) {
-    // Only reached when compression could not bring the photo down to 5 MB.
-    return { valid: false, reason: "This photo couldn't be reduced to 5 MB. Retake it or choose another photo." };
+    // Only reached when compression could not bring the photo within the limit.
+    return { valid: false, reason: PHOTO_PROCESSING_MESSAGES.tooLarge };
   }
   if (file.size > MAX_FILE_SIZE_BYTES) {
     const mb = (file.size / (1024 * 1024)).toFixed(1);
@@ -110,22 +119,33 @@ export function validateUploadBatch(files, category = UPLOAD_CATEGORY.GENERAL) {
   return { valid: true, reason: null };
 }
 
+/** The installer-facing messages for a photo that never reached the upload. */
+export const PHOTO_PROCESSING_MESSAGES = Object.freeze({
+  unprocessable: 'Unable to process this image. Choose another photo.',
+  tooLarge: 'Image could not be reduced to the required size. Please choose another image.',
+});
+
 /**
- * How to present an upload failure, per the documented status codes.
+ * How to present an upload failure.
  *
- *   400 — user-fixable ("pick a smaller file", "that's not a photo"): show the
- *         server's own message, which names the problem precisely.
- *   403 — deleting someone else's file.
- *   404 — the file is already gone.
- *   502 — the request reached the server but storage rejected/timed out it:
- *         worth retrying.
- *   503 — storage isn't configured on this deployment at all. That is an ops
- *         problem the operator cannot act on, so the raw message ("File storage
- *         not configured") is deliberately NOT shown.
+ *   no status — nothing came back: a dropped connection, a timeout, or the API
+ *         proxy's CORS-less 413. A connection problem to the installer.
+ *   400 — user-fixable ("that's not a photo"): the server's own message, which
+ *         names the problem precisely (getErrorMessage still filters it).
+ *   401 — the session expired; retrying can't fix it.
+ *   403 — deleting someone else's file.   404 — the file is already gone.
+ *   413 — too large for the server (only seen if the proxy ever sends CORS).
+ *   503 — storage isn't configured on this deployment. An ops problem the
+ *         operator can't act on, so the raw message is NOT shown.
+ *   any other — the server refused it.
  *
+ * @param {number|undefined} status
  * @returns {{ message: string, retryable: boolean, useServerMessage: boolean }}
  */
 export function uploadFailure(status) {
+  if (status === undefined || status === null) {
+    return { message: 'Image upload failed. Check your connection and try again.', retryable: true, useServerMessage: false };
+  }
   switch (Number(status)) {
     case 400:
       return { message: null, retryable: false, useServerMessage: true };
@@ -137,13 +157,29 @@ export function uploadFailure(status) {
       return { message: 'You can only delete files you uploaded.', retryable: false, useServerMessage: false };
     case 404:
       return { message: 'That file no longer exists.', retryable: false, useServerMessage: false };
-    case 502:
-      return { message: "The file couldn't be stored just now. Please try again.", retryable: true, useServerMessage: false };
+    case 413:
+      return { message: PHOTO_PROCESSING_MESSAGES.tooLarge, retryable: false, useServerMessage: false };
     case 503:
       return { message: 'Uploads are temporarily unavailable. Please try again later or contact support.', retryable: false, useServerMessage: false };
     default:
-      return { message: "The file couldn't be uploaded. Please try again.", retryable: true, useServerMessage: false };
+      return { message: 'Image upload was rejected by the server. Please try again.', retryable: true, useServerMessage: false };
   }
+}
+
+/**
+ * Whether a failed photo upload should be retried ONCE, compressed to
+ * RETRY_PHOTO_SIZE_BYTES. Only when the photo sent was larger than that, and
+ * the request got no answer — dropped (NETWORK), timed out (UPLOAD_TIMEOUT) —
+ * or was refused as too large (413). A real HTTP answer (400, 401, 5xx) is the
+ * server's verdict and a smaller file wouldn't change it.
+ *
+ * @param {{ status?: number, code?: string }} err
+ * @param {number} sentBytes - size of the photo that was sent
+ */
+export function shouldRetrySmaller(err, sentBytes) {
+  if (!(sentBytes > RETRY_PHOTO_SIZE_BYTES)) return false;
+  if (err?.status === 413) return true;
+  return err?.status == null && (err?.code === 'NETWORK' || err?.code === 'UPLOAD_TIMEOUT');
 }
 
 /**
@@ -170,38 +206,19 @@ export function uploadedFiles(response) {
     .filter((row) => row.url);
 }
 
-/**
- * The `crossOrigin` attribute to try FIRST for an <img> showing an uploaded
- * photo: 'anonymous' for one on the API's origin, otherwise none.
- *
- * The API answers every request, /files/{token} included, with
- * `Cross-Origin-Resource-Policy: same-origin`, which makes Chrome refuse a
- * plain <img> here (net::ERR_BLOCKED_BY_RESPONSE.NotSameOrigin, verified
- * 2026-10-01). CORS mode isn't subject to CORP, but then the storage bucket the
- * link redirects to must send CORS headers. components/common/UploadedPhoto.jsx
- * therefore tries this mode first and falls back to a plain <img>. Never CORS
- * mode for another host: an old pasted link may send no CORS headers, and CORS
- * mode would break an image that loads today.
- */
-export function photoCrossOrigin(url, apiBase = API_CONFIG.BASE_URL) {
-  try {
-    return new URL(url).origin === new URL(apiBase).origin ? 'anonymous' : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export default {
   UPLOAD_CATEGORY,
   UPLOAD_ENTITY,
   MAX_FILES_PER_UPLOAD,
   MAX_FILE_SIZE_BYTES,
   MAX_PHOTO_SIZE_BYTES,
+  RETRY_PHOTO_SIZE_BYTES,
+  PHOTO_PROCESSING_MESSAGES,
+  shouldRetrySmaller,
   acceptAttribute,
   allowedTypesLabel,
   validateUploadCandidate,
   validateUploadBatch,
   uploadFailure,
   uploadedFiles,
-  photoCrossOrigin,
 };

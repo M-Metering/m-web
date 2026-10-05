@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // "Total collected payments" and "Revenue due to us" — one calculation each,
-// the same figures on the Admin Dashboard, Payments page, Admin Reports and
+// the same figures on the Admin Dashboard, Admin Reports (which absorbed the Payments page) and
 // Installations page.
 //
 // DEFINITIONS (2026-09-28):
@@ -22,7 +22,7 @@ import { DataRefreshProvider, useDataRefresh } from '../../contexts/DataRefreshC
 import { summarizeRevenueTransactions } from '../../../utils/financeSummary';
 import { formatCurrencyNGN } from '../../../utils/currency';
 import AdminDashboard from '../AdminDashboard';
-import PaymentsPage from '../PaymentsPage';
+import AdminReports from '../AdminReports';
 import InstallationRequests from '../InstallationRequests';
 import ReportsOverview from '../ReportsOverview';
 import jedApi from '../../services/api';
@@ -251,10 +251,12 @@ describe('Test 6 — the same figures on every screen', () => {
     return out;
   };
 
-  it('Dashboard = Payments = Reports = Installations (All discos)', async () => {
+  // The Payments page was merged into Reports on 2026-10-05; Reports opens on
+  // its Overview, which carries the one shared payment panel.
+  it('Dashboard = Reports = Installations (All discos)', async () => {
     const expected = { collected: formatCurrencyNGN(expectedCollected()), due: formatCurrencyNGN(REVENUE_DUE) };
     expect(await figures(<AdminDashboard />)).toEqual(expected);
-    expect(await figures(<PaymentsPage />)).toEqual(expected);
+    expect(await figures(<AdminReports />)).toEqual(expected);
     expect(await figures(<ReportsOverview />)).toEqual(expected);
     expect(await figures(<InstallationRequests />)).toEqual(expected);
   }, 60000);

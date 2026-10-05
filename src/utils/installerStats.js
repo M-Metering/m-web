@@ -94,6 +94,7 @@ export function summarizeInstallerStats({ installers = [], jobs = [], holders = 
       if (!id) return;
       rowFor(id, holder.installerName || 'Unknown installer', false).heldMeters.push({
         meterNumber: serial, phaseType: holder.phaseType, assignmentStatus: 'ASSIGNED',
+        assignedAt: holder.assignedAt || null, batchRef: holder.batchRef || null,
       });
     });
   }
@@ -125,6 +126,65 @@ export function summarizeInstallerStats({ installers = [], jobs = [], holders = 
 
   out.sort((a, b) => a.name.localeCompare(b.name));
   return { rows: out, duplicates, unattributed };
+}
+
+/**
+ * Every meter assigned to ONE installer (an installer row from
+ * summarizeInstallerStats), in two states:
+ *
+ *   HELD       in their hands now — an open dispatch batch item still
+ *              ASSIGNED (the same source as "Meters held")
+ *   INSTALLED  reported on one of their INSTALLED/EXPORTED jobs; `job` is that
+ *              job, i.e. the customer the meter was installed for
+ *
+ * One entry per meter number. Once a meter is reported its batch item is
+ * USED, so it leaves HELD; if a serial ever appears in both, INSTALLED wins —
+ * a report is the later, more specific fact. Held first, then installed;
+ * each by meter number.
+ *
+ * @returns {{ meterNumber: string, phaseType: string|null, state: 'HELD'|'INSTALLED',
+ *   assignedAt: string|null, batchRef: string|null, installedOn: string|null, job: object|null }[]}
+ */
+export function installerMeterList(row) {
+  const bySerial = new Map();
+  (row?.heldMeters || []).forEach((m) => {
+    const serial = String(m?.meterNumber ?? '').trim();
+    if (!serial) return;
+    bySerial.set(serial, {
+      meterNumber: serial, phaseType: normalizePhase(m.phaseType) || null, state: 'HELD',
+      assignedAt: m.assignedAt || null, batchRef: m.batchRef || null, installedOn: null, job: null,
+    });
+  });
+  (row?.jobs || []).forEach((job) => {
+    const serial = String(job?.meterNumber ?? '').trim();
+    if (!serial || !isCompletedInstallation('imported', job.status)) return;
+    bySerial.set(serial, {
+      meterNumber: serial, phaseType: normalizePhase(job.meterType) || null, state: 'INSTALLED',
+      assignedAt: job.assignedAt || null, batchRef: null, installedOn: job.installationDate || null, job,
+    });
+  });
+  const order = { HELD: 0, INSTALLED: 1 };
+  return Array.from(bySerial.values())
+    .sort((a, b) => order[a.state] - order[b.state] || a.meterNumber.localeCompare(b.meterNumber));
+}
+
+/**
+ * The jobs a meter in this installer's hands could go to: their OPEN jobs
+ * (ASSIGNED / IN_PROGRESS) of the meter's type. The API dispatches meters and
+ * jobs separately — there is no meter-to-job pairing until the installer
+ * reports an installation naming the meter — so this is "the jobs it is for",
+ * never "its job". A meter with no recorded type matches every open job; a
+ * job with no recorded type matches every meter.
+ * @param {object} row - an installer row from summarizeInstallerStats
+ * @param {{ phaseType?: string|null }} meter
+ */
+export function openJobsForMeter(row, meter) {
+  const phase = normalizePhase(meter?.phaseType);
+  return (row?.jobs || []).filter((job) => {
+    if (!isOpenJob(job?.status)) return false;
+    const jobPhase = normalizePhase(job.meterType);
+    return !phase || !jobPhase || jobPhase === phase;
+  });
 }
 
 /** Totals across every installer row (for the page's summary strip). */

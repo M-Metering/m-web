@@ -30,7 +30,6 @@ import {
 } from 'lucide-react';
 import InfoModal from '../common/InfoModal';
 import { formatDateTime } from '../../utils/date';
-import UploadedPhoto from '../common/UploadedPhoto';
 
 function getCompletionFields(job) {
   return {
@@ -133,7 +132,7 @@ export function InstallationPhotos({ urls }) {
               className="aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-900/50 focus:outline-none focus:ring-2 focus:ring-brand-500"
               aria-label={`View installation photo ${index + 1}`}
             >
-              <UploadedPhoto
+              <img
                 src={src}
                 alt={`Installation photo ${index + 1}`}
                 loading="lazy"
@@ -147,7 +146,7 @@ export function InstallationPhotos({ urls }) {
 
       <InfoModal isOpen={!!preview} onClose={() => setPreview(null)} title="Installation Photo">
         {preview && (
-          <UploadedPhoto
+          <img
             src={preview}
             alt="Installation"
             className="w-full max-h-[70vh] object-contain rounded-lg"

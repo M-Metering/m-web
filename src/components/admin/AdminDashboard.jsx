@@ -18,6 +18,8 @@ import { buildDailySeries } from '../../utils/trendAggregation';
 import TrendChart from './TrendChart';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { downloadServerXlsx } from '../../utils/xlsx';
+import ReportExportBar from '../reports/ReportExportBar';
+import { buildOverviewReport, paymentFigures } from '../../utils/reportData';
 import {
   Users,
   AlertCircle,
@@ -48,88 +50,86 @@ const TREND_RANGE_PRESETS = [
   { id: 90, label: '90 days' },
 ];
 
-// Export Modal Component
-const ExportModal = ({ isOpen, onClose, onExport }) => {
-  const [exportType, setExportType] = useState('all');
-  const [isExporting, setIsExporting] = useState(false);
+// Generate Report (fixed 2026-10-05).
+//
+// ROOT CAUSE of "always fails": every option except Meters exported JED
+// Remita requests (GET /meters/customer-requests/export or
+// /external/jed/requests/export). Those endpoints answer 404 "No requests
+// found to export" whenever the JED flow is empty — which it can be, since the
+// work in this system is multi-disco installations — and the modal turned that
+// into "Export failed". They also only ever covered JED: "Pending Requests"
+// was JED INITIATED (unpaid), not the app's Pending Installations.
+//
+// Now: the Summary report is the SAME report as Reports → Overview, built from
+// the Dashboard's own hooks (installation totals + the shared payment figures)
+// by utils/reportData.js and written by the shared ReportExportBar (Excel, CSV,
+// Print). The meter inventory is still the server's own export. Detailed
+// payment/deal and JED request reports live in Reports.
+const ReportModal = ({ isOpen, onClose, buildSummary, summaryDisabled, summaryReason, onOpenReports }) => {
+  const [meterBusy, setMeterBusy] = useState(false);
+  const [meterError, setMeterError] = useState(null);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape' && !meterBusy) onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose, meterBusy]);
 
   if (!isOpen) return null;
 
-  const handleExport = async () => {
-    setIsExporting(true);
+  const exportMeters = async () => {
+    if (meterBusy) return;
+    setMeterBusy(true);
+    setMeterError(null);
     try {
-      await onExport(exportType);
-      onClose();
-    } catch (error) {
-      console.error('Export failed:', error);
-      alert('Export failed. Please try again.');
+      const blob = await JEDApiService.exportMeters();
+      const stamp = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      await downloadServerXlsx(blob, `ME-Metering-Meter-Inventory-${stamp.getFullYear()}-${pad(stamp.getMonth() + 1)}-${pad(stamp.getDate())}.xlsx`);
+    } catch (err) {
+      console.error('[Dashboard] Meter export failed:', err);
+      setMeterError(/404|no meters/i.test(String(err?.message)) ? 'There are no meters to export.' : 'Unable to export this report. Please try again.');
     } finally {
-      setIsExporting(false);
+      setMeterBusy(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90vh] overflow-auto">
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => !meterBusy && onClose()}>
+      <div role="dialog" aria-modal="true" aria-labelledby="generate-report-title" onClick={(e) => e.stopPropagation()}
+        className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[90vh] overflow-auto">
         <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 sm:px-6 py-4 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Export Data</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:text-gray-400">
+          <h3 id="generate-report-title" className="text-lg font-semibold text-gray-900 dark:text-white">Generate Report</h3>
+          <button type="button" onClick={onClose} disabled={meterBusy} aria-label="Close" className="text-gray-400 hover:text-gray-600 dark:text-gray-400 disabled:opacity-50">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="p-4 sm:p-6 space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Data Type
-            </label>
-            <select
-              value={exportType}
-              onChange={(e) => setExportType(e.target.value)}
-              className="form-input w-full px-3 py-2"
-            >
-              <option value="all">All Data</option>
-              <option value="pending">Pending Requests</option>
-              <option value="completed">Completed Requests</option>
-              <option value="jed">All Requests — Detailed (JED)</option>
-              <option value="meters">Meters</option>
-            </select>
-            {/* "Installer Performance" was removed — there is no backing
-                endpoint on the real API for it (see API_GAP_REPORT.md);
-                the option previously fell through to exporting "All Data"
-                under a misleading label instead of erroring. */}
-          </div>
+        <div className="p-4 sm:p-6 space-y-5">
+          <section className="space-y-2">
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Summary report</h4>
+            <p className="text-xs text-gray-600 dark:text-gray-400">
+              Installation totals, Total collected payments and Revenue due — the same figures as this dashboard and Reports → Overview.
+            </p>
+            <ReportExportBar build={buildSummary} label="Export the summary report" disabled={summaryDisabled} disabledReason={summaryReason} />
+          </section>
 
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            Exports download as Excel (.xlsx) files.
+          <section className="space-y-2 border-t border-gray-200 dark:border-gray-700 pt-4">
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Meter inventory</h4>
+            <p className="text-xs text-gray-600 dark:text-gray-400">Every meter, as the server exports it (Excel).</p>
+            <button type="button" onClick={exportMeters} disabled={meterBusy}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs sm:text-sm font-medium rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50">
+              {meterBusy ? <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-500" /> : <Download className="w-4 h-4" />}
+              {meterBusy ? 'Preparing Excel…' : 'Export meter inventory'}
+            </button>
+            {meterError && <p role="alert" className="text-xs text-red-700 dark:text-red-300">{meterError}</p>}
+          </section>
+
+          <p className="text-xs text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 pt-4">
+            Payment & deal records and JED requests, with their filters, are in{' '}
+            <button type="button" onClick={onOpenReports} className="font-medium text-brand-700 dark:text-brand-400 hover:underline">Reports</button>.
           </p>
-
-          <div className="flex flex-col-reverse sm:flex-row gap-2 sm:gap-3 pt-4">
-            <button
-              onClick={onClose}
-              disabled={isExporting}
-              className="w-full sm:w-auto px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleExport}
-              disabled={isExporting}
-              className="w-full sm:w-auto px-4 py-2 bg-brand-500 text-gray-900 rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {isExporting ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  Exporting...
-                </>
-              ) : (
-                <>
-                  <Download className="w-4 h-4" />
-                  Export
-                </>
-              )}
-            </button>
-          </div>
         </div>
       </div>
     </div>
@@ -365,50 +365,20 @@ function AdminDashboard() {
     if (user) fetchTrendData(trendDays);
   }, [user, trendDays, fetchTrendData, refreshSignal, refreshKey]);
 
-  // Every export endpoint is documented as returning an Excel (.xlsx) file
-  // only — none accepts a `format` param. The modal used to offer a "CSV"
-  // option that sent an ignored `format=csv` and saved the (still xlsx)
-  // response under a `.csv` name, producing a mislabelled file; that option
-  // is gone and files are always named for what the API actually returns.
-  const handleExportData = async (exportType) => {
-    try {
-      let blob;
-      let filename;
-
-      switch (exportType) {
-        case 'meters':
-          blob = await JEDApiService.exportMeters();
-          filename = `meters_export_${Date.now()}.xlsx`;
-          break;
-        case 'pending':
-          blob = await JEDApiService.exportCustomerRequests({ status: 'INITIATED' });
-          filename = `pending_requests_${Date.now()}.xlsx`;
-          break;
-        case 'completed':
-          blob = await JEDApiService.exportCustomerRequests({ status: 'COMPLETED' });
-          filename = `completed_requests_${Date.now()}.xlsx`;
-          break;
-        case 'jed':
-          // Activates the previously dormant JED-group export endpoint
-          // (/external/jed/requests/export), distinct from the
-          // METERS-group exportCustomerRequests used above. `exportAll` is
-          // its documented "ignore pagination" switch.
-          blob = await JEDApiService.exportJedRequests({ exportAll: 'true' });
-          filename = `jed_requests_detailed_${Date.now()}.xlsx`;
-          break;
-        default:
-          blob = await JEDApiService.exportCustomerRequests();
-          filename = `all_requests_${Date.now()}.xlsx`;
-      }
-
-      // Numeric identifier cells in the server's workbook are rewritten as
-      // text first, so Excel can't show meter numbers in scientific notation.
-      await downloadServerXlsx(blob, filename);
-    } catch (error) {
-      console.error('Export error:', error);
-      throw error;
-    }
-  };
+  // The Summary report — the same builder and the same values as Reports →
+  // Overview (utils/reportData.js), from this dashboard's own hooks.
+  const buildSummaryReport = useCallback(async () => buildOverviewReport({
+    totals: installationTotals.totals,
+    payment: showMoney ? paymentFigures(paymentSummary.collected, paymentSummary.revenue) : null,
+    recordedTotal: showMoney ? {
+      amount: paymentSummary.revenue.summary?.recognisedTotal ?? null,
+      error: !!paymentSummary.revenue.error || !paymentSummary.revenue.summary || paymentSummary.revenue.summary.recognisedTotal === null,
+    } : null,
+    prices: showMoney ? (paymentSummary.pendingValue?.pendingValue?.prices || []) : [],
+    showMoney: showMoney === true,
+  }), [installationTotals.totals, showMoney, paymentSummary.collected, paymentSummary.revenue, paymentSummary.pendingValue]);
+  const summaryLoading = installationTotals.loading || (showMoney && (paymentSummary.collected.loading || paymentSummary.revenue.loading));
+  const summaryUnavailable = !installationTotals.totals || !!installationTotals.error;
 
   const handleGenerateReport = async () => {
     // Open export modal with report preset
@@ -608,10 +578,13 @@ function AdminDashboard() {
 
       {/* Export Modal — admin-tier only; nothing opens it otherwise. */}
       {showAdminTools && (
-        <ExportModal
+        <ReportModal
           isOpen={showExportModal}
           onClose={() => setShowExportModal(false)}
-          onExport={handleExportData}
+          buildSummary={buildSummaryReport}
+          summaryDisabled={summaryLoading || summaryUnavailable}
+          summaryReason={summaryLoading ? 'Loading…' : summaryUnavailable ? 'Installation figures are unavailable.' : null}
+          onOpenReports={() => navigate('/reports')}
         />
       )}
     </div>

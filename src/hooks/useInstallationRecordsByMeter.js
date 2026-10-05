@@ -19,22 +19,32 @@ import { getErrorMessage } from '../utils/errorMessage';
 import { normalizeMultiRow, normalizeJedRow, JED_BUCKET } from '../utils/installationScope';
 import { COMPLETED_INSTALLATION_STATUSES } from '../utils/installationTotals';
 import { indexInstallationsByMeter } from '../utils/completedInstallationsReport';
+import { isPermissionError } from '../utils/apiResult';
 
 const MAX_PAGES = 100;
 
+// `jedForbidden`: the role can't read JED's Remita requests (a Supervisor may
+// get 403 on /external/jed/*). That source is left out and said so — never a
+// load failure, which used to empty the whole Installed view for that role.
 export async function loadInstallationRecordsByMeter() {
+  let jedForbidden = false;
   const [imported, jed] = await Promise.all([
     Promise.all(COMPLETED_INSTALLATION_STATUSES.imported.map((status) =>
       fetchAllPagesDetailed((p) => jedApi.getInstallations(p), { status }, { maxPages: MAX_PAGES }))),
     Promise.all(COMPLETED_INSTALLATION_STATUSES.jed.map((status) =>
-      fetchAllPagesDetailed((p) => jedApi.getAllCustomerRequests(p), { status }, { maxPages: MAX_PAGES }))),
+      fetchAllPagesDetailed((p) => jedApi.getAllCustomerRequests(p), { status }, { maxPages: MAX_PAGES })))
+      .catch((err) => {
+        if (!isPermissionError(err)) throw err;
+        jedForbidden = true;
+        return [];
+      }),
   ]);
   const rows = [
     ...imported.flatMap((r) => r.items.map(normalizeMultiRow)),
     ...jed.flatMap((r) => r.items.map((x) => normalizeJedRow(x, JED_BUCKET))),
   ];
   const { index, conflicts } = indexInstallationsByMeter(rows);
-  return { index, conflicts, complete: ![...imported, ...jed].some((r) => r.truncated) };
+  return { index, conflicts, complete: ![...imported, ...jed].some((r) => r.truncated), jedForbidden };
 }
 
 /** @param {{ enabled?: boolean }} [options] - explicit opt-in */

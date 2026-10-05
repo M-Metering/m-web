@@ -75,6 +75,9 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+  // True while the photo field is processing or uploading. The report must not
+  // go out meanwhile: it would carry no picture, or the one being replaced.
+  const [photoBusy, setPhotoBusy] = useState(false);
 
   const [meters, setMeters] = useState([]);
   const [metersLoading, setMetersLoading] = useState(false);
@@ -186,7 +189,7 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (submitting || !validate()) return;
+    if (submitting || photoBusy || !validate()) return;
 
     setSubmitting(true);
     setSubmitError(null);
@@ -420,6 +423,7 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
                 setErrors((prev) => ({ ...prev, installationPhotoUrl: undefined }));
               }}
               disabled={submitting}
+              onBusyChange={setPhotoBusy}
               entityType={UPLOAD_ENTITY.INSTALLATION}
               entityId={job.id}
               coordinates={{ latitude: form.latitude, longitude: form.longitude }}
@@ -467,11 +471,11 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={submitting}
+            disabled={submitting || photoBusy}
             className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg bg-brand-500 text-gray-900 hover:bg-brand-600 disabled:opacity-60"
           >
-            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-            {submitting ? 'Submitting…' : 'Submit installation'}
+            {submitting || photoBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+            {submitting ? 'Submitting…' : photoBusy ? 'Waiting for photo…' : 'Submit installation'}
           </button>
         </div>
       </div>

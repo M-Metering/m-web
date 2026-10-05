@@ -20,10 +20,29 @@
 // counts are built from those filtered reads by utils/installerStats.js. The
 // drill-down filters the installer's already-loaded jobs in memory, so it
 // costs no further request.
+//
+// DRILL-DOWN (2026-10-04): two lists for one installer.
+//   Jobs    every job assigned to them; each opens its installation record.
+//   Meters  every meter assigned to them (installerMeterList): those still in
+//           their hands (open dispatch batches) and those installed on one of
+//           their jobs. An installed meter opens the record of the customer it
+//           was installed for. Both use the SAME record panel as Meter
+//           Schedule → Installed (InstallationRecord, fed by
+//           installationDetailsOf — the export's own field definitions), so a
+//           meter, a job and the workbook can't disagree about a field. The
+//           customer's phone is shown to the admin tier only, as everywhere.
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  HardHat, RefreshCw, AlertCircle, Loader2, Search, ArrowLeft, ChevronRight, Inbox, Filter,
+  HardHat, RefreshCw, AlertCircle, Loader2, Search, ArrowLeft, ChevronRight, Inbox, Filter, Gauge, Undo2,
 } from 'lucide-react';
+import InfoModal from '../common/InfoModal';
+import RevertInstallationModal from '../installations/RevertInstallationModal';
+import { revertTargetOf } from '../../utils/installationRevert';
+import UnassignMeterAction from '../installations/UnassignMeterAction';
+import { unassignActionFor } from '../../utils/meterUnassign';
+import { InstallationRecord } from '../schedule/MeterDrillDown';
+import { installationDetailsOf } from '../../utils/completedInstallationsReport';
+import { normalizeMultiRow } from '../../utils/installationScope';
 import jedApi from '../services/api';
 import { usePermissions } from '../auth/usePermissions';
 import { ROLES } from '../auth/permissions';
@@ -38,7 +57,7 @@ import { formatPhaseLabel } from '../../utils/installationScope';
 import { installationStatusLabel, METER_PHASE_TYPES } from '../../utils/installationStatus';
 import {
   INSTALLER_JOB_STATUSES, JOB_STATUS_FILTERS, summarizeInstallerStats, totalInstallerStats,
-  filterInstallerJobs, formatCompletionRate,
+  filterInstallerJobs, formatCompletionRate, installerMeterList, openJobsForMeter,
 } from '../../utils/installerStats';
 
 // 10,000 jobs per status. Past that the page says the figures are incomplete.
@@ -87,9 +106,174 @@ const needText = (row) => {
   return 'Covered';
 };
 
-function InstallerDetail({ row, onBack }) {
+// One installation's record, from the job itself — no further request. A
+// Super Admin can unassign an installed meter from here (the confirmation
+// replaces this dialog, so only one is open at a time).
+function JobRecordModal({ job, onClose, showPhone, showPayment, canRevert, onRevert }) {
+  const row = useMemo(() => (job ? normalizeMultiRow(job) : null), [job]);
+  const record = useMemo(() => (row ? installationDetailsOf(row) : null), [row]);
+  const target = canRevert && row ? revertTargetOf(row) : null;
+  return (
+    <InfoModal isOpen={!!job} onClose={onClose}
+      title={job ? `${job.customerName || 'Customer'} · Acct ${job.accountNumber}` : ''}>
+      {job && (
+        <div className="space-y-3 text-left">
+          <InstallationRecord record={record} loading={false} error={null} complete showPhone={showPhone} showPayment={showPayment} />
+          {target && (
+            <button type="button" onClick={() => onRevert(target)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40">
+              <Undo2 className="w-3.5 h-3.5" /> Unassign installed meter
+            </button>
+          )}
+        </div>
+      )}
+    </InfoModal>
+  );
+}
+
+// A meter still in the installer's hands. The API pairs a meter with a job
+// only when the installer reports the installation, so this shows the open
+// jobs of its type the meter is for — each opens its record.
+function HeldMeterModal({ meter, row, onClose, onOpenJob }) {
+  const jobs = useMemo(() => (meter ? openJobsForMeter(row, meter) : []), [meter, row]);
+  const type = meter?.phaseType ? formatPhaseLabel(meter.phaseType) : null;
+  return (
+    <InfoModal isOpen={!!meter} onClose={onClose} title={meter ? `Meter ${meter.meterNumber}` : ''}>
+      {meter && (
+        <div className="space-y-3 text-left">
+          <dl className="grid grid-cols-1 gap-1 text-xs">
+            {[
+              ['Status', 'Assigned (with the installer, not yet installed)'],
+              ['Meter type', type || 'Not recorded'],
+              ['Installer', row.name],
+              ['Assigned', meter.assignedAt ? formatDateTime(meter.assignedAt) : 'Not recorded'],
+              ['Batch', meter.batchRef || 'Not recorded'],
+            ].map(([label, value]) => (
+              <div key={label} className="flex gap-2 min-w-0">
+                <dt className="text-gray-500 dark:text-gray-400 shrink-0 w-24">{label}</dt>
+                <dd className="text-gray-900 dark:text-white min-w-0 break-words">{value}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="text-xs text-gray-600 dark:text-gray-400">
+            Meters and jobs are dispatched separately, so this meter belongs to a customer only once {row.name} reports
+            an installation with it. Until then it is for one of their open{type ? ` ${type}` : ''} jobs:
+          </p>
+          {jobs.length === 0 ? (
+            <p className="text-xs text-amber-700 dark:text-amber-400">No open job{type ? ` of this meter type` : ''} is assigned to {row.name}.</p>
+          ) : (
+            <ul className="divide-y divide-gray-200 dark:divide-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg max-h-60 overflow-y-auto"
+              aria-label={`Open jobs for meter ${meter.meterNumber}`}>
+              {jobs.map((job) => (
+                <li key={job.id}>
+                  <button type="button" onClick={() => onOpenJob(job)}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2">
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs text-gray-900 dark:text-white truncate">{job.customerName || 'Customer'} · Acct <span className="font-mono">{job.accountNumber}</span></span>
+                      <span className="block text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                        {[installationStatusLabel(job.status), job.meterType && formatPhaseLabel(job.meterType),
+                          job.assignedAt && `Assigned ${formatDateTime(job.assignedAt)}`, job.area || job.customerAddress]
+                          .filter(Boolean).join(' · ')}
+                      </span>
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </InfoModal>
+  );
+}
+
+const TAB_CLASS = (active) => `px-3 py-2 text-sm font-medium border-b-2 -mb-px ${active
+  ? 'border-brand-500 text-gray-900 dark:text-white'
+  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`;
+
+// The same "Unassign" as Meter Schedule and Assignments (utils/meterUnassign.js):
+// a meter in hand goes back to stock (the installer's jobs are untouched, so
+// only "Meters held" drops); an installed one is a Super Admin revert.
+const meterUnassignAction = (m, row, { canReturn, canRevert }) => unassignActionFor({
+  meter: { meterNumber: m.meterNumber, phaseType: m.phaseType, status: m.state === 'INSTALLED' ? 'INSTALLED' : '' },
+  holder: m.state === 'HELD'
+    ? { installerId: row.installerId, installerName: row.name, assignedAt: m.assignedAt, batchRef: m.batchRef, phaseType: m.phaseType }
+    : null,
+  installationRow: m.job ? normalizeMultiRow(m.job) : null,
+  canReturn, canRevert,
+});
+
+function InstallerMeters({ row, onOpenJob, onOpenMeter, canReturn = false, canRevert = false }) {
+  const meters = useMemo(() => installerMeterList(row), [row]);
+  const heldKnown = row.meters !== null;
+  const held = meters.filter((m) => m.state === 'HELD').length;
+  const installed = meters.length - held;
+  return (
+    <div>
+      <p className="px-3 sm:px-4 py-2 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+        {heldKnown ? `${held.toLocaleString()} assigned, not yet installed · ` : ''}{installed.toLocaleString()} installed
+        {!heldKnown && ' · meters in hand could not be read, so only installed meters are listed'}
+      </p>
+      {meters.length === 0 ? (
+        <div className="py-12 text-center px-4">
+          <Gauge className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
+          <p className="text-sm text-gray-600 dark:text-gray-400">No meters assigned to this installer.</p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-gray-200 dark:divide-gray-700" aria-label={`Meters for ${row.name}`}>
+          {meters.map((m) => {
+            const body = (
+              <>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-sm font-mono text-gray-900 dark:text-white break-all">{m.meterNumber}</p>
+                  <span className={`shrink-0 inline-flex px-2 py-0.5 text-[11px] font-semibold rounded-full ${m.state === 'INSTALLED'
+                    ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                    : 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300'}`}>
+                    {m.state === 'INSTALLED' ? 'Installed' : 'Assigned'}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                  {m.phaseType ? formatPhaseLabel(m.phaseType) : 'Meter type not recorded'}
+                  {m.state === 'HELD' && m.assignedAt ? ` · Assigned ${formatDateTime(m.assignedAt)}` : ''}
+                  {m.state === 'HELD' && m.batchRef ? ` · Batch ${m.batchRef}` : ''}
+                  {m.state === 'INSTALLED' && m.installedOn ? ` · Installed ${formatPlainDate(m.installedOn)}` : ''}
+                </p>
+                {m.job && (
+                  <p className="text-xs text-gray-700 dark:text-gray-300 mt-0.5 truncate">
+                    {m.job.customerName || 'Customer'} · Acct <span className="font-mono">{m.job.accountNumber}</span>
+                  </p>
+                )}
+              </>
+            );
+            return (
+              <li key={m.meterNumber} className="flex items-center">
+                <button type="button" onClick={() => (m.job ? onOpenJob(m.job) : onOpenMeter(m))}
+                  aria-label={m.job
+                    ? `Meter ${m.meterNumber}: view the installation and customer`
+                    : `Meter ${m.meterNumber}: view the jobs it is assigned for`}
+                  className="min-w-0 flex-1 text-left p-3 sm:p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2">
+                  <div className="min-w-0 flex-1">{body}</div>
+                  <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />
+                </button>
+                <UnassignMeterAction action={meterUnassignAction(m, row, { canReturn, canRevert })} className="mr-3 sm:mr-4" />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function InstallerDetail({ row, onBack, showPhone, showPayment, canRevert, canReturn }) {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [visible, setVisible] = useState(JOB_PAGE_SIZE);
+  const [tab, setTab] = useState('jobs');
+  const [openJob, setOpenJob] = useState(null);
+  const [openMeter, setOpenMeter] = useState(null);
+  const [revertTarget, setRevertTarget] = useState(null);
+  const meterCount = useMemo(() => installerMeterList(row).length, [row]);
   const set = (key) => (e) => { setFilters((f) => ({ ...f, [key]: e.target.value })); setVisible(JOB_PAGE_SIZE); };
 
   const filtered = useMemo(() => {
@@ -124,6 +308,16 @@ function InstallerDetail({ row, onBack }) {
       </div>
 
       <div className="card overflow-hidden">
+        <div role="tablist" aria-label="Installer details" className="flex gap-2 px-3 sm:px-4 border-b border-gray-200 dark:border-gray-700">
+          <button type="button" role="tab" aria-selected={tab === 'jobs'} onClick={() => setTab('jobs')} className={TAB_CLASS(tab === 'jobs')}>
+            Jobs ({row.jobs.length.toLocaleString()})
+          </button>
+          <button type="button" role="tab" aria-selected={tab === 'meters'} onClick={() => setTab('meters')} className={TAB_CLASS(tab === 'meters')}>
+            Meters ({meterCount.toLocaleString()})
+          </button>
+        </div>
+        {tab === 'meters' ? <InstallerMeters row={row} onOpenJob={setOpenJob} onOpenMeter={setOpenMeter} canReturn={canReturn} canRevert={canRevert} /> : (
+        <>
         <fieldset className="p-3 sm:p-4 border-b border-gray-200 dark:border-gray-700 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <legend className="sr-only">Filter jobs</legend>
           <select value={filters.status} onChange={set('status')} aria-label="Filter by status" className="form-input px-3 py-2 text-sm">
@@ -169,7 +363,10 @@ function InstallerDetail({ row, onBack }) {
         ) : (
           <ul className="divide-y divide-gray-200 dark:divide-gray-700" aria-label={`Jobs for ${row.name}`}>
             {filtered.slice(0, visible).map((job) => (
-              <li key={job.id} className="p-3 sm:p-4">
+              <li key={job.id}>
+                <button type="button" onClick={() => setOpenJob(job)}
+                  aria-label={`Account ${job.accountNumber}: view job details`}
+                  className="w-full text-left p-3 sm:p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
@@ -193,6 +390,7 @@ function InstallerDetail({ row, onBack }) {
                     <p className="truncate">{[job.area, job.feederName && `Feeder ${job.feederName}`, job.customerAddress].filter(Boolean).join(' · ')}</p>
                   )}
                 </div>
+                </button>
               </li>
             ))}
           </ul>
@@ -205,7 +403,16 @@ function InstallerDetail({ row, onBack }) {
             </button>
           </div>
         )}
+        </>
+        )}
       </div>
+
+      <HeldMeterModal meter={openMeter} row={row} onClose={() => setOpenMeter(null)}
+        onOpenJob={(job) => { setOpenMeter(null); setOpenJob(job); }} />
+      <JobRecordModal job={openJob} onClose={() => setOpenJob(null)} showPhone={showPhone} showPayment={showPayment}
+        canRevert={canRevert} onRevert={(target) => { setOpenJob(null); setRevertTarget(target); }} />
+      {/* Saving bumps the refresh signal; this page re-reads and the row updates. */}
+      <RevertInstallationModal target={revertTarget} onClose={() => setRevertTarget(null)} />
     </div>
   );
 }
@@ -327,7 +534,9 @@ function InstallerJobStatus() {
           <span className="sr-only">Loading installer job status</span>
         </div>
       ) : selected ? (
-        <InstallerDetail row={selected} onBack={() => setSelectedId(null)} />
+        <InstallerDetail row={selected} onBack={() => setSelectedId(null)} showPhone={permissions.isAdmin === true}
+          showPayment={permissions.canViewPayments === true} canRevert={permissions.canRevertInstallations === true}
+          canReturn={permissions.canManageAssignments === true} />
       ) : !error && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">

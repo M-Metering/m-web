@@ -1,48 +1,20 @@
-// src/components/admin/PaymentsPage.jsx
-// A simple operational Payments experience: real payment records
-// (GET /external/jed/payments), the routine confirm-payment action, and
-// bulk-confirming a batch of already-paid customers from a file. The
-// diagnostic "RRR / Order Lookup" tab (raw Remita status/order lookups,
-// webhook-endpoint verification, manual-confirm-by-RRR) and "Webhook
-// Replay" tab (manually resubmitting a Remita webhook payload) were
-// removed — they exposed backend integration mechanics an Admin doesn't
-// need for the normal day-to-day workflow, not a required business action.
-// checkRemitaStatusByRRR and confirmPaymentManually are still real,
-// still-used API methods (ConfirmPaymentTab.jsx's RRR lookup, and
-// BulkConfirmPaymentsTab.jsx's per-row confirm, respectively) — only the
-// standalone diagnostic tabs and the API surface exclusive to them
-// (checkRemitaStatusByOrderId, verifyPaymentByRRR, submitRemitaWebhook,
-// and the /webhooks/* endpoint config) were removed. See API_GAP_REPORT.md.
+// src/components/admin/RemitaPaymentsList.jsx
+// Reports → Payments & deals → "Remita payments": the JED/Remita payment
+// records (GET /external/jed/payments) for a date-paid window. Moved here
+// unchanged from the retired Payments page (2026-10-05). A different question
+// from the recognised-revenue records beside it (RevenueTab): these are Remita
+// payment events for JED requests, by the date they were paid.
 import { useState, useCallback, useEffect } from 'react';
 import jedApi from '../services/api';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import { formatCurrencyNGN } from '../../utils/currency';
-import ConfirmPaymentTab from './ConfirmPaymentTab';
-import BulkConfirmPaymentsTab from './BulkConfirmPaymentsTab';
-import RevenueTab from './RevenueTab';
-import RevenueSummaryPanel from './RevenueSummaryPanel';
-import { usePermissions } from '../auth/usePermissions';
-import { usePaymentRevenueSummary } from '../../hooks/usePaymentRevenueSummary';
 import StatusBadge from '../common/StatusBadge';
-import {
-  CreditCard, RefreshCw, AlertCircle, Loader2, Calendar
-} from 'lucide-react';
+import { RefreshCw, AlertCircle, Loader2, Calendar } from 'lucide-react';
 import { formatDateTime, parseTimestamp, getRecentDaysRange } from '../../utils/date';
 import { fetchAllPages } from '../../utils/fetchAllPages';
 import { getErrorMessage } from '../../utils/errorMessage';
-
-const TABS = [
-  { id: 'payments', label: 'Payments' },
-  // Recognised revenue across both discos (GET /finance/revenue/*, added
-  // 2026-09-24). It lives here because /finance/* is SUPERADMIN/ADMIN only —
-  // the same audience as this page — and because it is a different question
-  // from the Payments tab: that lists Remita payment records, this is revenue
-  // the business has recognised, which for Aba Power happens on installation
-  // rather than on payment.
-  { id: 'revenue', label: 'Revenue' },
-  { id: 'confirm', label: 'Confirm Payment' },
-  { id: 'bulkImport', label: 'Upload Paid Customers' },
-];
+import ReportExportBar, { NO_DATA_TEXT } from '../reports/ReportExportBar';
+import { buildRemitaPaymentsReport } from '../../utils/reportData';
 
 const DATE_PRESETS = [
   { id: '7', label: 'Last 7 days' },
@@ -63,8 +35,7 @@ const getMeterType = (p) => p?.meterType || null;
 const getPaymentStatus = (p) => p?.status || 'UNKNOWN';
 const getPaymentDate = (p) => p?.datePaid || p?.dateCompleted || null;
 
-// ---- Tab: Payments ----
-function PaymentsTab() {
+function RemitaPaymentsList() {
   const { refreshSignal } = useDataRefresh();
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -93,6 +64,11 @@ function PaymentsTab() {
       setLoading(false);
     }
   }, [preset]);
+
+  // Export the loaded window — already every page (fetchAllPages above).
+  const buildReport = useCallback(async () => buildRemitaPaymentsReport({
+    payments, rangeLabel: DATE_PRESETS.find((p) => p.id === preset)?.label || `Last ${preset} days`,
+  }), [payments, preset]);
 
   const handlePresetChange = (id) => {
     setPreset(id);
@@ -133,6 +109,13 @@ function PaymentsTab() {
           {hasFetched ? 'Refresh' : 'Load Payments'}
         </button>
       </div>
+
+      {hasFetched && !loading && (
+        <div className="card p-3 sm:p-4">
+          <ReportExportBar build={buildReport} label="Export Remita payments"
+            disabled={payments.length === 0} disabledReason={payments.length === 0 ? NO_DATA_TEXT : null} />
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 flex gap-2 text-sm text-red-800 dark:text-red-300">
@@ -232,63 +215,4 @@ function PaymentsTab() {
   );
 }
 
-function PaymentsPage() {
-  const [activeTab, setActiveTab] = useState('payments');
-  // The same hook and the same panel as the Admin Dashboard — one revenue
-  // calculation, so "Total collected payments" and "Revenue due to us" read
-  // identically on both screens. The route is already Payments-gated; the
-  // permission is passed anyway so the hook never fires for anyone else.
-  const { canViewPayments } = usePermissions();
-  const paymentSummary = usePaymentRevenueSummary({ enabled: canViewPayments === true });
-
-  return (
-    <div className="space-y-4 sm:space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="p-2 bg-brand-100 dark:bg-brand-900/30 rounded-lg flex-shrink-0">
-          <CreditCard className="w-6 h-6 text-brand-600 dark:text-brand-400" />
-        </div>
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Payments</h1>
-          <p className="text-gray-600 dark:text-gray-400 text-sm sm:text-base">
-            Who paid, how much, and what's next — payment records, confirmation, and bulk import
-          </p>
-        </div>
-      </div>
-
-      {canViewPayments && (
-        <RevenueSummaryPanel
-          id="payments-revenue-summary"
-          title="Payment & Revenue Summary"
-          collected={paymentSummary.collected}
-          revenue={paymentSummary.revenue}
-          onRetry={paymentSummary.reload}
-        />
-      )}
-
-      <div className="card p-3 sm:p-4">
-        <div className="flex space-x-1 sm:space-x-2 overflow-x-auto">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-3 sm:px-4 py-2 rounded-lg font-medium transition-colors whitespace-nowrap text-xs sm:text-sm ${
-                activeTab === tab.id
-                  ? 'bg-brand-500 text-gray-900'
-                  : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {activeTab === 'payments' && <PaymentsTab />}
-      {activeTab === 'revenue' && <RevenueTab />}
-      {activeTab === 'confirm' && <ConfirmPaymentTab />}
-      {activeTab === 'bulkImport' && <BulkConfirmPaymentsTab />}
-    </div>
-  );
-}
-
-export default PaymentsPage;
+export default RemitaPaymentsList;

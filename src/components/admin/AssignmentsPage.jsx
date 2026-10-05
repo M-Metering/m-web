@@ -25,6 +25,7 @@ import { usePermissions } from '../auth/usePermissions';
 import StatusTabs from '../common/StatusTabs';
 import StatusBadge from '../common/StatusBadge';
 import InstallerSelect from '../installations/InstallerSelect';
+import { returnMetersToStock } from '../../utils/meterUnassign';
 import BatchResultSummary from '../installations/BatchResultSummary';
 import MeterCapacitySummary from '../installations/MeterCapacitySummary';
 import { useDiscoOptions } from '../../hooks/useDiscoOptions';
@@ -43,7 +44,7 @@ const METER_MAX_PAGES = 100;
 
 function AssignmentsPage() {
   const permissions = usePermissions();
-  const { notifyDataChanged } = useDataRefresh();
+  const { notifyDataChanged, refreshSignal } = useDataRefresh();
   const { discos, loading: discosLoading } = useDiscoOptions();
 
   // A Supervisor holds ASSIGNMENTS.VIEW without MANAGE: it reaches this page
@@ -106,7 +107,9 @@ function AssignmentsPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [activeTab, metersReload]);
+  // refreshSignal: an assign, return, install or revert anywhere re-reads the
+  // list, so the "available" count never lags the server.
+  }, [activeTab, metersReload, refreshSignal]);
 
   // Who holds which meter right now, from the open dispatch batches. GET
   // /meters keeps a dispatched meter at status AVAILABLE and may not carry
@@ -216,15 +219,20 @@ function AssignmentsPage() {
     setReturning(true);
     setReturnError(null);
     try {
-      const response = await jedApi.returnMeters(Array.from(selectedReturns));
+      // The one release call every screen uses (utils/meterUnassign.js).
+      const requested = Array.from(selectedReturns);
+      const { rejected } = await returnMetersToStock(requested);
+      // A meter dispatched earlier in this session and now returned is
+      // available again: stop excluding it from the picker.
+      const back = new Set(requested.filter((n) => !rejected.some((r) => r.meterNumber === n)));
+      setDispatched((prev) => new Set([...prev].filter((n) => !back.has(n))));
       notifyDataChanged();
       setSelectedReturns(new Set());
       setRefreshKey((k) => k + 1);
       // Re-read the batch so the item statuses reflect the return.
       const fresh = await jedApi.getAssignmentBatch(detail.id);
       setDetail(fresh?.data || fresh || detail);
-      const summary = response?.data || response;
-      if (summary?.rejected?.length) {
+      if (rejected.length) {
         setReturnError('Some meters could not be returned — reopen the batch to check their status.');
       }
     } catch (err) {

@@ -922,8 +922,11 @@ class JEDApiService {
     try {
       response = await fetch(url, { method: 'POST', headers, body: form, signal: controller.signal });
     } catch (err) {
-      if (err?.name === 'AbortError') throw new Error('Upload timed out');
-      throw err;
+      // No HTTP status reached the page. Tagged so the caller can tell a
+      // timeout from a refused/dropped request (which is also how the API
+      // proxy's CORS-less 413 arrives — see utils/fileUpload.js).
+      if (err?.name === 'AbortError') throw Object.assign(new Error('Upload timed out'), { code: 'UPLOAD_TIMEOUT' });
+      throw Object.assign(new Error(err?.message || 'Network request failed'), { code: 'NETWORK', cause: err });
     } finally {
       clearTimeout(timer);
     }
@@ -1479,6 +1482,20 @@ class JEDApiService {
   async cancelInstallation(id, reason) {
     const url = this.buildApiUrl(this.endpoints.INSTALLATIONS.CANCEL(id));
     const response = await this.makeRequest(url, { method: 'PATCH', body: JSON.stringify(reason ? { reason } : {}) });
+    this.clearCache();
+    return response;
+  }
+
+  /**
+   * Undo a completed installation (SUPERADMIN only, 2026-10-04). The job
+   * becomes PENDING and unassigned, its meter returns to stock, and its seal,
+   * installation date, GPS, photo URL and recognised revenue are CLEARED, not
+   * archived — this cannot be undone. INSTALLED only: 400 otherwise, 409 for an
+   * EXPORTED job. The optional reason is recorded in the server log.
+   */
+  async revertInstallation(id, reason) {
+    const url = this.buildApiUrl(this.endpoints.INSTALLATIONS.REVERT(id));
+    const response = await this.makeRequest(url, { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) });
     this.clearCache();
     return response;
   }

@@ -41,13 +41,14 @@ None of these affect runtime behavior; they're safe to remove independently when
 
 ### Large / complex components
 
-Line counts (verified via `wc -l`), largest first:
+Line counts (verified via `wc -l`, refreshed 2026-10-05), largest first:
 
 | File | Lines | Note |
 |---|---|---|
-| `src/components/schedule/MeterSchedule.jsx` | 1381 | Two custom hooks (`useMeterData`, `useMeterStatistics`) + ~10 sub-components (cards, tables, filters, pagination, empty/loading states) + the page shell, all in one file. Functions correctly, but any change here has to be understood against the whole file — there's no natural seam to review just "the pagination component" in isolation. |
-| `src/components/services/api.js` | 1078 | Expected size for "every real API call in one class" — appropriately large given its role, not flagged as a quality problem on its own, but see "Repeated API logic" above for a concrete extraction opportunity. |
-| `src/components/admin/UserManagement.jsx` | 896 | CRUD table + create/edit modal + role-assignment logic + password-reset flow in one file. |
+| `src/components/schedule/MeterSchedule.jsx` | 1818 | Two custom hooks (`useMeterData`, `useMeterStatistics`) + ~10 sub-components (cards, tables, filters, pagination, empty/loading states) + the page shell, all in one file. Functions correctly, but any change here has to be understood against the whole file — there's no natural seam to review just "the pagination component" in isolation. |
+| `src/components/services/api.js` | 1713 | Expected size for "every real API call in one class" — appropriately large given its role, not flagged as a quality problem on its own, but see "Repeated API logic" above for a concrete extraction opportunity. |
+| `src/components/admin/InstallationRequests.jsx` | 1555 | The "All Requests" view: two resources side by side, filters, paste-accounts, per-disco assign, two exports, unassign. Its business rules already live in utils (`installationScope`, `accountBatch`, `completedInstallationsReport`, `installationRevert`); the remaining size is UI. |
+| `src/components/admin/UserManagement.jsx` | 1208 | CRUD table + create/edit modal + role-assignment logic + password-reset flow in one file. |
 | `src/components/settings/ApiKeySettings.jsx` | 717 | Full key lifecycle (create/list/deactivate/usage) plus the defensive id/name/prefix coercion helpers, in one file. |
 | `src/components/admin/AdminDashboard.jsx` | 710 | Stat cards + trend charts + recent-installations table + quick actions + export modal, in one file. |
 | `src/components/common/Header.jsx` | 595 | Top bar + user-menu dropdown + theme toggle + profile-edit modal + password-change flow + phone/email re-verification modal trigger, in one file. |
@@ -110,7 +111,7 @@ None of these are "broken" — they were all read start-to-finish during this au
 ## Testing
 
 - **Framework (added 2026-09-21):** Vitest + React Testing Library + jsdom, dev-only. Run with `npm test`. Tests live in `src/**/__tests__/`.
-- **Existing coverage (narrow):** unit tests for `utils/installationScope.js`, `utils/meterCapacity.js`, `utils/paymentSummary.js` and `utils/fetchAllPages.js`. Component tests render `InstallationRequests.jsx`, `AssignmentsPage.jsx` and `InstallationDetail.jsx`'s JED completion against a mocked `jedApi`. Item 4 below is now partly covered (JED completion only).
+- **Existing coverage (2026-10-05):** 53 test files, 726 tests. Every business-rule util has tests beside it in `src/utils/__tests__/`, the permission model has a per-role matrix (item 2 below is covered), and the main screens (Installations, Assignments, Meter Schedule, Installer Job Status, Dashboard, Reports/revenue consistency, User Management, My Jobs, Report Installation, InstallationDetail) render against a mocked `jedApi`. `CLAUDE.md` → Technology → Testing lists them.
 - **Still missing, prioritized by blast radius:**
   1. `src/components/services/api.js` — response-envelope unwrapping, error-type mapping, retry/timeout behavior. This is the single highest-leverage place to add unit tests, since every page depends on it behaving correctly and it has no UI to "eyeball" when it's wrong.
   2. `src/components/auth/permissions.js` / `usePermissions.jsx` — the entire security-adjacent gating model. A regression here silently over- or under-grants access; worth a focused unit-test pass even before broader UI testing.
@@ -124,7 +125,7 @@ None of these are "broken" — they were all read start-to-finish during this au
 *(none identified — no data-loss, security-bypass, or crash-on-normal-use defects were found during this audit)*
 
 ### HIGH
-- **Test suite is narrow** (introduced 2026-09-21; covers the installation-scope/capacity/payment utils and three pages, not `api.js`, permissions, the idle timeout or payment confirmation), for an app that handles payment confirmation and installation completion. See "Testing" above for the prioritized list of what to cover first. *(Location: whole repo. Impact: every refactor or dependency bump is validated only by manual testing. Remediation: introduce Vitest + React Testing Library, starting with `api.js` and `permissions.js`.)*
+- **Test suite has gaps** (introduced 2026-09-21, 693 tests by 2026-10-05; permissions and most screens are now covered, but `api.js` itself, the idle timeout and payment confirmation still are not), for an app that handles payment confirmation and installation completion. See "Testing" above for the prioritized list of what to cover first. *(Location: whole repo. Impact: every refactor or dependency bump is validated only by manual testing. Remediation: introduce Vitest + React Testing Library, starting with `api.js` and `permissions.js`.)*
 - ~~`react-router-dom`/`react-router` (installed 7.9.6) has multiple published HIGH-severity advisories~~ — **fixed 2026-08-26**: `npm audit fix` bumped both to 7.18.2, within the already-declared `^7.9.6` range (no `package.json` change, non-breaking). `npm audit --omit=dev` now reports 0 vulnerabilities. See `Security.md`.
 
 ### MEDIUM

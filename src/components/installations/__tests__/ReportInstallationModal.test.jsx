@@ -143,7 +143,7 @@ describe('ReportInstallationModal — a failed photo upload', () => {
 
     const file = new File([new Uint8Array([0xff, 0xd8, 0xff])], 'site.jpg', { type: 'image/jpeg' });
     fireEvent.change(screen.getByLabelText('Choose a photo from the gallery'), { target: { files: [file] } });
-    expect((await screen.findByRole('alert')).textContent).toMatch(/couldn't be uploaded/);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/rejected by the server/);
 
     // Nothing the installer typed was lost.
     expect(screen.getByLabelText(/Meter installed/).value).toBe('0239110006909');

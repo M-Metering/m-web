@@ -14,7 +14,7 @@
 // permanently-docked desktop rail.
 import {
   LayoutDashboard, Database, Users, BarChart3,
-  Upload, Settings, X, CreditCard, ChevronsLeft, ChevronsRight,
+  Upload, Settings, X, ChevronsLeft, ChevronsRight,
   ClipboardList, MessageSquareWarning, FileSpreadsheet, Send, Wrench, HardHat
 } from 'lucide-react';
 import { useEffect, useCallback, useMemo } from 'react';
@@ -123,15 +123,9 @@ const NAVIGATION_CONFIG = {
       label: 'Reports',
       path: '/reports',
       icon: BarChart3,
-      description: 'Analytics & exports',
-      accessible: (userRole) => isAdminTierRole(userRole)
-    },
-    {
-      id: 'payments',
-      label: 'Payments',
-      path: '/payments',
-      icon: CreditCard,
-      description: 'Payment reconciliation & Remita status',
+      // Payments was merged in on 2026-10-05: payment records, revenue,
+      // confirmation and bulk import all live under Reports now.
+      description: 'Payments, deals, revenue & exports',
       accessible: (userRole) => isAdminTierRole(userRole)
     },
     {

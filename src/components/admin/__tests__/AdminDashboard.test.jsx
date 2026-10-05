@@ -15,6 +15,7 @@ import { DataRefreshProvider, useDataRefresh } from '../../contexts/DataRefreshC
 import { formatCurrencyNGN } from '../../../utils/currency';
 import AdminDashboard from '../AdminDashboard';
 import jedApi from '../../services/api';
+import { downloadXlsx, downloadServerXlsx } from '../../../utils/xlsx';
 
 let permissions;
 vi.mock('../../auth/usePermissions', () => ({ usePermissions: () => permissions }));
@@ -36,7 +37,15 @@ vi.mock('../../services/api', () => ({
     getUsers: vi.fn(),
     getRevenueTransactions: vi.fn(),
     getMeterTypes: vi.fn(),
+    exportMeters: vi.fn(),
+    exportCustomerRequests: vi.fn(),
+    exportJedRequests: vi.fn(),
   },
+}));
+vi.mock('../../../utils/xlsx', async (importOriginal) => ({
+  ...(await importOriginal()),
+  downloadXlsx: vi.fn(async () => {}),
+  downloadServerXlsx: vi.fn(async () => {}),
 }));
 
 const ADMIN = { isAdmin: true, canViewPayments: true, canViewReports: true };
@@ -219,6 +228,18 @@ describe('Supervisor dashboard', () => {
     expect(jedApi.getInstallations).toHaveBeenCalledWith(expect.objectContaining({ status: 'EXPORTED' }));
   });
 
+  it('still shows Pending and Completed when JED requests are forbidden to the role (403)', async () => {
+    jedApi.getAllCustomerRequests.mockRejectedValue(Object.assign(new Error('PERMISSION_ERROR:Insufficient permissions'), {}));
+    renderDashboard();
+    // Imported only: PENDING 10 + ASSIGNED 5 + IN_PROGRESS 2 + FAILED 1 — never "Unavailable".
+    expect(await kpi('Pending Installations')).toBe('18');
+    expect(await kpi('Completed Installations')).toBe('10');
+    expect(within(card('Pending Installations')).getByText(/JED Remita requests aren.t available to your role/)).toBeTruthy();
+    // The trend still renders from the imported records.
+    expect(await screen.findByRole('img', { name: /Installations Completed chart/ })).toBeTruthy();
+    expect(screen.queryByText(/Couldn.t load/)).toBeNull();
+  });
+
   it("offers the Supervisor's own pages as shortcuts, and no admin tools", async () => {
     renderDashboard();
     await kpi('Pending Installations');
@@ -289,4 +310,47 @@ describe('Refresh', () => {
     await waitFor(() => expect(jedApi.getInstallationStatistics.mock.calls.length).toBeGreaterThan(before));
     await waitFor(async () => expect(await kpi('Pending Installations')).toBe('21'));
   });
+});
+
+describe('Generate Report (fixed 2026-10-05)', () => {
+  const open = async () => {
+    renderDashboard();
+    fireEvent.click(await screen.findByRole('button', { name: /Generate Report/ }));
+    return screen.findByRole('dialog', { name: 'Generate Report' });
+  };
+  const metric = async (label) => {
+    const heading = await screen.findByText(label, { selector: 'h3' });
+    await waitFor(() => expect(heading.nextElementSibling?.tagName).toBe('P'), { timeout: 5000 });
+    return heading.nextElementSibling.textContent.trim();
+  };
+
+  it('downloads the summary report with the figures the dashboard shows — and never calls the JED-only exports', async () => {
+    const dialog = await open();
+    const excel = within(dialog).getByRole('button', { name: 'Export Excel' });
+    await waitFor(() => expect(excel.disabled).toBe(false), { timeout: 5000 });
+    fireEvent.click(excel);
+    await waitFor(() => expect(downloadXlsx).toHaveBeenCalledTimes(1));
+    const [filename, sheets] = downloadXlsx.mock.calls[0];
+    expect(filename).toMatch(/^ME-Metering-Overview-\d{4}-\d{2}-\d{2}\.xlsx$/);
+    const rows = sheets[0].rows;
+    const row = (m) => rows.find((r) => r.metric === m);
+    expect(String(row('Pending installations').count)).toBe(await kpi('Pending Installations'));
+    const due = row('Revenue due to us');
+    expect(due.amount === null ? 'Unavailable' : formatCurrencyNGN(due.amount)).toBe(await metric('Revenue due to us'));
+    const col = row('Total collected payments');
+    expect(col.amount === null ? 'Unavailable' : formatCurrencyNGN(col.amount)).toBe(await metric('Total collected payments'));
+    expect(jedApi.exportCustomerRequests).not.toHaveBeenCalled();
+    expect(jedApi.exportJedRequests).not.toHaveBeenCalled();
+  }, 30000);
+
+  it('the meter inventory export says so plainly when the server has nothing', async () => {
+    jedApi.exportMeters.mockRejectedValue(new Error('{"success":false,"message":"No meters found to export"} 404'));
+    const dialog = await open();
+    const meters = within(dialog).getByRole('button', { name: 'Export meter inventory' });
+    fireEvent.click(meters);
+    expect(await within(dialog).findByText('There are no meters to export.')).toBeTruthy();
+    expect(downloadServerXlsx).not.toHaveBeenCalled();
+    // The button is usable again.
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Export meter inventory' }).disabled).toBe(false));
+  }, 30000);
 });

@@ -305,6 +305,8 @@ export const ENDPOINTS = {
     REPORT: (id) => `/installations/${encodeURIComponent(id)}/report`,
     FAIL: (id) => `/installations/${encodeURIComponent(id)}/fail`,
     CANCEL: (id) => `/installations/${encodeURIComponent(id)}/cancel`,
+    // SUPERADMIN only (2026-10-04): INSTALLED → PENDING, meter back to stock.
+    REVERT: (id) => `/installations/${encodeURIComponent(id)}/revert`,
     EXPORT: (discoCode) => `/installations/export/${encodeURIComponent(discoCode)}`,
     EXPORT_MARK_SENT: (discoCode) => `/installations/export/${encodeURIComponent(discoCode)}/mark-sent`,
     EXPORTS: '/installations/exports',

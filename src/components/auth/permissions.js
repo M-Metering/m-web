@@ -119,8 +119,8 @@ export const PERMISSIONS = Object.freeze({
     FILES: 'uploads:files'
   },
   
-  // Payments permissions — added for the Payments/Remita-reconciliation
-  // page (/payments): view payment records and Remita status, and the
+  // Payments permissions — view payment records and Remita status (now under
+  // Reports → Payments & deals / Payment confirmation, 2026-10-05), and the
   // more consequential ability to manually confirm a missed-webhook
   // payment. Kept admin-only (see PAGE_ACCESS and ROLE_PERMISSIONS below)
   // since manual confirmation is a money-adjacent action.
@@ -221,12 +221,17 @@ const ROLE_PERMISSIONS = Object.freeze({
   //                  statistics, disco export, mark-exported
   //   Assignments    full, same as ADMIN — assign/return meters, assign and
   //                  unassign installation jobs, list/view batches
-  //   Meters         READ-ONLY — list, search, by id, by meter number.
-  //                  No upload, export, statistics or delete (all 403).
+  //   Imports        full (2026-10-04) — upload a disco's pending-installations
+  //                  and meter sheets, history, per-row errors, undo, templates
+  //   Meters         list, search, view, and (2026-10-04) upload, export and
+  //                  statistics. NOT delete (SUPERADMIN only).
   //   Users          READ-ONLY installer roster — list/search/view INSTALLER
   //                  accounts and itself. No create, edit, delete or restore.
-  //   Everything else  no access: finance, imports, settings (meter types),
-  //                  disco management, API keys — all 403 server-side.
+  //   Everything else  no access: finance, dashboard stats, settings (meter
+  //                  prices), disco management, API keys, the JED
+  //                  customer-requests export — all 403 server-side.
+  //
+  // Source: the API's own role table (Frontend Integration Update, 2026-10-04).
   //
   // Deliberately NOT built from ADMIN_TIER_PERMISSIONS minus exclusions: an
   // allow-list can't silently grow when a new admin permission is added to
@@ -255,11 +260,20 @@ const ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.ASSIGNMENTS.VIEW,
     PERMISSIONS.ASSIGNMENTS.MANAGE,
 
-    // Meter inventory, read-only. SCHEDULE.MANAGE is withheld, which is what
-    // gates the export and the statistics call on Meter Schedule; UPLOADS.EXCEL
-    // is absent, which blocks the upload page; deleting is SUPERADMIN-only at
-    // the point of use. So this grants exactly list/search/view.
+    // Meter inventory. SCHEDULE.MANAGE gates exactly the statistics call and
+    // the server-side export on Meter Schedule; UPLOADS.EXCEL gates the
+    // /uploads page, whose one job is POST /meters/upload. All three opened to
+    // SUPERVISOR by the API on 2026-10-04. Deleting a meter stays
+    // SUPERADMIN-only at the point of use.
     PERMISSIONS.SCHEDULE.VIEW,
+    PERMISSIONS.SCHEDULE.MANAGE,
+    PERMISSIONS.UPLOADS.EXCEL,
+
+    // Imports (2026-10-04): disco pending-installation and meter sheets,
+    // history, row errors, undo, templates. Disco configuration (mappings,
+    // export templates) is SUPERADMIN-only at the point of use.
+    PERMISSIONS.IMPORTS.VIEW,
+    PERMISSIONS.IMPORTS.RUN,
 
     // The installer roster, read-only — this is also what makes the "assign
     // installer" picker work for a Supervisor (GET /users?role=INSTALLER is

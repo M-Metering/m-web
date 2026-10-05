@@ -1,15 +1,47 @@
 # Project Context: JEDC Meter Management
 
+## 0. Handover Snapshot (read this first — updated 2026-10-05)
+
+**Where the work is.** Branch `jay-dev` (main branch for PRs: `Workflow`; production is deployed by the
+owner, never by an assistant). As of 2026-10-05 a large set of changes is **uncommitted on `jay-dev`**
+(`git status`): the 2026-10-04 Frontend Integration Update work, the photo-upload pipeline (3.5 MiB
+cap + compression + one smaller retry), Supervisor fixes, and everything listed under 2026-10-04/05 in
+section 5. The owner commits, pushes and deploys; don't do any of those unless asked.
+
+**How to verify the tree.** `npm run lint` (clean), `npm test` (53 test files, 726 tests, all passing on
+2026-10-05), `npm run build` (succeeds). There is no type checker; lint + tests + build are the gate.
+Live-API checks need real credentials (`scripts/diagnostics/verify-live-data.mjs`, read-only) — none
+are stored in this repo.
+
+**Read in this order:** this file → `CLAUDE.md` (the standing rules, business definitions and the
+"never do X" list) → `API_GAP_REPORT.md` (what the API can't do, gap letters A…AT) → `Architecture.md`
+/ `Security.md` / `CodeBaseAudit.md` / `DEPLOYMENT.md` as needed. The only authoritative API
+documentation is <https://api.memetering.com/api-docs> (the spec is embedded in
+`/api-docs/swagger-ui-init.js`; 96 operations on 2026-10-04).
+
+**Open decisions waiting on the owner:**
+- **Photo-upload pipeline.** The uncommitted local pipeline compresses photos over 3.5 MiB and retries
+  once at ~1 MB on a dropped upload. The backend accepts 5 MB since 2026-10-02, so this never rejects
+  anything the API accepts, but it does compress 3.5–5 MB photos the committed version would send as-is.
+  Keep or drop before merging.
+- **Meter Schedule "Assigned" card.** The cards were restored to the pre-drill-down tiles on 2026-10-05;
+  "Assigned" (a count from open dispatch batches) was kept as a plain tile because the owner asked to keep
+  an "Unassigned" card that doesn't exist. Remove it if the exact pre-update card set is wanted.
+- **Backend asks** with no frontend workaround: revert audit trail (gap AS), meter-to-job pairing
+  (gap AT), meter status on dispatch (gap G), complaints endpoint, seal resource (gap AM), server-side
+  meter-assignment caps (gap AC), Supervisor access to JED requests (gap AR).
+
 ## 1. Project Overview
 
 **jedc-meter-management** ("ME Metering Integration", branded on the Login screen as **Masters Energy**) is an internal Progressive Web App used by **JEDC** (a Nigerian power distribution company) and its partner installers to manage meter installations end-to-end: customer meter requests, payment collection via Remita, and installer job fulfillment.
 
 **Brand identity (2026-08-27):** the app's visual identity was aligned with the real ME Metering corporate brand (memetering.com) — the actual circular badge logo (`public/brand-logo.png`, gold lightning bolt + green leaf) replaces the previous generic placeholder icon everywhere (Login, Header, Sidebar, favicon/PWA icons), and `tailwind.config.js`'s `brand` colour scale was rebuilt from the placeholder blue (`#2563eb`-based) to the real corporate gold (`#f7c51e`-based). See that file's own comment block for the accessible shade-to-text-colour pairing rules (gold needs dark text at vibrant shades, white text only at the darkest 800/900 "bronze" shades) — this is a real, deliberate deviation from a typical brand scale, not an oversight.
 
-This is **not** a customer self-service portal. There are three roles, matching the real API's `User.role` enum exactly (uppercase):
-- **SUPERADMIN** — everything ADMIN has, plus the only role permitted to create/edit ADMIN or SUPERADMIN accounts (enforced both client-side and by the backend).
-- **ADMIN** — manages users (except privileged roles), generates/confirms payments, runs reports, configures meter types/settings/API keys, manages meter inventory.
-- **INSTALLER** — sees a shared "Awaiting Installation" (paid) / "Completed" queue, completes installs, and can fill in the Complaint Form (`/complaints`). No access to Uploads, Meter Schedule or any admin page (2026-09-21).
+This is **not** a customer self-service portal. There are four roles, matching the real API's `User.role` enum exactly (uppercase); `CLAUDE.md` → "Roles" is the authoritative detail:
+- **SUPERADMIN** — everything ADMIN has, plus the only role that may create/edit ADMIN, SUPERADMIN or SUPERVISOR accounts, delete meters, and undo a completed installation ("Unassign installed meter"). Not capped by the meter-assignment rules.
+- **ADMIN** — manages Installer accounts, confirms payments, runs reports, configures meter types/settings/API keys, manages meter inventory, imports and installations. Meter dispatch is capped per meter type by the installer's open jobs.
+- **SUPERVISOR** (API role since 2026-09-24) — "an ADMIN narrowed to installations and assignments": full on Installations, Assignments and Imports; meters list/search/upload/export/statistics (never delete); read-only Installer roster; Dashboard and Installer Job Status without money; the Completed Installations export. No Payments/Finance, Reports, Settings or API keys. Capped like an Admin.
+- **INSTALLER** — sees the shared JED "Awaiting Installation" (paid) / "Completed" queue and their own assigned jobs (`/my-jobs`), reports installs, and can fill in the Complaint Form (`/complaints`). No access to Uploads, Meter Schedule or any admin page.
 
 There is no backend code in this repository — it is a frontend-only client that talks to an external REST API.
 
@@ -34,6 +66,8 @@ There is no backend code in this repository — it is a frontend-only client tha
 | Icons | lucide-react 0.548.0 |
 | PWA | vite-plugin-pwa 1.3.0 (Workbox service worker) |
 | Linting | ESLint 9.36.0 (flat config, React Hooks/Refresh plugins) |
+| Spreadsheets | ExcelJS 4 (lazy-loaded chunk, excluded from the PWA precache) — every export is `.xlsx`, every spreadsheet read is parsed in the browser |
+| Testing (dev) | Vitest 3 + React Testing Library + jsdom (`npm test`) |
 | Image processing (dev) | sharp 0.35.3 (used by PWA icon generation script) |
 
 No TypeScript (plain JSX), no UI component library, no state-management library. Tests: Vitest + React Testing Library + jsdom (dev-only, `npm test`, added 2026-09-21), with narrow coverage (see CLAUDE.md → Technology).
@@ -42,27 +76,43 @@ No TypeScript (plain JSX), no UI component library, no state-management library.
 
 ```
 jedc-meter-management/
-├── public/                    # Static assets, PWA icons, favicon, logo.svg
-├── scripts/                   # generate-pwa-icons.mjs, pwa-icon-master.svg — icon generation tooling
+├── public/                     # Static assets, PWA icons, favicon, brand-logo.png
+├── scripts/
+│   ├── generate-pwa-icons.mjs  # icon generation tooling (sharp)
+│   ├── excel-check/            # builds sample workbooks with the real export code, checks them in Excel (Windows)
+│   └── diagnostics/            # verify-live-data.mjs — read-only checks against production with a real account
 ├── src/
-│   ├── App.jsx, main.jsx      # Entry point, route table, role-gated routing
-│   ├── index.css              # Tailwind entry
-│   ├── .env.example           # Template — src/.env itself is gitignored (no longer tracked)
-│   ├── assets/                 # Images/static assets used by components
-│   ├── hooks/                  # useNavigation.js
-│   ├── utils/                  # currency.js, date.js, fetchAllPages.js, fetchAllRequests.js, rrrPayload.js, statusBadge.js, trendAggregation.js
+│   ├── App.jsx, main.jsx       # Entry point, route table, inline role-gated routes
+│   ├── index.css               # Tailwind entry
+│   ├── .env.example            # Template — src/.env itself is gitignored (envDir is 'src')
+│   ├── hooks/                  # Shared data hooks: useMeterDispatch, useMeterHolders, useInstallerMeterCapacity,
+│   │                           #   useInstallationRecordsByMeter, useInstalledMeters, useDashboardInstallations,
+│   │                           #   usePendingInstallationValue, usePaymentRevenueSummary, useRevenueSummary,
+│   │                           #   useDiscoOptions, useAdminIdleTimeout (useNavigation.js is unused)
+│   ├── utils/                  # Pure business logic, one concern per file, tests in utils/__tests__/
+│   │                           #   (status/labels, totals, pricing, finance, capacity, inventory, unassign/revert,
+│   │                           #    report export, xlsx, uploads/compression, identifiers, dates, currency …)
 │   └── components/
-│       ├── admin/              # AdminDashboard, AdminInstallations, AdminReports, PaymentsPage, ConfirmPaymentTab, BulkConfirmPaymentsTab, ReplayWebhookTab, TrendChart, UserManagement
-│       ├── auth/                # Login, VerificationModal, permissions.js/.jsx, usePermissions.jsx
-│       ├── common/              # Header, Navigation (sidebar), Footer, GenerateRRRModal, PaymentTimeline, ErrorBoundary, modals
-│       ├── contexts/             # AuthContext, ThemeContext, DataRefreshContext
-│       ├── dashboard/            # InstallerDashboard (Awaiting Installation / Completed queue)
-│       ├── installation/          # InstallationDetail, CompletionDetails, InstallationForm, RequestInfoPanel, UserInfoPanel
-│       ├── schedule/               # MeterSchedule — the single entry point for meter inventory (list/filter/search/export/stats/delete)
-│       ├── services/                # api.js (main API client), api.config.js (endpoints/config)
-│       ├── settings/                # ApiKeySettings, MeterTypeSettings, SettingsPage
-│       ├── uploads/                  # ExcelUpload
-│       └── SubmissionPage.jsx        # Installation request submission
+│       ├── admin/              # AdminDashboard, DashboardInstallations, AdminReports (+ ReportsOverview, RevenueTab),
+│       │                       #   RevenueSummaryPanel, RemitaPaymentsList, ConfirmPaymentTab, BulkConfirmPaymentsTab, TrendChart,
+│       │                       #   InstallationRequests ("All Requests"), AdminInstallations ("JED Queue"),
+│       │                       #   ImportsPage, AssignmentsPage, UserManagement
+│       ├── auth/               # Login, VerificationModal, permissions.js, usePermissions.jsx
+│       ├── common/             # Header, Navigation, Footer, ConfirmationModal, InfoModal, PhotoUploadField,
+│       │                       #   StatusBadge, StatusTabs, LiveStatusDot, GenerateRRRModal, PaymentTimeline, ErrorBoundary
+│       ├── complaints/         # ComplaintForm (Installer; no backend endpoint — produces a copyable summary)
+│       ├── contexts/           # AuthContext, ThemeContext, DataRefreshContext
+│       ├── dashboard/          # InstallerDashboard, InstallerJobSummary
+│       ├── installation/       # InstallationDetail (JED request detail + completion), CompletionDetails, RequestInfoPanel
+│       ├── installations/      # InstallationsPage (the /installations shell), MyJobs, ReportInstallationModal,
+│       │                       #   AssignMeterModal, MeterSerialPicker, MeterCapacitySummary, InstallerSelect,
+│       │                       #   BatchResultSummary, JedAssignmentNotice, RevertInstallationModal, UnassignMeterAction
+│       ├── installers/         # InstallerJobStatus (/installer-status)
+│       ├── schedule/           # MeterSchedule (inventory/query/cards), InstalledRecordsModal, MeterDrillDown (InstallationRecord)
+│       ├── reports/            # ReportExportBar (+ PrintableReport) — Excel / CSV / Print for any report
+│       ├── services/           # api.js (the only network client), api.config.js (endpoint map/config)
+│       ├── settings/           # SettingsPage, MeterTypeSettings, ApiKeySettings
+│       └── uploads/            # ExcelUpload (meter workbook → POST /meters/upload)
 ```
 
 ## 5. Completed Features
@@ -405,7 +455,8 @@ jedc-meter-management/
     Unassigned, failed and paid-JED requests are listed as "not counted". No money on that card; the
     meter-price value lives only in Admin Reports. (The Dashboard's Payment & Revenue Summary panel is
     kept: it was an explicit earlier requirement that Dashboard and Payments show the same figures.)
-  - **Meter Schedule cards are clickable drill-downs** (Total, Available, Assigned, Installed, Faulty,
+  - **Meter Schedule cards are clickable drill-downs** (superseded 2026-10-05: the cards are plain tiles
+    again and only Installed opens a details modal) (Total, Available, Assigned, Installed, Faulty,
     Retired, Single/Three Phase) with count-vs-list reconciliation. Installed meters show their
     installation: customer, account, address, phone (admin tier), installation date, seal, installer,
     assignment date, disco, GPS and photo. The undocumented Pending/Paid cards (always 0) were removed.
@@ -484,15 +535,95 @@ jedc-meter-management/
     and must not be used. Production metadata, manifest, icons and the built bundle carry no
     AI/template/demo traces.
 
-- **Photo limit = the API's 5 MB (2026-10-02):** `MAX_PHOTO_SIZE_BYTES` is now `MAX_FILE_SIZE_BYTES`. Only a
-  photo over 5 MB is compressed; one within it is sent unchanged. This closes gap AO (client and server
-  limits now match) and re-exposes gap AP until the proxy allows 5 MB.
+- **Frontend Integration Update + Supervisor fixes (2026-10-04):**
+  - **Prices per disco.** Settings → Meter Types filters and labels by disco and requires one on create
+    (bodies exactly as documented; the undocumented `description` field is gone; every page is read).
+    Valuation is keyed by (disco, meter type) — a JED Remita request uses its own disco code's list,
+    else JED's — so two discos' prices are never mistaken for a conflict.
+  - **Supervisor** gains Imports and meter upload/export/statistics, per the API's role table.
+  - **Supervisor pending total / export:** both read JED's Remita requests; a 403 there (gap AR) used
+    to blank the pending figure and block the export. A forbidden source is now left out and labelled.
+  - **Unassign an installed meter** (Super Admin, imported INSTALLED only) via
+    `POST /installations/{id}/revert` — one shared confirmation (`RevertInstallationModal`) from
+    Installations, Installer Job Status and Meter Schedule → Installed (gap AS for its limits).
+  - **Unassign meter on every meter view:** Meter Schedule (meter cards, search results, Query table, Installed modal)
+    and Installer Job Status use the same rule as Installations/Assignments
+    (`utils/meterUnassign.js`): a held meter is returned to stock (`POST /assignments/meters/return`,
+    Admin/Super Admin/Supervisor); an installed one is the Super Admin revert. Search covers every status;
+    "Assigned" comes from the open dispatch batches because the API leaves `meters.status` at AVAILABLE.
+  - **Completed Installations export** can no longer hang on "Preparing…": picture fetching and the meter
+    lookup are time- and size-bounded; Preparing → Downloading → Download complete; one export at a time.
+  - **Report export & print (2026-10-05).** Dashboard → Generate Report always failed: its default and
+    pending/completed options exported JED customer requests (`/meters/customer-requests/export`,
+    `/external/jed/requests/export`), which answer 404 "No requests found to export" when the JED flow is
+    empty — and only ever covered JED ("Pending Requests" was unpaid INITIATED, not Pending
+    Installations). Now it offers the Summary report (= Reports → Overview, Excel/CSV/Print) and the
+    server's meter-inventory export. Reports → Overview, Payments & deals (Recognised revenue and Remita
+    payments) have Export Excel / Export CSV / Print-PDF through one shared model
+    (`utils/reportData.js` → `utils/reportExport.js` → `ReportExportBar`). The Overview figures and the
+    payment panel now render from the same helpers the exports use. Exports follow the screen's filters,
+    read every page, refuse rather than truncate, and never write an empty file. Object URLs are now
+    revoked a second after the download starts (Safari/mobile). Checked in headless Chrome: A4
+    portrait/landscape print with repeated headers and page numbers, only the report printed; the .xlsx
+    keeps identifiers as text and amounts as numbers; the CSV is UTF-8 with BOM and correctly quoted.
+  - **Payments merged into Reports (2026-10-05).** Audit of the old Payments page: its summary panel and
+    Revenue tab were the same panel/component Reports already had (dropped as duplicates); its Remita
+    payment records list, Confirm Payment and Upload Paid Customers were unique and moved. Reports now has
+    Overview · Payments & deals (Recognised revenue / Remita payments) · Payment confirmation (confirm one /
+    upload paid customers) · JED requests, with the tab in the URL. `/payments` redirects to
+    `/reports?tab=transactions`; the nav item and `PaymentsPage.jsx` are gone. No calculation, API call or
+    permission changed — both routes were admin-tier; Supervisor and Installer still have neither.
+  - **Three Phase "418 vs 59" (2026-10-05).** The Assignments picker's count line always printed the
+    all-phase total of dispatchable meters, even with Three Phase selected (it only switched to the
+    filtered count above 200 matches); Meter Schedule's "Three Phase" is `/meters/statistics`
+    `threePhase`, every status. Different populations, and the picker label was wrong. Fixed: the count
+    line and phase dropdown are per phase ("Three Phase (N)", "N available Three Phase meters"). Meter
+    Schedule's **Available** card now excludes meters with installers (`shelfAvailableCount`), so the
+    status cards partition Total and "All phases (N)" in the picker equals that card; each card has a
+    hover description. The picker's meter list now re-reads on `refreshSignal`, and a returned meter is
+    no longer kept out of it for the rest of the session. Not verified against live data (no
+    credentials here): run `verify-live-data.mjs` (section 11) to see the real per-phase table and
+    whether any raw phase spellings make the server's phase counts differ from the app's.
+  - **Complaint Form notice reworded (2026-10-05)** for installers, without technical terms: "complaints
+    are not yet submitted automatically … copy [the summary] and share it with your supervisor or
+    administrator." Behaviour unchanged (nothing is sent or stored).
+  - **Meter Schedule cards restored to plain tiles (2026-10-05).** The drill-down behaviour (card
+    filters, "Showing …" bar, Assigned list, installation details inside meter cards) is gone. Only the
+    **Installed** card is clickable: it opens `InstalledRecordsModal` — the meters behind that count
+    (`GET /meters?status=INSTALLED`) with their installation details grouped by Customer, Installer,
+    Installation, Meter, Seal, Location, Disco and picture; searchable; full-screen on phones. A JED 403
+    no longer empties it for a Supervisor.
+  - **Photo previews** are a plain `<img>`; the CORS-mode `UploadedPhoto` workaround was removed.
+  - **Installer Job Status** drill-down: Jobs and Meters. Every meter assigned to the installer (in hand
+    + installed); an installed meter opens the customer/installation record; any job opens its details.
+    A meter still in hand ("Assigned") opens its candidate jobs — the installer's open jobs of its type
+    (`openJobsForMeter`), since the API pairs a meter with a job only at report time (gap AT).
+
+- **Installation photos: 3.5 MiB, adaptive compression, one smaller retry (2026-10-02):**
+  - `MAX_PHOTO_SIZE_BYTES` = 3.5 MiB (3,670,016 bytes), the one limit the whole photo pipeline uses
+    (1.5 MB of headroom under the API's 5 MB). A photo within it is uploaded untouched; a larger one is
+    re-encoded adaptively: quality first at up to 4032 px, then smaller sizes, re-checked every pass,
+    never below 1600 px / quality 0.6. 4032 px also keeps the canvas under iOS Safari's ~16.7 MP limit:
+    a 48 MP photo drawn at full size produced no image there.
+  - `prepareUploadImage` now returns `{ file, outcome }`, so the field tells "unable to process" from
+    "could not be reduced". Upload failures are worded per cause: connection, server rejection, session
+    expired.
+  - **Root cause of "≤ 910 KB works, larger fails":** the API proxy's 1 MiB body limit (gap AP), now
+    raised server-side (measured: 10 MB accepted). Nothing in the frontend limited photos to ~1 MB.
+  - A large photo whose upload gets no answer (dropped or timed out) is retried once at ~1 MB.
+  - The field shows "Processing image…" then "Uploading image…" and reports busy to Report Installation,
+    whose Submit waits for it. Busy is reported in the same update as the stage; via an effect it lagged
+    one render, which a test caught.
+  - Verified in Chrome with the real component: 500 KB–3.5 MiB sent untouched (the original `File` in
+    `FormData`), 4–5 MB and 12/48 MP photos compressed under 3.5 MiB, an EXIF-rotated photo upright,
+    camera and gallery identical. Then 3.5 MiB and 6.9 MB (sent as 3.4 MB) photos sent to the live API
+    through its proxy.
 
 - **Photo upload root cause, deployment move (2026-10-01, second pass):**
   - **Root cause found:** the API's nginx rejects request bodies over 1 MiB, invisibly to the browser
     (gap AP). Photos now compress to ≤ 1,000,000 bytes, so the whole request fits; proven in Chrome
     against the live proxy.
-  - Uploaded photos render through `UploadedPhoto` (CORS mode, then plain), because the API's
+  - *(Superseded 2026-10-04: `UploadedPhoto` was removed; previews are a plain `<img>`.)* Uploaded photos render through `UploadedPhoto` (CORS mode, then plain), because the API's
     `Cross-Origin-Resource-Policy: same-origin` blocked every preview (gap AQ). A 401 during upload now
     says the session expired instead of "try again".
   - Hosting moved off Vercel: `vercel.json` removed; the CSP is generated into `index.html` by
@@ -502,11 +633,13 @@ jedc-meter-management/
 
 ## 6. Pending / Incomplete Features
 
-- **The API's nginx refuses request bodies over 1 MiB** (`413`, with no CORS headers, so browsers see a network failure). Since the photo limit went back to the API's 5 MB (2026-10-02), **photos between ~1 MB and 5 MB fail there**, as do spreadsheet uploads (meter workbook, disco imports) over ~1 MB. Raise `client_max_body_size` to at least `6m`. `API_GAP_REPORT.md` gap **AP**.
-- **Uploaded photos may not preview in the app** until the API sends `Cross-Origin-Resource-Policy: cross-origin` on `/files/{token}` (or the bucket sends CORS headers). The upload and the stored link are unaffected. Gap **AQ**.
+- **Photos can't be embedded in the Completed Installations workbook** — the storage bucket sends no CORS headers, so the browser can't read the image; every row keeps its picture link. Previews in the app use a plain `<img>` (fixed on the API 2026-10-04, gap AQ).
+- **SUPERVISOR's access to JED Remita requests is undocumented** (gap **AR**). The app treats a 403 there as "outside this role" and labels the figures as imported-only.
+- **Undoing an installation leaves no readable audit trail and clears its facts** (gap **AS**). `POST /installations/{id}/revert` clears the seal, date, GPS and photo; the optional reason goes to the server log only; a JED Remita request has no undo at all.
+- **A meter in an installer's hands is not tied to a job** (gap **AT**) until the installer reports an installation naming it; Installer Job Status shows the installer's open jobs of that meter type instead of "its job".
+- **Dispatching a meter doesn't change `meters.status`** (by API design, gap G): an assigned meter still reads AVAILABLE on its own record. The app shows "Assigned" from the open dispatch batches (`useMeterHolders`); a backend status field would remove that join.
 
 - **Photo uploads exist only in builds that include commit `c140d0a` (2026-09-26) onward.** The retired Vercel test site served `764daf9` (the `Workflow` branch head), which predates them; that is why uploads "failed" there. The API's file storage is configured.
-- **The 1 MB photo limit is enforced in the browser only**; the API accepts 5 MB. `API_GAP_REPORT.md` gap **AO**.
 - **No seal-number whitelist.** Seals are free text on the report, checked only against the installer's own jobs; the whitelist, per-installer seal assignment (capped by meters held) and single use all need a backend seal resource. `API_GAP_REPORT.md` gap **AM**.
 
 - **No per-installer statistics endpoint** — Installer Job Status groups filtered installation reads client-side (API_GAP_REPORT.md, gap AG).
@@ -515,9 +648,9 @@ jedc-meter-management/
 - **The `User` schema exposes no deactivated flag.** `DELETE /users/{id}` is a working soft delete and `POST /users/{id}/restore` reverses it, but nothing in the documented `User` response marks an account as deactivated — so this app offers Restore inline right after a deactivation rather than building a "deactivated accounts" list it would have to guess at. `API_GAP_REPORT.md`, gap **AD**.
 - **The `role` query-parameter enum is stale on `/users` and `/users/search`** — it still lists only SUPERADMIN/ADMIN/INSTALLER even though `User.role` includes SUPERVISOR, so the app never sends `role=SUPERVISOR` and filters client-side instead. `API_GAP_REPORT.md`, gap **AE**.
 - **`GET /installations/search` is integrated in the service layer but not wired to a screen.** The Installations page loads its scope once and filters locally, because its faceted filters need the rows in hand; a server-side search would change that design, so it was left as a deliberate choice rather than a half-migration.
-- **`GET /finance/revenue/breakdown` has a service method but no screen.** The Revenue tab uses `summary` and `transactions`; the grouped/charted view is still to build.
+- **`GET /finance/revenue/breakdown` has a service method but no screen.** Reports → Payments & deals (Recognised revenue) uses `summary` and `transactions`; the grouped/charted view is still to build.
 
-- **No installer-assignment mechanism** — for either customer requests *or* individual meters. The real API has no `installerId`/`assignedTo` field on a customer request or on a `Meter` record, and no assign/unassign endpoint (single or bulk) — `GET /external/jed/requests/installer` only filters by status, not by installer, and there is no equivalent "meters for this installer" endpoint at all. Every installer sees the same shared "Awaiting Installation" queue. The Installations page (`/installations`) has real, working multi-select and an "Assign Installer" action, but it opens an explanatory modal rather than persisting anything — a client-side/localStorage-only version was explicitly considered and declined twice (2026-08-25, re-confirmed 2026-08-27 when an Installer-facing "Assigned Meters" view was requested) since it would violate the requirement that assignment be authoritative and cross-device. See `API_GAP_REPORT.md`.
+- **No installer-assignment mechanism for JED Remita requests** *(this bullet predates the multi-disco flow: imported installations and meters ARE assigned for real via `/assignments/*` since 2026-09-21/23)* — for either customer requests *or* individual meters. The real API has no `installerId`/`assignedTo` field on a customer request or on a `Meter` record, and no assign/unassign endpoint (single or bulk) — `GET /external/jed/requests/installer` only filters by status, not by installer, and there is no equivalent "meters for this installer" endpoint at all. Every installer sees the same shared "Awaiting Installation" queue. The Installations page (`/installations`) has real, working multi-select and an "Assign Installer" action, but it opens an explanatory modal rather than persisting anything — a client-side/localStorage-only version was explicitly considered and declined twice (2026-08-25, re-confirmed 2026-08-27 when an Installer-facing "Assigned Meters" view was requested) since it would violate the requirement that assignment be authoritative and cross-device. See `API_GAP_REPORT.md`.
 - **`Meter.installedAt` is frequently `null` even when `status` is `INSTALLED`** (confirmed live 2026-08-27) — Meter Schedule shows the real value when present and never fabricates one; the Query-tab table says "Installed (date unavailable)" rather than a contradictory "Not Installed" when the status says otherwise. See `API_GAP_REPORT.md`.
 - **No queue/awaiting-installation status distinct from `PAID`.** The real `JedCustomerRequest.status` enum is only `INITIATED / PAID / COMPLETED` — there's no richer installation-lifecycle state machine on the backend.
 - **No pre-completion meter-assignment step *in the JED flow*.** `meterNo`/`sealNo` are only submitted together, in one shot, at `POST /external/jed/complete-installation`. (Meter Schedule's Assign affordance is no longer part of this gap — as of 2026-09-23 it performs a real, backend-persisted meter dispatch through the multi-disco `POST /assignments/meters`; it is the JED *request* that still has no assignment step.)
@@ -527,7 +660,7 @@ jedc-meter-management/
 
 ## 7. API Integrations
 
-Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`), docs at `/api-docs`. Client: `src/components/services/api.js` (`JEDApiService`), endpoint map: `src/components/services/api.config.js`. 54 documented operations (audited 2026-09-20; the old "45" was a miscount) — every invented endpoint the frontend previously called (`/auth/logout`, `/auth/refresh-token`, `/auth/forgot-password`, per-installer stats/performance/dashboard routes, `/auth/users`, `SYSTEM_*`/`REPORTS`/`COMPLAINTS` groups) has been removed from `api.config.js`.
+Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`), docs at `/api-docs`. Client: `src/components/services/api.js` (`JEDApiService`), endpoint map: `src/components/services/api.config.js`. 96 documented operations on 2026-10-04 (54 when audited 2026-09-20; the spec has grown with the multi-disco flow) — every invented endpoint the frontend previously called (`/auth/logout`, `/auth/refresh-token`, `/auth/forgot-password`, per-installer stats/performance/dashboard routes, `/auth/users`, `SYSTEM_*`/`REPORTS`/`COMPLAINTS` groups) has been removed from `api.config.js`.
 
 **Endpoint groups actually used:**
 - **Auth:** login, register, profile (get/update), change-password, reset-password (admin resets another user's password to default).
@@ -535,6 +668,10 @@ Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`)
 - **Meters:** list (paginated, filter by status/phaseType), search (`/meters/search`), upload (Excel), template, export, statistics, lookup by meter number/id, delete, customer-requests export.
 - **Uploads / Files:** general file storage — `POST /uploads` (1–5 files, 5 MB each), `GET /uploads?entityType=&entityId=`, `GET|DELETE /uploads/{id}`, and the public `GET /files/{token}` every returned `url` points at. Unrelated to `/meters/upload`. The old `/uploads/excel[-first-sheet|-modified]` Excel-processing routes were **removed** on 2026-09-25 (they were documented but never deployed); spreadsheets the user picks are parsed in the browser now.
 - **Finance:** `GET /finance/revenue/{summary,breakdown,transactions}` — recognised revenue, Admin/Super Admin only.
+- **Discos:** list/get/create/patch, `PUT /discos/{code}/import-mapping|export-template` (whole-object replace — read first).
+- **Imports:** `POST /imports/{disco}/pending-installations|meters`, templates, history, `POST /imports/{id}/undo` (partial by design).
+- **Assignments:** `POST /assignments/meters` (dispatch), `POST /assignments/meters/return` (unassign a held meter), `POST /assignments/installations` and `/unassign`, `GET /assignments[/{id}]` (batches — the source of "who holds which meter").
+- **Installations (multi-disco):** list/search/statistics/by id, `/me/jobs`, `/me/meters`, start/report/fail/cancel, `POST /installations/{id}/revert` (Super Admin undo), disco response-sheet export + mark-sent, export batches.
 - **Settings:** meter-type CRUD, API key management (create/list/deactivate/usage — full secret shown once at creation).
 - **Users:** CRUD with role-based filtering (`GET/POST /users`, `GET/PUT/DELETE /users/{id}`).
 - **Dashboard:** `GET /dashboard-stats` — exactly `{pendingRequests, completedRequests, activeInstallers, totalRevenue}`, no deltas. Only `activeInstallers` is displayed (since 2026-09-27); the installation KPIs come from `GET /installations/statistics` and JED `totalCount`s.
@@ -556,9 +693,10 @@ Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`)
 - **Currency:** NGN only (`src/utils/currency.js`, `formatCurrencyNGN`).
 - **Request status enum (real, only these three):** `INITIATED → PAID → COMPLETED`. Payment/status badges are case-insensitively normalized in `src/utils/statusBadge.js`; `isAwaitingInstallationStatus` (`PAID`) and `isCompletedStatus` (`COMPLETED`) drive the installer queue's two tabs. **Badge colours (2026-08-27):** `PAID`/`PENDING` moved from yellow/amber to blue — yellow/gold is now this app's brand colour (see Brand Identity above), so a status badge no longer uses it, to avoid a status looking like an interactive/brand element; blue was the *previous* brand colour and is now free for exactly this purpose. Meter Schedule's "Single Phase" phase-type badge moved from yellow to cyan for the same reason.
 - **User role enum:** `SUPERADMIN / ADMIN / SUPERVISOR / INSTALLER`, uppercase, used as-is throughout (no case translation). `SUPERVISOR` was added by the backend on 2026-09-24. Only `SUPERADMIN` may create/edit `ADMIN`, `SUPERADMIN` or `SUPERVISOR` accounts (`isPrivilegedRole`) — note this app is deliberately stricter than the API, which also lets an `ADMIN` create `ADMIN` accounts.
-- **Supervisor scope** (the backend's own definition — "an ADMIN narrowed to installations and assignments"): **full** on Installations (create, cancel, assign, unassign, disco export, mark-sent) and Assignments (dispatch and return meters); **read-only** on Meter Schedule (list/search/view — no upload, export, statistics or delete) and Users (the Installer roster only); the Dashboard without any financial figure; and **no access** to Payments/Finance, Imports, Reports, Settings, API Keys or Uploads. It does not hold `INSTALLATIONS.COMPLETE` — start/report/fail are Installer-only. It is outside `permissions.isAdmin`, so every existing admin gate denies it. Because it can dispatch meters, it is capped by the meter-assignment rules exactly like an Admin.
+- **Supervisor scope** (the backend's own definition — "an ADMIN narrowed to installations and assignments"; widened by the API's role table on 2026-10-04): **full** on Installations (create, cancel, assign, unassign, disco export, mark-sent), Assignments (dispatch and return meters) and Imports; on Meter Schedule list/search/view plus upload (`/uploads`), export and statistics — never delete; **read-only** on Users (the Installer roster only); the Dashboard and Installer Job Status without any financial figure; the Completed Installations export (no payment columns); and **no access** to Payments/Finance, Reports, Settings or API Keys. It does not hold `INSTALLATIONS.COMPLETE` — start/report/fail are Installer-only. It is outside `permissions.isAdmin`, so every existing admin gate denies it. Because it can dispatch meters, it is capped by the meter-assignment rules exactly like an Admin.
 - **Meter assignment limits (Admin):** an Admin may dispatch a meter to an installer only when that installer already has an open installation (`ASSIGNED`/`IN_PROGRESS`) **of that meter type**, and only up to `open jobs of that type − meters of that type already held`. Single Phase and Three Phase capacities are independent. A **Super Admin** is capped by none of this and may assign installations and meters independently; meter integrity rules (exists, `AVAILABLE`, not already assigned/used/lost) still apply to both. `permissions.enforcesMeterCapacity` is the single switch. **Client-side only** — `POST /assignments/meters` enforces none of it (`API_GAP_REPORT.md`, gap AC).
 - **Meter inventory status:** `AVAILABLE / INSTALLED / FAULTY / RETIRED`. Phase type: `SINGLE PHASE / THREE PHASE`.
+- **"Unassign meter" (2026-10-04)** — one rule everywhere (`utils/meterUnassign.js`): a meter **with an installer** is returned to stock (`POST /assignments/meters/return`; Admin, Super Admin, Supervisor; the installer's jobs and the meter record are untouched, so only their held-meter count drops); an **installed** meter on an imported INSTALLED job is the Super Admin revert (job back to pending, meter to stock, revenue removed); exported jobs and JED requests can't be undone. Never a delete, always confirmed, never optimistic.
 - **Request retry/timeout policy:** 30s default timeout (60s for export/upload endpoints), max 2 retries with exponential backoff.
 - **Installation lifecycle order is enforced by workflow, not just UI:** request → RRR generated → payment → confirmation (webhook or manual) → installer picks it up from the shared queue → completion.
 
@@ -566,6 +704,6 @@ Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`)
 
 - **`src/.env` is now gitignored** (previously tracked) — `src/.env.example` is the committed template.
 - **No SMS/email provider in the frontend.** OTP delivery for phone/email verification is entirely delegated to the backend.
-- **README.md may still be stale relative to `package.json`** (previously found stating React 18 vs. the actual React 19.1.1) — worth a final check if not already fixed.
+- **README.md** was re-checked 2026-10-05 against `package.json` (React 19, Vite 7, `npm test` listed) — keep it to setup and pointers; detail belongs here and in `CLAUDE.md`.
 - **Payment actually happens off-app.** This SPA only generates Remita RRR references and reconciles status afterward (via webhook or manual admin action) — it never hosts a payment form itself.
 - **`ApiDiagnostics.jsx` (a hidden `/debug` route) was removed** — it tested speculative login-payload shapes that are now known to be wrong (the confirmed real contract is exactly `{phone, password}`), and was never linked from the sidebar.

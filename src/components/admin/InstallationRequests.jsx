@@ -20,7 +20,7 @@
 // assignment (POST /assignments/installations). JED requests have no
 // assignment field or endpoint on the API, so their Assign action explains
 // that instead of pretending (see API_GAP_REPORT.md).
-import { useState, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
+import { useState, useEffect, useCallback, useMemo, useDeferredValue, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   RefreshCw, Search, AlertCircle, Loader2, UserPlus, X,
@@ -33,6 +33,8 @@ import { usePermissions } from '../auth/usePermissions';
 import StatusBadge from '../common/StatusBadge';
 import ConfirmationModal from '../common/ConfirmationModal';
 import JedAssignmentNotice from '../installations/JedAssignmentNotice';
+import RevertInstallationModal from '../installations/RevertInstallationModal';
+import { revertTargetOf } from '../../utils/installationRevert';
 import InstallerSelect from '../installations/InstallerSelect';
 import BatchResultSummary from '../installations/BatchResultSummary';
 import MeterCapacitySummary from '../installations/MeterCapacitySummary';
@@ -40,6 +42,7 @@ import { useDiscoOptions } from '../../hooks/useDiscoOptions';
 import { useInstallerMeterCapacity } from '../../hooks/useInstallerMeterCapacity';
 import { fetchAllPagesDetailed } from '../../utils/fetchAllPages';
 import { getErrorMessage } from '../../utils/errorMessage';
+import { isPermissionError } from '../../utils/apiResult';
 import { formatPlainDate, formatDateTime, formatDateOnly } from '../../utils/date';
 import { formatCurrencyNGN } from '../../utils/currency';
 import { downloadServerXlsx, downloadXlsx } from '../../utils/xlsx';
@@ -52,6 +55,7 @@ import { revenueScopeFilter } from '../../utils/financeSummary';
 import { usePaymentRevenueSummary } from '../../hooks/usePaymentRevenueSummary';
 import { totalCollectedPayment } from '../../utils/meterPricing';
 import { fetchPhotosForEmbedding } from '../../utils/photoEmbed';
+import { withDeadline } from '../../utils/concurrency';
 import { useInstallationTotals } from '../../hooks/useDashboardInstallations';
 import {
   PENDING_INSTALLATION_FILTER, isPendingInstallationRow, filterByInstallationStatus,
@@ -70,6 +74,9 @@ const PAGE_SIZE = 50;
 // Up to 10,000 records per source. Past that the page says the list is
 // incomplete rather than silently showing a subset.
 const MAX_PAGES = 100;
+// The completed export's meter-details lookup (SIM, make, model) is optional
+// enrichment; past this it is skipped and the Summary sheet says so.
+const METER_DETAILS_DEADLINE_MS = 45_000;
 
 const EMPTY_ATTRIBUTES = Object.fromEntries(ATTRIBUTE_FILTERS.map((f) => [f.field, '']));
 
@@ -100,7 +107,7 @@ const attributeLine = (row) =>
     row.installationPosition,
   ].filter(Boolean).join(' · ');
 
-function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign, busy, canCancel = true, canUnassign = true }) {
+function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign, onRevert, busy, canCancel = true, canUnassign = true, canRevert = false }) {
   const job = row.raw;
   const actions = getAvailableActions(row.status);
   const coords = getCoordinates(job);
@@ -170,7 +177,7 @@ function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign,
 
         {/* Read-only roles (Supervisor) see the row and its status, never the
             actions that would change it. */}
-        {((canUnassign && actions.unassign) || (canCancel && actions.cancel)) && (
+        {((canUnassign && actions.unassign) || (canCancel && actions.cancel) || (canRevert && actions.revert)) && (
           <div className="flex flex-wrap gap-2 mt-2">
             {canUnassign && actions.unassign && (
               <button type="button" onClick={() => onUnassign(job)} disabled={busy}
@@ -182,6 +189,14 @@ function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign,
               <button type="button" onClick={() => onCancel(job)} disabled={busy}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50">
                 <Ban className="w-3.5 h-3.5" /> Cancel
+              </button>
+            )}
+            {/* Super Admin only, INSTALLED only (never EXPORTED). */}
+            {canRevert && actions.revert && (
+              <button type="button" onClick={() => onRevert(row)} disabled={busy}
+                title="Correct an installation mistake: the job returns to pending and the meter to stock"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50">
+                <Undo2 className="w-3.5 h-3.5" /> Unassign meter
               </button>
             )}
           </div>
@@ -273,6 +288,10 @@ function InstallationRequests() {
   const [jed, setJed] = useState({ loaded: false, records: [], totalCount: null, truncated: false });
   const [jedLoading, setJedLoading] = useState(true);
   const [jedError, setJedError] = useState(null);
+  // JED's Remita requests are outside some roles' API scope (SUPERVISOR: 403
+  // on /external/jed/*). That leaves them out of this page, stated once —
+  // it is not a load failure, and it must not block the export.
+  const [jedForbidden, setJedForbidden] = useState(false);
 
   const [selected, setSelected] = useState(() => new Map()); // key -> row
   const [assignOpen, setAssignOpen] = useState(false);
@@ -295,6 +314,7 @@ function InstallationRequests() {
   const [pendingBatchSelect, setPendingBatchSelect] = useState(null); // Set<rowKey> | null
 
   const [cancelTarget, setCancelTarget] = useState(null);
+  const [revertTarget, setRevertTarget] = useState(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -305,7 +325,13 @@ function InstallationRequests() {
   // Completed-installations workbook
   const [completedFrom, setCompletedFrom] = useState('');
   const [completedTo, setCompletedTo] = useState('');
-  const [exportingCompleted, setExportingCompleted] = useState(false);
+  // Completed-installations export: null | 'preparing' (reading meter details
+  // and pictures) | 'downloading' (building and saving the workbook). The ref
+  // refuses a second click before React has re-rendered the disabled button.
+  const [completedExportPhase, setCompletedExportPhase] = useState(null);
+  const [photoProgress, setPhotoProgress] = useState(null);
+  const completedExportRunning = useRef(false);
+  const exportingCompleted = completedExportPhase !== null;
   const [completedExportError, setCompletedExportError] = useState(null);
 
   const scopeInfo = useMemo(() => resolveScope(scope), [scope]);
@@ -368,12 +394,20 @@ function InstallationRequests() {
     (async () => {
       setJedLoading(true);
       setJedError(null);
+      setJedForbidden(false);
       try {
         const list = await fetchAllPagesDetailed(
           (p) => jedApi.getAllCustomerRequests(p), {}, { maxPages: MAX_PAGES }
         );
         if (!cancelled) setJed({ loaded: true, records: list.items, totalCount: list.totalCount, truncated: list.truncated });
       } catch (err) {
+        if (isPermissionError(err)) {
+          if (!cancelled) {
+            setJedForbidden(true);
+            setJed({ loaded: true, records: [], totalCount: 0, truncated: false });
+          }
+          return;
+        }
         console.error('[InstallationRequests] JED requests failed:', err);
         if (!cancelled) setJedError(getErrorMessage(err, 'Unable to load JED requests.'));
       } finally {
@@ -411,9 +445,9 @@ function InstallationRequests() {
 
   // JED statuses are offered for "All", for JED itself, and for any disco
   // that actually has Remita requests attributed to it.
-  const includeJed = scopeInfo.remitaBucket === null
+  const includeJed = !jedForbidden && (scopeInfo.remitaBucket === null
     || scopeInfo.remitaBucket === JED_BUCKET
-    || jedRowsInScope.length > 0;
+    || jedRowsInScope.length > 0);
   const statusOptions = useMemo(
     () => statusesForScope({ includeMulti, includeJed }),
     [includeMulti, includeJed]
@@ -708,6 +742,15 @@ function InstallationRequests() {
     }
   };
 
+  // Unassign an installed meter (Super Admin): RevertInstallationModal asks,
+  // calls POST /installations/:id/revert and bumps the refresh signal; this
+  // page only reports the outcome and re-reads its own lists.
+  const handleReverted = (target) => {
+    setActionError(null);
+    setNotice(`Meter${target.meterNumber ? ` ${target.meterNumber}` : ''} was unassigned from account ${target.accountNumber}. The job is pending again and the meter is back in stock.`);
+    refreshAll();
+  };
+
   // The response sheet is per registered disco — not available for "All"
   // or for JED's Remita requests.
   const exportDisco = includeMulti ? multiDiscoCode : '';
@@ -745,8 +788,10 @@ function InstallationRequests() {
   }, [attrFiltered, status, statusOptions]);
 
   const handleExportCompleted = async () => {
-    if (exportingCompleted || completedCandidates.length === 0) return;
-    setExportingCompleted(true);
+    if (completedExportRunning.current || completedCandidates.length === 0) return;
+    completedExportRunning.current = true;
+    setCompletedExportPhase('preparing');
+    setPhotoProgress(null);
     setCompletedExportError(null);
     setNotice(null);
     try {
@@ -762,13 +807,19 @@ function InstallationRequests() {
       let meterDetails = '';
       if (serials.size > 0) {
         try {
-          const list = await fetchAllPagesDetailed(
+          // Enrichment only, so it gets a deadline: a slow inventory read must
+          // never hold the export open.
+          const list = await withDeadline(fetchAllPagesDetailed(
             (p) => jedApi.getMeters(p),
             { status: 'INSTALLED' },
             { maxPages: MAX_PAGES, inferNextFromFullPage: true }
-          );
-          meterIndex = buildMeterIndex(list.items.filter((m) => serials.has(String(m.meterNumber ?? '').trim())));
-          if (list.truncated) meterDetails = 'meter list incomplete';
+          ), METER_DETAILS_DEADLINE_MS, null);
+          if (!list) {
+            meterDetails = 'meter list took too long to load';
+          } else {
+            meterIndex = buildMeterIndex(list.items.filter((m) => serials.has(String(m.meterNumber ?? '').trim())));
+            if (list.truncated) meterDetails = 'meter list incomplete';
+          }
         } catch (err) {
           console.error('[InstallationRequests] Meter details unavailable for export:', err);
           meterDetails = 'meter list could not be loaded';
@@ -792,8 +843,13 @@ function InstallationRequests() {
       }
 
       // Pictures embedded where they can be fetched (JPEG/PNG from their
-      // permanent public links); every row keeps its picture link either way.
-      const { photos } = await fetchPhotosForEmbedding(completedCandidates.map((r) => r.raw?.installationPhotoUrl));
+      // permanent public links) within the step's time and size budget; every
+      // row keeps its picture link either way.
+      const { photos, limited: photosLimited } = await fetchPhotosForEmbedding(
+        completedCandidates.map((r) => r.raw?.installationPhotoUrl),
+        { onProgress: setPhotoProgress }
+      );
+      setCompletedExportPhase('downloading');
 
       const { sheets, count } = buildCompletedInstallationsReport({
         rows: completedCandidates,
@@ -807,12 +863,15 @@ function InstallationRequests() {
       });
       const slug = (scope || 'all-discos').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'jed';
       await downloadXlsx(`completed-installations-${slug}-${new Date().toISOString().slice(0, 10)}.xlsx`, sheets);
-      setNotice(`Installation report exported successfully (${count.toLocaleString()} completed installation${count === 1 ? '' : 's'}).`);
+      setNotice(`Download complete: ${count.toLocaleString()} completed installation${count === 1 ? '' : 's'} exported.${
+        photosLimited ? ' Some pictures were too slow or too large to embed; every row still has its picture link.' : ''}`);
     } catch (err) {
       console.error('[InstallationRequests] Completed export failed:', err);
-      setCompletedExportError('Unable to export installation report.');
+      setCompletedExportError('Unable to export completed installations. Please try again.');
     } finally {
-      setExportingCompleted(false);
+      completedExportRunning.current = false;
+      setCompletedExportPhase(null);
+      setPhotoProgress(null);
     }
   };
 
@@ -865,6 +924,11 @@ function InstallationRequests() {
         </button>
       </div>
 
+      {jedForbidden && (
+        <p className="text-xs text-gray-600 dark:text-gray-400">
+          JED Remita requests aren&apos;t available to your role, so this page, its totals and its export cover imported installation requests only.
+        </p>
+      )}
       {[multiError && includeMulti && `Imported requests: ${multiError}`, jedError && `JED requests: ${jedError}`, actionError]
         .filter(Boolean)
         .map((msg) => (
@@ -1257,7 +1321,11 @@ function InstallationRequests() {
                 className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg bg-brand-500 text-gray-900 hover:bg-brand-600 disabled:opacity-50"
               >
                 {exportingCompleted ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
-                {exportingCompleted ? 'Preparing…' : 'Export Completed Installations'}
+                {completedExportPhase === 'downloading'
+                  ? 'Downloading…'
+                  : completedExportPhase === 'preparing'
+                    ? `Preparing…${photoProgress?.total ? ` (pictures ${photoProgress.done}/${photoProgress.total})` : ''}`
+                    : 'Export Completed Installations'}
               </button>
             </div>
             {completedExportError && (
@@ -1337,9 +1405,11 @@ function InstallationRequests() {
                     onToggle={toggleRow}
                     onCancel={setCancelTarget}
                     onUnassign={handleUnassign}
+                    onRevert={(r) => setRevertTarget(revertTargetOf(r))}
                     busy={actionBusy}
                     canCancel={canManageJobs}
                     canUnassign={canAssign}
+                    canRevert={permissions.canRevertInstallations === true}
                   />
                 )
               ))}
@@ -1476,6 +1546,8 @@ function InstallationRequests() {
         }
         confirmText="Cancel request"
       />
+
+      <RevertInstallationModal target={revertTarget} onClose={() => setRevertTarget(null)} onReverted={handleReverted} />
     </div>
   );
 }

@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { AlertCircle, Loader2 } from 'lucide-react';
 
-const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, loading, confirmText = 'Confirm' }) => {
+// `children` (optional) renders under the message — e.g. a reason field. Existing
+// callers pass none and are unchanged.
+const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, loading, confirmText = 'Confirm', children }) => {
   const cancelRef = useRef(null);
 
   // Accessibility: Escape cancels (never while the action is in flight), and
@@ -44,6 +46,7 @@ const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, loading
                   {message}
                 </p>
               </div>
+              {children && <div className="mt-3 text-left">{children}</div>}
             </div>
           </div>
         </div>

@@ -71,7 +71,7 @@ describe('fetchPhotosForEmbedding', () => {
     expect(Array.from(photos.keys()).sort()).toEqual(['https://x/a', 'https://x/c']);
     expect(skipped).toBe(2); // the WebP and the 404 — their links are still exported
     expect(fetchImpl).toHaveBeenCalledTimes(4);
-    expect(fetchImpl.mock.calls[0][1]).toEqual({ credentials: 'omit' });
+    expect(fetchImpl.mock.calls[0][1]).toMatchObject({ credentials: 'omit' });
   });
 });
 

@@ -18,8 +18,7 @@
 //   a real zero    → ₦0, with a line saying WHICH kind of zero it is
 import { Wallet, BadgeCheck, RefreshCw } from 'lucide-react';
 import { formatCurrencyNGN } from '../../utils/currency';
-import { formatPhaseLabel } from '../../utils/installationScope';
-import { unpricedNote } from '../../utils/meterPricing';
+import { paymentFigures } from '../../utils/reportData';
 
 const METRIC_TONES = {
   brand: 'bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400',
@@ -54,12 +53,10 @@ export const PaymentMetricCard = ({ icon: Icon, tone = 'brand', label, value, de
   </div>
 );
 
-const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
-
-const figureOr = ({ loading, error, value }) => {
+// An amount, or "Unavailable" — never ₦0 for a figure that couldn't be read.
+const figureOr = ({ loading, amount }) => {
   if (loading) return null;
-  if (error) return 'Unavailable';
-  return value === null || value === undefined ? 'Unavailable' : formatCurrencyNGN(value);
+  return amount === null || amount === undefined ? 'Unavailable' : formatCurrencyNGN(amount);
 };
 
 /**
@@ -74,15 +71,9 @@ const figureOr = ({ loading, error, value }) => {
  * @param {() => void} props.onRetry
  */
 function RevenueSummaryPanel({ id, title, collected, revenue, onRetry }) {
-  const v = collected.valuation;
-  const summary = revenue.summary;
-  const collectedError = collected.error
-    ? 'Unable to load payment data.'
-    : (!collected.loading && collected.incomplete ? 'Not every pending installation could be read, so the total is not shown short.' : null);
-  const dueError = revenue.error
-    ? 'Unable to load revenue data.'
-    : (summary && !summary.complete ? 'Not every revenue record could be loaded, so this total is not shown short.' : null);
-  const note = v ? unpricedNote(v.unpriced) : null;
+  // The figures, their errors and notes come from paymentFigures — the same
+  // helper the report exports use, so screen and file can't disagree.
+  const { collected: c, due: d, mismatch } = paymentFigures(collected, revenue);
 
   return (
     <section aria-labelledby={id} className="space-y-2">
@@ -103,37 +94,37 @@ function RevenueSummaryPanel({ id, title, collected, revenue, onRetry }) {
           tone="brand"
           label="Total collected payments"
           hint="Pending installations valued at the configured meter-type prices."
-          loading={collected.loading}
-          value={figureOr({ loading: collected.loading, error: collectedError, value: v?.total })}
-          detail={collectedError || (v ? `${plural(v.count, 'pending installation')}${v.byType.length ? ':' : ''}` : null)}
+          loading={c.loading}
+          value={figureOr(c)}
+          detail={c.detail}
         />
         <PaymentMetricCard
           icon={BadgeCheck}
           tone="green"
           label="Revenue due to us"
           hint="Recognised revenue for completed installations."
-          loading={revenue.loading}
-          value={figureOr({ loading: revenue.loading, error: dueError, value: summary?.revenueDue })}
-          detail={dueError || (summary ? plural(summary.completedCount, 'completed installation') : null)}
+          loading={d.loading}
+          value={figureOr(d)}
+          detail={d.detail}
         />
       </div>
 
-      {!collected.loading && v && v.byType.length > 0 && (
+      {!c.loading && c.byType.length > 0 && (
         <ul className="text-xs text-gray-600 dark:text-gray-300 space-y-0.5" aria-label="Total collected payments by meter type">
-          {v.byType.map((t) => (
-            <li key={t.type} className="break-words">
-              {t.count.toLocaleString()} {t.type === 'UNSPECIFIED' ? 'with no meter type' : (t.name || formatPhaseLabel(t.type))}
+          {c.byType.map((t) => (
+            <li key={t.label} className="break-words">
+              {t.count.toLocaleString()} {t.label}
               {t.unitPrice !== null ? ` × ${formatCurrencyNGN(t.unitPrice)} = ${formatCurrencyNGN(t.value)}` : ' — not valued'}
             </li>
           ))}
         </ul>
       )}
-      {!collected.loading && note && <p className="text-xs text-amber-700 dark:text-amber-400 break-words">{note}</p>}
-      {!revenue.loading && summary?.complete && summary.note && (
-        <p className="text-xs text-gray-500 dark:text-gray-400">Revenue due: {summary.note}</p>
+      {!c.loading && c.note && <p className="text-xs text-amber-700 dark:text-amber-400 break-words">{c.note}</p>}
+      {!d.loading && d.note && (
+        <p className="text-xs text-gray-500 dark:text-gray-400">Revenue due: {d.note}</p>
       )}
-      {collected.mismatch && (
-        <p className="text-xs text-amber-700 dark:text-amber-400">{collected.mismatch}</p>
+      {mismatch && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">{mismatch}</p>
       )}
     </section>
   );
