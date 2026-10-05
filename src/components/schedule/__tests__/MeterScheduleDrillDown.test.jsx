@@ -422,3 +422,78 @@ describe('Meter Schedule — Unassign meter (same rule and calls as Installation
     expect(jedApi.returnMeters).not.toHaveBeenCalled();
   });
 });
+
+describe('Meter Schedule — unassigning an installed meter (state comes from status, never installedAt)', () => {
+  const SERIAL = '0239110006925';
+  let reverted;
+  const meterNow = () => (reverted
+    // The backend now clears installedAt on revert; a stale one (pre-fix data)
+    // must not make the meter read "Installed" either.
+    ? { id: 3, meterNumber: SERIAL, phaseType: 'THREE PHASE', status: 'AVAILABLE', assignmentStatus: 'UNASSIGNED', installedAt: '2026-09-07T10:00:00Z' }
+    : METERS[2]);
+
+  beforeEach(() => {
+    reverted = false;
+    permissions = { ...permissions, isSuperAdmin: true, canRevertInstallations: true, canManageAssignments: true };
+    jedApi.getMeters.mockImplementation(async ({ status } = {}) => page([METERS[0], meterNow()].filter((m) => !status || m.status === status)));
+    jedApi.getMeterByNumber.mockImplementation(async (n) => {
+      if (n !== SERIAL) throw new Error('NOT_FOUND:Meter not found');
+      return { success: true, data: meterNow() };
+    });
+    jedApi.revertInstallation.mockImplementation(async () => { reverted = true; return { success: true, data: { id: 70, status: 'PENDING' } }; });
+  });
+  const cardOf = async (serial) => (await screen.findByRole('heading', { name: serial })).closest('.card');
+
+  it('keeps focus in the reason field while typing a whole sentence, then sends it', async () => {
+    await renderPage();
+    const card = await cardOf(SERIAL);
+    fireEvent.click(await within(card).findByRole('button', { name: `Unassign meter ${SERIAL}` }));
+    const dialog = await screen.findByRole('alertdialog');
+    const input = within(dialog).getByLabelText(/Reason/);
+    input.focus();
+    let typed = '';
+    for (const ch of 'Customer requested reassignment') {
+      typed += ch;
+      fireEvent.change(input, { target: { value: typed } });
+      // Before the fix, every keystroke re-ran the dialog's focus effect and
+      // moved focus to Cancel — on a phone, closing the keyboard.
+      expect(document.activeElement).toBe(input);
+    }
+    expect(input.value).toBe('Customer requested reassignment');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm unassign' }));
+    await waitFor(() => expect(jedApi.revertInstallation).toHaveBeenCalledWith(70, 'Customer requested reassignment'));
+  });
+
+  it('after the revert the re-read shows Available (not Installed) and the meter can be assigned', async () => {
+    await renderPage();
+    let card = await cardOf(SERIAL);
+    expect(within(card).getByText('Installed')).toBeTruthy();
+    expect(within(card).queryByRole('button', { name: /Assign/ })).toBeNull();
+
+    fireEvent.click(await within(card).findByRole('button', { name: `Unassign meter ${SERIAL}` }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Confirm unassign' }));
+    await waitFor(() => expect(jedApi.revertInstallation).toHaveBeenCalled());
+
+    // The page re-reads from the server (refreshSignal) — no local edit.
+    await waitFor(async () => {
+      card = await cardOf(SERIAL);
+      expect(within(card).getByText('Available')).toBeTruthy();
+    });
+    expect(within(card).queryByText('Installed')).toBeNull();
+    expect(within(card).queryByText(/^Installed:/)).toBeNull(); // the stale date isn't shown
+    expect(within(card).getByRole('button', { name: /Assign/ })).toBeTruthy();
+  });
+
+  it('search by the meter number shows the current state too', async () => {
+    reverted = true;
+    await renderPage();
+    const box = screen.getAllByPlaceholderText('Search by Meter Number, SIM, SGC...')[0];
+    fireEvent.change(box, { target: { value: SERIAL } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(jedApi.getMeterByNumber).toHaveBeenCalledWith(SERIAL));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: '0239110006909' })).toBeNull());
+    const card = await cardOf(SERIAL);
+    expect(within(card).getByText('Available')).toBeTruthy();
+    expect(within(card).queryByText('Installed')).toBeNull();
+  });
+});

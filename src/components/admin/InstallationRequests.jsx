@@ -1478,6 +1478,10 @@ function InstallationRequests() {
                       Installer<span className="text-red-600 dark:text-red-400" aria-hidden="true"> *</span>
                     </label>
                     <InstallerSelect
+                      // One disco selected: only installers profiled for it. A
+                      // selection across discos lists everyone; the API then
+                      // refuses each disco the installer isn't profiled for.
+                      discoCode={mixedDiscos ? null : (selectionDisco || null)}
                       id="assign-job-installer"
                       value={installerId}
                       onChange={setInstallerId}

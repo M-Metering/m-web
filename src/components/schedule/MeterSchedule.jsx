@@ -566,24 +566,18 @@ const StatsCard = ({ title, value, icon: Icon, bgColor, iconColor, loading = fal
 
 // Meter Status Badge Component
 const normalizeStatus = (status) => String(status || '').toUpperCase().trim();
-const getMeterStatus = (meter) => {
-  const installedAt = meter?.installedAt ?? meter?.installed_at ?? meter?.installedDate ?? meter?.installed_date;
-  const isInstalledFlag = meter?.isInstalled === true || meter?.is_installed === true || meter?.installed === true || normalizeStatus(meter?.installed) === 'INSTALLED';
-  const status = normalizeStatus(meter?.status);
+// ONE rule for a meter's state, shared with the Assignments picker and every
+// other screen (utils/meterInventory.js → meterAvailability): status and
+// assignmentStatus only, plus the open dispatch batches (`meter.holder`,
+// joined by withMeterHolders). Never `installedAt`: a reverted installation
+// used to leave a stale one, so the card read "Installed" while the meter was
+// back in stock and could be assigned again (backend fix + §5a, 2026-10-05).
+const getMeterStatus = (meter) => meterAvailability(meter, meter?.holder).key;
 
-  if (installedAt || isInstalledFlag || status === 'INSTALLED') {
-    return 'INSTALLED';
-  }
-
-  // Everything else — including ASSIGNED, which `status` alone never shows
-  // because a dispatch leaves it at AVAILABLE — comes from the shared rule.
-  // `meter.holder` is joined on by withMeterHolders (see MeterSchedule below).
-  return meterAvailability(meter, meter?.holder).key;
-};
-
-const getInstalledAtValue = (meter) => {
-  return meter?.installedAt ?? meter?.installed_at ?? meter?.installedDate ?? meter?.installed_date ?? null;
-};
+// installedAt is only a date to DISPLAY, and only for an installed meter.
+const getInstalledAtValue = (meter) => (getMeterStatus(meter) === 'INSTALLED'
+  ? (meter?.installedAt ?? meter?.installed_at ?? null)
+  : null);
 
 const MeterStatusBadge = ({ status }) => {
   const getStatusConfig = (status) => {

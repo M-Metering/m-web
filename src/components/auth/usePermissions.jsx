@@ -105,6 +105,9 @@ export function usePermissions() {
     // caller's token, so an admin-tier account would get an empty list rather
     // than an overview — admins use the Installation Requests page instead.
     canViewMyJobs: userRole === ROLES.INSTALLER && hasPermission(userRole, PERMISSIONS.INSTALLATIONS.FIELD_JOBS),
+    // Reaching Imports (history, row errors, templates) vs. importing or
+    // undoing. Separate since 2026-10-05: a Supervisor keeps the first only.
+    canViewImports: isAdmin || hasPermission(userRole, PERMISSIONS.IMPORTS.VIEW),
     canRunImports: isAdmin || hasPermission(userRole, PERMISSIONS.IMPORTS.RUN),
     // Reaching the Assignments page vs. actually dispatching from it. These
     // were one check until Supervisor existed; they are separate now because

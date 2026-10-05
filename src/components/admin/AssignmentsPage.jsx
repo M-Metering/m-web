@@ -84,15 +84,17 @@ function AssignmentsPage() {
   const [dispatched, setDispatched] = useState(() => new Set());
 
   useEffect(() => {
-    if (activeTab !== 'dispatch') return undefined;
+    if (activeTab !== 'dispatch' || !discoCode) return undefined;
     let cancelled = false;
     (async () => {
       setMetersLoading(true);
       setMetersError(null);
       try {
+        // Only this disco's stock (2026-10-05): a meter can be dispatched on a
+        // batch for its own disco only; any other comes back rejected.
         const list = await fetchAllPagesDetailed(
           (p) => jedApi.getMeters(p),
-          { status: 'AVAILABLE' },
+          { status: 'AVAILABLE', discoCode },
           { maxPages: METER_MAX_PAGES, inferNextFromFullPage: true }
         );
         if (!cancelled) {
@@ -109,7 +111,7 @@ function AssignmentsPage() {
     return () => { cancelled = true; };
   // refreshSignal: an assign, return, install or revert anywhere re-reads the
   // list, so the "available" count never lags the server.
-  }, [activeTab, metersReload, refreshSignal]);
+  }, [activeTab, metersReload, refreshSignal, discoCode]);
 
   // Who holds which meter right now, from the open dispatch batches. GET
   // /meters keeps a dispatched meter at status AVAILABLE and may not carry
@@ -313,6 +315,7 @@ function AssignmentsPage() {
                   Installer<span className="text-red-600 dark:text-red-400" aria-hidden="true"> *</span>
                 </label>
                 <InstallerSelect
+                  discoCode={discoCode || null}
                   id="assign-installer"
                   value={installerId}
                   onChange={setInstallerId}
@@ -339,6 +342,7 @@ function AssignmentsPage() {
                 Meter serial numbers<span className="text-red-600 dark:text-red-400" aria-hidden="true"> *</span>
               </label>
               <MeterSerialPicker
+                discoCode={discoCode || null}
                 id="assign-serials"
                 options={meterOptions}
                 loading={metersLoading || holdersLoading}

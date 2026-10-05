@@ -71,11 +71,11 @@ describe('meterDeletionBlockReason', () => {
       .toBe('It is installed at a customer premises.');
   });
 
-  it('refuses a meter carrying an installedAt even when the status disagrees', () => {
-    // The API is known to leave status/installedAt inconsistent, so either
-    // one on its own is enough to block the delete.
-    expect(meterDeletionBlockReason(meter({ installedAt: '2026-09-07T10:00:00Z' })))
-      .toBe('It is installed at a customer premises.');
+  it('decides "installed" from status alone — a stale installedAt is not an installation', () => {
+    // A reverted installation used to leave installedAt on a meter that was
+    // back in stock (Per-Disco Access update §5a): it is not installed.
+    expect(meterDeletionBlockReason(meter({ installedAt: '2026-09-07T10:00:00Z' }))).toBeNull();
+    expect(meterDeletionBlockReason(meter({ status: 'INSTALLED' }))).toBe('It is installed at a customer premises.');
   });
 
   it.each([

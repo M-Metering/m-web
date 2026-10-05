@@ -15,6 +15,7 @@ import { Suspense, lazy } from 'react';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import { Loader2, Lock } from 'lucide-react';
 import ErrorNotification from './components/common/ErrorNotification';
+import NoDiscoAccessNotice from './components/common/NoDiscoAccessNotice';
 import { usePermissions } from './components/auth/usePermissions';
 import { useAdminIdleTimeout } from './hooks/useAdminIdleTimeout';
 import jedApi from './components/services/api';
@@ -172,6 +173,9 @@ function AppContent() {
               onDismiss={() => setGlobalError(null)}
             />
           )}
+          {/* A non-SUPERADMIN with no disco yet sees empty lists and 403s
+              everywhere; say why, once, above every page. */}
+          <NoDiscoAccessNotice />
           <ErrorBoundary>
             <Suspense fallback={<PageLoader />}>
               <Routes>
@@ -236,7 +240,10 @@ function AppContent() {
                     jobs, then export the response sheet. Installer: the jobs
                     dispatched to them and the meters in their hands. Distinct
                     from the JED routes above, which are unchanged. */}
-                <Route path="/imports" element={permissions.canRunImports ? <ImportsPage /> : <AccessDenied />} />
+                {/* Reaching Imports needs IMPORTS.VIEW; uploading and undoing need
+                    IMPORTS.RUN, which ImportsPage checks (a Supervisor sees
+                    history and templates only). */}
+                <Route path="/imports" element={permissions.canViewImports ? <ImportsPage /> : <AccessDenied />} />
                 {/* Assignments: reaching the page needs ASSIGNMENTS.VIEW,
                     dispatching from it needs ASSIGNMENTS.MANAGE. A Supervisor
                     holds only the first, so it lands on the batch history

@@ -21,10 +21,10 @@ There is no ORM, no server-side rendering, no edge functions — the web server 
   - `/dashboard` → `AdminDashboard` (admin-tier) or `InstallerDashboard` (installer) — same URL, different component by role
   - `/installations` → `InstallationsPage` (`canViewAllInstallations`: admin tier + Supervisor) — "All Requests" (`InstallationRequests`: imported jobs + JED rows, dispatch, export, Super Admin unassign) and "JED Queue" (`?view=jed`, `AdminInstallations`)
   - `/installations/:accountNumber` → `InstallationDetail` (any role with view access) — the JED request detail/completion view
-  - `/schedule` → `MeterSchedule` (`canViewSchedule`) — plain summary cards (Installed opens `InstalledRecordsModal`), inventory and query tabs, assign/unassign/delete
+  - `/schedule` → `MeterSchedule` (`canViewSchedule`) — plain summary cards (Installed opens `InstalledRecordsModal`; an installed meter card opens `InstallationDetailsModal`), inventory and query tabs, assign/unassign/delete
   - `/users` → `UserManagement` (`canViewUsers`; Supervisor read-only)
-  - `/uploads` → `ExcelUpload` (`canUploadExcel`: admin tier + Supervisor; never Installer)
-  - `/imports` → `ImportsPage` (`canRunImports`) — multi-disco spreadsheet import, history, undo
+  - `/uploads` → `ExcelUpload` (`canUploadExcel`: admin tier only since 2026-10-05 — Supervisor and Installer get 403 on `POST /meters/upload`); sends `discoCode` with the file
+  - `/imports` → `ImportsPage` (`canViewImports`) — history and templates for every role that reaches it; import and undo need `canRunImports` (Supervisor is view-only since 2026-10-05)
   - `/assignments` → `AssignmentsPage` (`canViewAssignments`) — dispatch/return meters, batches
   - `/installer-status` → `InstallerJobStatus` (`canViewInstallerStatus`) — per-installer workload, jobs and meters
   - `/installation-requests` → redirect to `/installations`

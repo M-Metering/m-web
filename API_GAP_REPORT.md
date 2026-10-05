@@ -1,5 +1,36 @@
 # API Gap Report
 
+## 2026-10-05 (twelfth pass): Per-Disco Access and PHEDC — the backend's integration update
+
+The backend's "Per-Disco Access and PHEDC" update (2026-10-05) is implemented as written; it supersedes
+the frontend wherever they differed (Supervisor import rights, how a meter's state is read). Notes:
+
+| Item | What the app does | Backend change that would close it |
+|---|---|---|
+| **AY — the live OpenAPI spec lags the update.** `PUT /users/{id}/discos`, `discoCodes` on `POST /users`, `discoCode` on `POST /meters/upload`, the `?discoCode=` filters and METER_WRONG_DISCO are in the update document but not in `/api-docs` (checked 2026-10-05). | Implemented from the update document; endpoint paths are in `api.config.js` with that note. | Publish them in the spec. |
+| **AZ — a meter carries `discoId`, not a disco code.** `user.discos` has codes and names only, so the client can't tell which disco an exact-number lookup (`/meters/meter-number/{n}`) or a pasted serial belongs to. | Lists and searches are scoped server-side with `?discoCode=`; a meter from another disco that slips through an exact lookup is refused by the API per row ("Meter belongs to another disco's stock, not PHEDC") and that reason is shown. | Return `discoCode` on the meter (or `id` on `user.discos`). |
+| **AX — CLOSED.** Installers are now profiled for discos (`discos` on `User`, `discoCodes` on create, `PUT /users/:id/discos`). | User Management grants them; dispatch lists only installers profiled for the batch's disco. | — |
+
+**Frontend bugs fixed alongside (not gaps):** a reverted meter showed "Installed" yet could be assigned
+(the inventory read `installedAt`; §5a — now status-only), and the unassign reason field lost focus after
+every character (`ConfirmationModal` re-focused Cancel on every render of an inline `onClose`).
+
+## 2026-10-05 (eleventh pass): a new disco — PHEDC with Bayelsa customer data
+
+No new endpoint was needed: `POST /discos` and `PUT /discos/{code}/import-mapping` already support a
+data-driven disco, and the app now has a UI for them (Settings → Discos). These are what the Bayelsa
+sheet exposed that the API can't hold or doesn't document:
+
+| Gap | What the app does | Backend change that would close it |
+|---|---|---|
+| **AU — one feeder field.** `InstallationRequest` has `feederName` only; the Bayelsa sheet has a 33 kV (`FEEDER33NAME`) and an 11 kV (`FEEDER11NAME`) column. | `feederName` takes the populated 33 kV column; the 11 kV column (a `-----` placeholder in all 1,288 rows today) is kept in `extras`. | A second feeder field (e.g. `feeder11Name`/`feeder33Name`) if both voltages matter to the business. |
+| **AV — no customer-status field.** The sheet's `STATUS` is the customer's account status (`Active`), unrelated to the request lifecycle. | Kept in `extras` and shown as "STATUS: Active"; never mapped to `status`. | A `customerStatus` field if it should be filterable. |
+| **AW — `extras` and the disco record are undocumented.** No schema for `InstallationRequest.extras` (see gap F) or for the `GET /discos/{code}` body, and the spec doesn't say which roles may call `POST /discos`/`PUT …/import-mapping`. | `importExtrasOf` reads a flat object of scalars (or a JSON string) and ignores anything else; disco configuration is Super Admin-only in the app, as `permissions.js` already recorded. | Document `extras`, the Disco schema (including `importMapping`/`exportTemplate`), and the roles on each `/discos` write. |
+| **AX — no installer↔disco association.** `User`/`UserCreate` have no disco field. | PHEDC installers are ordinary `INSTALLER` accounts; the disco is chosen per assignment (`POST /assignments/*` carries `discoCode`). | A `discoCodes` field on `User` if installers must be restricted to a disco. |
+
+PHEDC's **response-sheet layout** (`exportTemplate`) is a business decision not made yet; registration
+sends none, so the server's default applies until one is set with `PUT /discos/PHEDC/export-template`.
+
 ## 2026-10-04 (tenth pass): Frontend Integration Update — per-disco prices, Supervisor, revert, previews
 
 Source: *Pharez API — Frontend Integration Update* (2026-10-04), checked against the live spec (96

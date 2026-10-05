@@ -23,9 +23,10 @@ const PAGES = [
 // including upload, export and statistics (not delete); the installer roster
 // read-only; no money, prices, settings or users management.
 describe('SUPERVISOR — module access', () => {
-  it('reaches installations, assignments, imports, meters, meter upload and users — and the dashboard', () => {
+  it('reaches installations, assignments, imports (view), meters and users — and the dashboard, not meter upload', () => {
+    // 2026-10-05: POST /meters/upload is 403 for SUPERVISOR, so /uploads is gone.
     const reachable = PAGES.filter((page) => canAccessPage(ROLES.SUPERVISOR, page));
-    expect(reachable.sort()).toEqual(['assignments', 'dashboard', 'imports', 'installations', 'schedule', 'uploads', 'users']);
+    expect(reachable.sort()).toEqual(['assignments', 'dashboard', 'imports', 'installations', 'schedule', 'users']);
   });
 
   it.each(['payments', 'reports', 'settings', 'complaints', 'my-jobs'])(
@@ -47,9 +48,7 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
       PERMISSIONS.INSTALLATIONS.MANAGE,
       PERMISSIONS.SCHEDULE.VIEW,
       PERMISSIONS.SCHEDULE.MANAGE,
-      PERMISSIONS.UPLOADS.EXCEL,
       PERMISSIONS.IMPORTS.VIEW,
-      PERMISSIONS.IMPORTS.RUN,
       PERMISSIONS.USERS.VIEW,
       PERMISSIONS.INSTALLERS.VIEW_STATUS,
       PERMISSIONS.INSTALLATIONS.EXPORT,
@@ -72,12 +71,18 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
     ['assign and cancel installation jobs', PERMISSIONS.INSTALLATIONS.MANAGE],
     ['see the meter inventory', PERMISSIONS.SCHEDULE.VIEW],
     ['export meters and read meter statistics', PERMISSIONS.SCHEDULE.MANAGE],
-    ['upload the meter workbook', PERMISSIONS.UPLOADS.EXCEL],
-    ['run imports', PERMISSIONS.IMPORTS.RUN],
-    ['view imports', PERMISSIONS.IMPORTS.VIEW],
+    ['view imports, history and templates', PERMISSIONS.IMPORTS.VIEW],
     ['see the installer roster', PERMISSIONS.USERS.VIEW],
   ])('can %s', (_label, permission) => {
     expect(hasPermission(ROLES.SUPERVISOR, permission)).toBe(true);
+  });
+
+  // Per-Disco Access update §6 (2026-10-05): export yes, import/upload/undo no.
+  it.each([
+    ['upload the meter workbook', PERMISSIONS.UPLOADS.EXCEL],
+    ['run or undo imports', PERMISSIONS.IMPORTS.RUN],
+  ])('can no longer %s', (_label, permission) => {
+    expect(hasPermission(ROLES.SUPERVISOR, permission)).toBe(false);
   });
 
   it.each([

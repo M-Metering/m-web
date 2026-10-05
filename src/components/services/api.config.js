@@ -185,6 +185,10 @@ export const ENDPOINTS = {
     SEARCH: '/users/search',
     BY_ID: (userId) => `/users/${encodeURIComponent(userId)}`,
     RESTORE: (userId) => `/users/${encodeURIComponent(userId)}/restore`,
+    // Per-Disco Access update (2026-10-05), SUPERADMIN only. Replaces the
+    // user's whole disco set: { discoCodes: [...] }; [] removes all access.
+    // (Not yet in the live OpenAPI spec — see API_GAP_REPORT.md.)
+    DISCOS: (userId) => `/users/${encodeURIComponent(userId)}/discos`,
   },
 
   // ==================== FINANCE ENDPOINTS ====================

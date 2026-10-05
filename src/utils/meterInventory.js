@@ -96,9 +96,15 @@ export const METER_AVAILABILITY_LABELS = Object.freeze({
 /**
  * Where a meter actually is, as ONE state — what an inventory screen shows.
  *
- * Order matters: a meter reported against an installation is Installed even
- * if its stock status lags (`assignmentStatus` USED), and a dispatched meter
- * is Assigned even though its stock status still reads AVAILABLE.
+ * The backend's rule (Per-Disco Access update, 2026-10-05, §5a): decided from
+ * `status` and `assignmentStatus` ONLY — never from `installedAt` or
+ * `installationRequestId`, which a reverted installation used to leave behind
+ * (the meter showed Installed while it was back in stock and assignable).
+ *   INSTALLED → Installed; FAULTY / RETIRED → as is; LOST → Lost;
+ *   ASSIGNED (or an open dispatch batch) → Assigned; else Available.
+ * A meter whose `assignmentStatus` is USED while its status still reads
+ * AVAILABLE is shown Installed, because isAssignableMeter refuses it too —
+ * the display and the dispatch rule never disagree.
  *
  * @param {object} meter
  * @param {object|null} [holder] - open-dispatch entry ({ installerName, ... })
@@ -108,10 +114,12 @@ export function meterAvailability(meter, holder = null) {
   const status = normalizeStatus(meter?.status);
   const assignment = normalizeStatus(meter?.assignmentStatus);
   let key;
-  if (status === 'INSTALLED' || assignment === 'USED') key = METER_AVAILABILITY.INSTALLED;
+  if (status === 'INSTALLED') key = METER_AVAILABILITY.INSTALLED;
+  else if (status === 'FAULTY' || status === 'RETIRED') key = status;
   else if (assignment === 'LOST') key = METER_AVAILABILITY.LOST;
+  else if (assignment === 'USED') key = METER_AVAILABILITY.INSTALLED;
   else if (isHolder(holder) || assignment === 'ASSIGNED') key = METER_AVAILABILITY.ASSIGNED;
-  else if (status === 'FAULTY' || status === 'RETIRED' || status === 'AVAILABLE') key = status;
+  else if (status === 'AVAILABLE') key = status;
   else key = status || METER_AVAILABILITY.AVAILABLE;
   return {
     key,
@@ -218,8 +226,9 @@ export function toMeterOptions(meters = [], exclude = new Set(), holders = null)
 // (only 401/403/404). So the client refuses, up front, the cases that would
 // destroy a record another workflow already depends on:
 //
-//   - status INSTALLED, or any meter carrying an installedAt — it is in
-//     service at a customer, and the installation/report history points at it;
+//   - status INSTALLED — it is in service at a customer, and the
+//     installation/report history points at it (`installedAt` alone means
+//     nothing: a reverted meter used to keep a stale one);
 //   - assignmentStatus ASSIGNED — physically out with an installer;
 //   - assignmentStatus USED — already reported against an installation;
 //   - assignmentStatus LOST — a record of a loss, not spare inventory.
@@ -243,7 +252,7 @@ const UNDELETABLE_ASSIGNMENT = Object.freeze({
  */
 export function meterDeletionBlockReason(meter, holder = null) {
   if (!meterSerial(meter)) return 'This record has no meter number.';
-  if (normalizeStatus(meter.status) === 'INSTALLED' || meter.installedAt) {
+  if (normalizeStatus(meter.status) === 'INSTALLED') {
     return 'It is installed at a customer premises.';
   }
   if (isHolder(holder)) return UNDELETABLE_ASSIGNMENT.ASSIGNED;
