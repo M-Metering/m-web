@@ -62,6 +62,7 @@ import {
 } from '../../utils/installationTotals';
 import RevenueSummaryPanel from './RevenueSummaryPanel';
 import { classifyPastedAccounts, accountBatchMessage, mergeAssignmentResults } from '../../utils/accountBatch';
+import { importExtrasOf } from '../../utils/discoImportMapping';
 import {
   ROW_SOURCE, JED_BUCKET, ATTRIBUTE_FILTERS, SORT_OPTIONS, NOT_RECORDED,
   buildScopeOptions, resolveScope, attributeRemitaRecord, nonJedCodeSet,
@@ -102,16 +103,22 @@ function StatTile({ label, value, active, onClick }) {
 
 const attributeLine = (row) =>
   [
+    row.region,
     row.feederName && `Feeder ${row.feederName}`,
     row.transformerName && `DT ${row.transformerName}`,
+    row.raw?.transformerCode && row.raw.transformerCode !== row.transformerName && `DT ID ${row.raw.transformerCode}`,
     row.installationPosition,
   ].filter(Boolean).join(' · ');
+
+// Columns the import kept without a field of their own (captureExtras).
+const extrasLine = (row) => importExtrasOf(row.raw).map((e) => `${e.label}: ${e.value}`).join(' · ');
 
 function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign, onRevert, busy, canCancel = true, canUnassign = true, canRevert = false }) {
   const job = row.raw;
   const actions = getAvailableActions(row.status);
   const coords = getCoordinates(job);
   const attrs = attributeLine(row);
+  const extras = extrasLine(row);
 
   return (
     <div className="p-4 flex items-start gap-3">
@@ -143,6 +150,7 @@ function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign,
           <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 truncate">{row.customerAddress}</p>
         )}
         {attrs && <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5 truncate">{attrs}</p>}
+        {extras && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{extras}</p>}
 
         <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 space-y-0.5">
           {/* Three separate events, never conflated: when the record was

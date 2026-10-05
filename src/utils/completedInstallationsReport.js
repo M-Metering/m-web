@@ -22,6 +22,7 @@ import { isCompletedStatus } from './statusBadge';
 import { parseAmount } from './paymentSummary';
 import { COLUMN_TYPES } from './xlsx';
 import { meterMakeOf, meterModelOf, manufacturedDateOf } from './meterDisplay';
+import { importExtrasOf } from './discoImportMapping';
 
 const { TEXT, COORDINATE, CURRENCY, DATE, DATETIME, LINK, IMAGE } = COLUMN_TYPES;
 
@@ -278,7 +279,7 @@ export function buildCompletedInstallationsReport({
 // ---------------------------------------------------------------------------
 const DETAIL_KEYS = [
   'source', 'disco', 'installationId', 'status', 'accountNumber', 'customerName', 'customerPhone',
-  'customerAddress', 'region', 'area', 'feederName', 'transformerName', 'installationPosition',
+  'customerAddress', 'region', 'area', 'feederName', 'transformerName', 'transformerCode', 'installationPosition',
   'requestDate', 'datePaid', 'meterNumber', 'meterType', 'installationDate', 'completedAt',
   'installerName', 'installerId', 'assignedAt', 'sealNumber', 'latitude', 'longitude', 'photoUrl',
   'discoSupervisor', 'notes',
@@ -298,6 +299,9 @@ export function installationDetailsOf(row) {
     const value = COLUMN_BY_KEY.get(key)[3](row, null);
     out[key] = value === undefined || value === '' ? null : value;
   });
+  // Columns the import kept without a field of their own (captureExtras),
+  // e.g. a customer status or a second feeder column.
+  out.extras = importExtrasOf(row.raw);
   out.row = row;
   return out;
 }

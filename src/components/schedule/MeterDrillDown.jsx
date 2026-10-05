@@ -40,7 +40,7 @@ export function InstallationRecord({ record, loading, error, complete, showPhone
       <Row label="Account">{record.accountNumber && <span className="font-mono break-all">{record.accountNumber}</span>}</Row>
       <Row label="Address">{record.customerAddress}</Row>
       <Row label="Area / region">{location}</Row>
-      <Row label="Feeder">{[record.feederName, record.transformerName && `Transformer ${record.transformerName}`].filter(Boolean).join(' · ')}</Row>
+      <Row label="Feeder">{[record.feederName, record.transformerName && `Transformer ${record.transformerName}`, record.transformerCode && `DT ID ${record.transformerCode}`].filter(Boolean).join(' · ')}</Row>
       {showPhone && <Row label="Phone">{record.customerPhone}</Row>}
       <Row label="Meter">{record.meterNumber && (
         <span className="font-mono break-all">{record.meterNumber}{record.meterType ? <span className="font-sans"> · {formatPhaseLabel(record.meterType)}</span> : null}</span>
@@ -69,6 +69,7 @@ export function InstallationRecord({ record, loading, error, complete, showPhone
         </a>
       )}</Row>
       <Row label="Notes">{record.notes}</Row>
+      {(record.extras || []).map((e) => <Row key={e.label} label={e.label}>{e.value}</Row>)}
     </dl>
   );
 }

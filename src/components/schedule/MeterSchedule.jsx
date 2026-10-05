@@ -41,6 +41,7 @@ import { useMeterHolders } from '../../hooks/useMeterHolders';
 import { normalizePhase } from '../../utils/installationScope';
 import { useInstallationRecordsByMeter } from '../../hooks/useInstallationRecordsByMeter';
 import InstalledRecordsModal from './InstalledRecordsModal';
+import InstallationDetailsModal from './InstallationDetails';
 import UnassignMeterAction from '../installations/UnassignMeterAction';
 import { unassignActionFor } from '../../utils/meterUnassign';
 
@@ -642,10 +643,17 @@ const PhaseTypeBadge = ({ phaseType }) => {
 };
 
 
+// Clicks on a card's own controls (checkbox, Delete, Assign, Unassign and the
+// dialogs they open) must not also open the card's details.
+const stopCardClick = (e) => e.stopPropagation();
+
 // Meter Card Component
+// `onOpenDetails` (installed meters only): a click anywhere on the card opens
+// InstallationDetailsModal; the meter number is the keyboard-reachable button.
+// The card itself shows no installation detail.
 const MeterCard = ({
   meter, canDelete, canAssignMeters, deleting, onDeleteClick, onAssignClick,
-  selectable, selected, onToggleSelect, unassignAction = null,
+  selectable, selected, onToggleSelect, unassignAction = null, onOpenDetails = null,
 }) => {
   const status = getMeterStatus(meter);
   // Dispatchable per the shared inventory rule (status AVAILABLE and not
@@ -653,10 +661,15 @@ const MeterCard = ({
   // the two screens can never offer different meters.
   const canAssign = canAssignMeters && isAssignableMeter(meter);
   const deleteBlockedReason = canDelete ? meterDeletionBlockReason(meter) : null;
+  const openDetails = onOpenDetails ? () => {
+    // Selecting text on the card isn't a request for its details.
+    if (typeof window !== 'undefined' && window.getSelection?.()?.toString()) return;
+    onOpenDetails(meter);
+  } : undefined;
   return (
-  <div className={`card p-4 sm:p-6 hover:shadow-lg transition-shadow duration-200 ${
+  <div onClick={openDetails} className={`card p-4 sm:p-6 hover:shadow-lg transition-shadow duration-200 ${
     selected ? 'ring-2 ring-brand-500 dark:ring-brand-400' : ''
-  }`}>
+  } ${onOpenDetails ? 'cursor-pointer hover:ring-1 hover:ring-purple-300 dark:hover:ring-purple-700' : ''}`}>
     <div className="flex items-start justify-between mb-3 gap-2">
       <div className="flex items-start gap-2 flex-1 min-w-0">
         {selectable && (
@@ -664,13 +677,20 @@ const MeterCard = ({
             type="checkbox"
             checked={selected}
             onChange={() => onToggleSelect(meter)}
+            onClick={stopCardClick}
             aria-label={`Select meter ${meter.meterNumber}`}
             className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500 shrink-0"
           />
         )}
         <div className="flex-1 min-w-0">
           <h3 className="font-semibold text-gray-900 dark:text-white text-sm sm:text-base truncate mb-1">
-            {meter.meterNumber}
+            {onOpenDetails ? (
+              <button type="button" onClick={(e) => { e.stopPropagation(); onOpenDetails(meter); }}
+                aria-haspopup="dialog" title="View installation details"
+                className="max-w-full truncate text-left hover:text-brand-700 dark:hover:text-brand-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded">
+                {meter.meterNumber}
+              </button>
+            ) : meter.meterNumber}
           </h3>
           <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
             SIM: {orNotRecorded(meter.simNumber)}
@@ -678,7 +698,7 @@ const MeterCard = ({
         </div>
       </div>
       <div className="flex flex-col items-end gap-1">
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1" onClick={stopCardClick}>
           <MeterStatusBadge status={status} />
           {canDelete && (
             <button
@@ -736,7 +756,7 @@ const MeterCard = ({
             <p>Installed: {formatDateOnly(getInstalledAtValue(meter))}</p>
           )}
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0" onClick={stopCardClick}>
         {/* Assigned → back to stock; installed → Super Admin revert. One rule:
             utils/meterUnassign.js. */}
         <UnassignMeterAction action={unassignAction} />
@@ -1290,7 +1310,7 @@ function deleteConfirmationMessage(meters) {
   return lines.join('\n\n');
 }
 
-const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canExportMeters, onDataChanged, unassignFor = null }) => {
+const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canExportMeters, onDataChanged, unassignFor = null, onOpenDetails = null }) => {
   const { meters, loading, error, pagination, filters, fetchMeters, updateFilters, changePage, exportMeters } = meterInventory;
 
   // Deletion is scoped to what a Super Admin selected, one meter at a time
@@ -1549,6 +1569,7 @@ const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canE
                 selected={selected.has(meterSerial(meter))}
                 onToggleSelect={toggleSelect}
                 unassignAction={unassignFor ? unassignFor(meter) : null}
+                onOpenDetails={onOpenDetails && getMeterStatus(meter) === 'INSTALLED' ? onOpenDetails : null}
               />
             ))}
           </div>
@@ -1667,6 +1688,14 @@ function MeterSchedule() {
   // The Installed card opens the installed meters and their installations.
   const [installedRecordsOpen, setInstalledRecordsOpen] = useState(false);
   const closeInstalledRecords = useCallback(() => setInstalledRecordsOpen(false), []);
+  // An installed meter card opens that one meter's installation details.
+  const [detailMeter, setDetailMeter] = useState(null);
+  const closeDetailMeter = useCallback(() => setDetailMeter(null), []);
+  // Once installation details have been asked for, the lookup stays loaded
+  // (refreshSignal keeps it fresh), so reopening a card never re-reads.
+  const [detailsRequested, setDetailsRequested] = useState(false);
+  const openDetailMeter = useCallback((meter) => { setDetailsRequested(true); setDetailMeter(meter); }, []);
+  const openInstalledRecords = useCallback(() => { setDetailsRequested(true); setInstalledRecordsOpen(true); }, []);
   const meterInventory = useMeterData({ searchTerm: '' }, activeTab === 'inventory');
   const meterQuery = useMeterData({ searchTerm: '' }, activeTab === 'query');
 
@@ -1730,12 +1759,14 @@ function MeterSchedule() {
     return cards;
   }, [meterStats, statsLoading, statsError, holders, holdersLoading, holdersError, canViewAssignments]);
 
-  // Installation records by meter number: read for the Installed modal, and
+  // Installation records by meter number: read for the Installed modal and an
+  // installed card's details (ONE shared read, started by the first click —
+  // never a request per card), and
   // for a Super Admin while an installed meter is on screen (its "Unassign"
   // is the installation revert, which needs the installation's id).
   const visibleMeters = activeTab === 'inventory' ? inventoryMeters : queryMeters;
   const installedOnScreen = canRevertInstallations === true && visibleMeters.some((m) => getMeterStatus(m) === 'INSTALLED');
-  const lookupEnabled = installedRecordsOpen || installedOnScreen;
+  const lookupEnabled = detailsRequested || installedOnScreen;
   // One read shared with the Installed records modal.
   const installationLookup = useInstallationRecordsByMeter({ enabled: lookupEnabled });
   const lookupIndex = lookupEnabled ? installationLookup.records?.index || null : null;
@@ -1785,7 +1816,7 @@ function MeterSchedule() {
       {canManageSchedule && (
         <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 sm:gap-4">
           {statsCards.map((card) => (
-            <StatsCard key={card.id} {...card} onClick={card.id === 'installed' ? () => setInstalledRecordsOpen(true) : null} />
+            <StatsCard key={card.id} {...card} onClick={card.id === 'installed' ? openInstalledRecords : null} />
           ))}
         </div>
       )}
@@ -1816,6 +1847,7 @@ function MeterSchedule() {
           canExportMeters={canManageSchedule}
           onDataChanged={notifyDataChanged}
           unassignFor={unassignFor}
+          onOpenDetails={openDetailMeter}
         />
       )}
 
@@ -1831,6 +1863,14 @@ function MeterSchedule() {
         showPhone={isAdmin === true}
         showPayment={canViewPayments === true}
         canRevert={canRevertInstallations === true}
+      />
+
+      <InstallationDetailsModal
+        meter={detailMeter}
+        onClose={closeDetailMeter}
+        lookup={installationLookup}
+        showPhone={isAdmin === true}
+        showPayment={canViewPayments === true}
       />
     </div>
   );

@@ -5,7 +5,9 @@
 //   - the modal lists the meters the Installed count is made of
 //     (GET /meters?status=INSTALLED) joined to their real installation
 //     records — nothing invented, missing fields left out;
-//   - no meter card embeds installation details;
+//   - no meter card embeds installation details; an INSTALLED meter card opens
+//     them in a modal on click (one shared read, never one per card), and its
+//     own controls (Unassign, Delete, checkbox) never open that modal;
 //   - no card shows a field /meters/statistics doesn't return.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, fireEvent, waitFor, cleanup } from '@testing-library/react';
@@ -172,7 +174,7 @@ describe('Meter Schedule — the Installed card opens the installed details moda
 
     fireEvent.click(within(modal).getByRole('button', { name: /0239110006925/ }));
     const text = modal.textContent;
-    ['Customer', 'Installer', 'Installation', 'Meter', 'Seal', 'Location', 'Installation picture',
+    ['Meter Information', 'Customer Information', 'Installation Information', 'Installer', 'Seal number', 'GPS coordinates', 'Installation picture',
       'IHESIABA C', '3705431479', '12 Aba Rd', 'Musa Bello', 'SL-77', 'Three Phase', '5.100000, 7.300000', 'View picture']
       .forEach((v) => expect(text).toContain(v));
     expect(within(modal).getByRole('img', { name: /Installation of meter 0239110006925/ }).getAttribute('src')).toBe('https://api.example/files/abc');
@@ -249,6 +251,82 @@ describe('Meter Schedule — the Installed card opens the installed details moda
     expect(await within(modal).findByText(/IHESIABA C/)).toBeTruthy();
     expect(within(modal).getByText(/JED Remita requests aren’t available to your role/)).toBeTruthy();
     expect(within(modal).queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('Meter Schedule — an installed meter card opens its installation details', () => {
+  const INSTALLED = '0239110006925';
+  const cardOf = async (serial) => (await screen.findByRole('heading', { name: serial })).closest('.card');
+  const detailsDialog = () => screen.queryByRole('dialog', { name: 'Installation Details' });
+
+  it('shows no detail on the card, reads nothing until clicked, then shows the complete record', async () => {
+    jedApi.getMeters.mockImplementation(async () => page(METERS.map((m) => (m.meterNumber === INSTALLED
+      ? { ...m, meterMake: 'M E METERING', model: 'MEM 130', simNumber: '0595223319', sgcNumber: '600773', manufacturedDate: '2024' }
+      : m))));
+    await renderPage();
+    const card = await cardOf(INSTALLED);
+    expect(within(card).queryByText('IHESIABA C')).toBeNull();
+    expect(detailsDialog()).toBeNull();
+    // No installation read for an Admin until a card is opened.
+    expect(jedApi.getInstallations).not.toHaveBeenCalled();
+
+    fireEvent.click(within(card).getByText(/Make:/));
+    const modal = await screen.findByRole('dialog', { name: 'Installation Details' });
+    expect(await within(modal).findByText('IHESIABA C')).toBeTruthy();
+    const text = modal.textContent;
+    ['Meter Information', 'Customer Information', 'Installation Information', INSTALLED, 'Three Phase', 'M E METERING',
+      'MEM 130', '0595223319', '600773', '2024', '3705431479', '12 Aba Rd', 'ABA_POWER', 'Musa Bello', 'SL-77',
+      '5.100000, 7.300000', 'View picture'].forEach((v) => expect(text).toContain(v));
+    expect(text).toContain('08030000000'); // admin tier sees the phone
+    const reads = jedApi.getInstallations.mock.calls.length;
+
+    // Close and reopen: the shared read is reused, not repeated per open/card.
+    fireEvent.click(within(modal).getByRole('button', { name: 'Close installation details' }));
+    await waitFor(() => expect(detailsDialog()).toBeNull());
+    fireEvent.click(within(card).getByRole('button', { name: INSTALLED }));
+    expect(await screen.findByRole('dialog', { name: 'Installation Details' })).toBeTruthy();
+    expect(jedApi.getInstallations.mock.calls.length).toBe(reads);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(detailsDialog()).toBeNull());
+  });
+
+  it('only installed cards open details', async () => {
+    await renderPage();
+    const available = await cardOf('0239110006909');
+    expect(within(available).queryByRole('button', { name: '0239110006909' })).toBeNull();
+    fireEvent.click(within(available).getByText(/Make:/));
+    expect(detailsDialog()).toBeNull();
+  });
+
+  it('Unassign (and its confirmation) and Delete never open the details modal', async () => {
+    permissions = { ...permissions, isSuperAdmin: true, canRevertInstallations: true };
+    await renderPage();
+    const card = await cardOf(INSTALLED);
+    fireEvent.click(await within(card).findByRole('button', { name: `Unassign meter ${INSTALLED}` }));
+    const confirm = await screen.findByRole('alertdialog');
+    expect(detailsDialog()).toBeNull();
+    fireEvent.click(within(confirm).getByRole('button', { name: /Cancel/ }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(detailsDialog()).toBeNull();
+    fireEvent.click(within(card).getByTitle(/Cannot be deleted/));
+    expect(detailsDialog()).toBeNull();
+  });
+
+  it('says when no installation reports the meter, and when the read fails', async () => {
+    jedApi.getInstallations.mockResolvedValue(page([]));
+    await renderPage();
+    fireEvent.click(within(await cardOf(INSTALLED)).getByRole('button', { name: INSTALLED }));
+    let modal = await screen.findByRole('dialog', { name: 'Installation Details' });
+    expect(await within(modal).findByText(/No completed installation reports this meter number/)).toBeTruthy();
+    expect(modal.textContent).toContain('Meter Information');
+    cleanup();
+
+    jedApi.getInstallations.mockRejectedValue(new Error('SERVER_ERROR:boom at /srv/x.js'));
+    await renderPage();
+    fireEvent.click(within(await cardOf(INSTALLED)).getByRole('button', { name: INSTALLED }));
+    modal = await screen.findByRole('dialog', { name: 'Installation Details' });
+    expect(await within(modal).findByText('Unable to load the installation details. Please try again.')).toBeTruthy();
+    expect(modal.textContent).not.toMatch(/boom|srv/);
   });
 });
 
