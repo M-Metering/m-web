@@ -25,13 +25,13 @@ Versions below are read directly from `package.json` — verify there before ass
 | Icons | lucide-react 0.548.0 |
 | PWA | vite-plugin-pwa 1.3.0 (Workbox-generated service worker) |
 | Linting | ESLint 9.36.0, flat config (`eslint.config.js`), React Hooks + React Refresh plugins |
-| Testing | Vitest 3 + React Testing Library + jsdom (dev-only, added 2026-09-21). `npm test` runs `src/**/__tests__/*.test.{js,jsx}`: unit tests for the permission model (the per-role module matrix, including Supervisor), the installation-scope, installer-queue, status-badge, api-result, user-account, installer-job-filter, meter-capacity (the Admin assignment rules and the Super Admin bypass, case by case), meter-inventory, meter-availability (holder index, phase canonicalisation, paste parser), account-batch, installer-stats, meter-display, meter-number, seal-number, image-compression, payment-summary, error-message, xlsx, completed-report and pagination utils, plus component tests for Installation Requests (including its read-only Supervisor rendering, account paste and per-disco bulk assign), revenue consistency (Dashboard = Payments = Installations), Installer Job Status, the photo field (camera + gallery), Assignments (including the role differences), Meter Schedule (inventory, search), User Management (edit/delete payloads), Navigation (the role matrix), Installer Dashboard, My Jobs, InstallationDetail, Report Installation and the installer job summary, all against a mocked `jedApi`. `scripts/excel-check/` generates sample workbooks with the real export code and checks them in Microsoft Excel over COM (Windows with Excel only). Coverage is still narrow; see `CodeBaseAudit.md` for the untested high-risk areas |
+| Testing | Vitest 3 + React Testing Library + jsdom (dev-only, added 2026-09-21). `npm test` runs `src/**/__tests__/*.test.{js,jsx}`: unit tests for the permission model (the per-role module matrix, including Supervisor), the installation-scope, installer-queue, status-badge, api-result, user-account, installer-job-filter, meter-capacity (the Admin assignment rules and the Super Admin bypass, case by case), meter-inventory, meter-availability (holder index, phase canonicalisation, paste parser), account-batch, installer-stats, meter-display, meter-number, seal-number, image-compression, payment-summary, error-message, xlsx, completed-report, pagination, installation-revert, meter-unassign and photo-embed (bounded) utils, plus component tests for Installation Requests (including its read-only Supervisor rendering, account paste and per-disco bulk assign), revenue consistency (Dashboard = Payments = Installations), Installer Job Status (meters, held-meter jobs, unassign/revert), the photo field (camera + gallery), Assignments (including the role differences), Meter Schedule (plain summary cards, the Installed modal, inventory, search, unassign), User Management (edit/delete payloads), Navigation (the role matrix), Installer Dashboard, My Jobs, InstallationDetail, Report Installation and the installer job summary, all against a mocked `jedApi`. `scripts/excel-check/` generates sample workbooks with the real export code and checks them in Microsoft Excel over COM (Windows with Excel only). Coverage is still narrow; see `CodeBaseAudit.md` for the untested high-risk areas |
 | Spreadsheets | ExcelJS 4 (lazy-loaded chunk, excluded from the PWA precache), with an npm `overrides` pin of `uuid` ≥ 11.1.1 for a moderate advisory in ExcelJS's own `uuid` dependency |
 | Other | `sharp` (dev-only, PWA icon generation script) |
 
 ## Architecture
 
-- **Application structure:** `src/App.jsx` owns the route table and top-level layout (Header + Navigation sidebar + `<Suspense>`-wrapped route content). Every route component is `React.lazy`-loaded. Pages are organized by role/feature under `src/components/{admin,auth,common,contexts,dashboard,installation,schedule,services,settings,uploads}/` plus one root-level page (none currently — `SubmissionPage.jsx` was the only one and has been removed).
+- **Application structure:** `src/App.jsx` owns the route table and top-level layout (Header + Navigation sidebar + `<Suspense>`-wrapped route content). Every route component is `React.lazy`-loaded. Pages are organized by role/feature under `src/components/{admin,auth,common,complaints,contexts,dashboard,installation,installations,installers,schedule,services,settings,uploads}/` plus one root-level page (none currently — `SubmissionPage.jsx` was the only one and has been removed).
 - **Routing:** `react-router-dom` v7 `<Routes>`/`<Route>` (not `createBrowserRouter`). Every protected route is gated **inline** in `App.jsx` with a ternary against `usePermissions()` output (e.g. `permissions.isAdmin ? <InstallationsPage /> : <AccessDenied />`), not a wrapper `<ProtectedRoute>` component. `AccessDenied` renders in place at the same URL rather than redirecting.
 - **Authentication:** JWT login (`POST /auth/login`, body exactly `{ phone, password }`). Token + user object persisted in `localStorage` (`jedAuthToken`, `jedUser`) via `jedApi`'s own storage methods (`storeTokens`/`storeUser`/`getAuthToken`/`getStoredUser`/`clearTokens`); `AuthContext.jsx` wraps this in React state and normalizes the role to uppercase. A 401 from any API call clears tokens automatically (`handleErrorResponse` in `api.js`). There is no `/auth/refresh-token` endpoint on the real API — a lapsed JWT just requires a fresh login.
 - **Authorization:** four roles, all four from the API's `User.role` enum — `SUPERADMIN`, `ADMIN`, `SUPERVISOR`, `INSTALLER` — used uppercase, as-is, throughout (no case translation, no role renaming). `src/components/auth/permissions.js` defines the permission model (`PERMISSIONS`, `ROLE_PERMISSIONS`, `PAGE_ACCESS`, `isPrivilegedRole`); `usePermissions.jsx` is the hook every component actually consumes (`isAdmin`, `isSuperAdmin`, `isSupervisor`, `isInstaller`, `canViewInstallations`, `canViewAssignments` vs `canManageAssignments`, `canViewSchedule` vs `canManageSchedule`, `canViewUsers` vs `canCreateUsers`/`canUpdateUsers`, `enforcesMeterCapacity`, etc.). **`isAdmin` means the ADMIN/SUPERADMIN tier and deliberately excludes `SUPERVISOR`**, so every pre-existing `isAdmin` gate denies the new role without being touched; what a Supervisor may reach is granted explicitly in `ROLE_PERMISSIONS[SUPERVISOR]`, an allow-list. Note the pattern this created: wherever a page is reachable by more than one role at different depths, the *view* check and the *manage* check are separate `usePermissions` flags, never one flag doing both. **Client-side checks are a UX convenience, not the security boundary** — the real API enforces the same rules server-side and must continue to.
@@ -78,7 +78,8 @@ jobs can be assigned. JED rows open the explanatory modal instead.
 Dashboard, the Payments page, Admin Reports and the Installations page:
 - **Total collected payments = the Pending (= Awaiting) Installations valued at the configured
   meter-type prices** — `totalCollectedPayment` (`utils/meterPricing.js`): Σ over each pending record
-  of its own meter type's current price (`GET /settings/meter-type`), any number of types, unknown or
+  of its own **disco's** price for its own meter type (`GET /settings/meter-type`; prices are per disco since
+  2026-10-04 — a JED Remita request uses its own disco code's list, else JED's), any number of types, unknown or
   unpriced types listed and never guessed. It is a value, not a sum of payment records, so a paid JED
   request contributes its meter price, never its recorded amount as well. The Installations page
   applies the same function to exactly the rows its filters show, so its Pending count and value
@@ -121,9 +122,12 @@ and the client sorts. Each figure has its own loading/error state; a failure is 
 `useInstallationTotals`; per-record pending/completed: `isPendingInstallation`/`isCompletedInstallation`
 (`utils/installationTotals.js`); money: `useRevenueSummary`; **installation value:**
 `usePendingInstallationValue` → `utils/meterPricing.js` = Σ current meter-type price
-(`GET /settings/meter-type`, `{ name, amount, isActive }`) over each pending installation's own meter
-type. Types match through `normalizePhase`; an installation with no type, a type with no active price,
-or a type with two conflicting active prices is **never priced** — it is counted and named. That value IS "Total collected payments" (above); Reports also shows "Total
+(`GET /settings/meter-type`, `{ discoCode, name, amount, isActive }`) over each pending installation's own
+(disco, meter type). Types match through `normalizePhase`; an installation with no type, no active price
+for its disco, or two conflicting active prices for its disco is **never priced** — it is counted and named.
+**Prices are per disco (API, 2026-10-04):** creating one needs `discoCode` (400 without it), one active price
+per type per disco (409), and Settings → Meter Types filters by disco and sends exactly `{ discoCode, name,
+amount }` / `{ name, amount }` — there is no `description` field on the API. That value IS "Total collected payments" (above); Reports also shows "Total
 amount paid (all recorded payments)" as a separate, differently-defined figure. Saving a meter type fires `notifyDataChanged`. A test
 (`crossModuleReconciliation.test.jsx`) pins Dashboard Pending = Awaiting = Installations = Reports for one
 dataset, the completion / new-job / pagination / failed-read scenarios, the Reports value against an
@@ -223,16 +227,22 @@ export contains exactly those rows. The workbook always has **Installation Pictu
 hyperlink — the permanent public `/files/{token}` URL, never a blob) and, where the picture could be
 fetched as JPEG/PNG, an embedded **Installation Picture** (`utils/photoEmbed.js`; xlsx `LINK`/`IMAGE`
 column types). Core installation columns (seal, GPS, supervisor, installer, dates, picture link) are kept
-even when blank; only optional ones are dropped when empty. The CSP's `img-src` allows the API hosts,
+even when blank; only optional ones are dropped when empty. **Every enrichment step is bounded**
+(2026-10-04): pictures by `utils/photoEmbed.js` (per-picture timeout, step budget, byte cap), the meter
+scan by `withDeadline` — an export must always finish, with links standing in for anything skipped.
+There is no server endpoint for this workbook (`/installations/export/{discoCode}` is the disco's
+response sheet, a different document). The CSP's `img-src` allows the API hosts,
 because uploaded photos live there.
 
-**Meter Schedule cards are drill-downs (2026-09-27).** Each status/phase card sets the inventory's
-server-side filter; the open card is derived from the current filters, and `DrillSummary` shows the
-card's count beside the list's own total, flagging any disagreement. **Assigned** (open-dispatch
-index) lists exactly that index. **Installed** joins each meter to its completed installation by meter
-number (`useInstallationRecordsByMeter` → `indexInstallationsByMeter`, reading fields through the
-completed-installations export's own column definitions); phone numbers only for the admin tier.
-Cards show only fields `/meters/statistics` documents; a missing figure is "—", never 0 (the old
+**Meter Schedule cards are plain summary tiles (restored 2026-10-05).** The 2026-09-27 drill-down
+(cards filtering the inventory, a "Showing …" bar, the Assigned list in place of the inventory,
+installation details embedded in each meter card) was rolled back at the user's request: don't put
+detail on or under the cards. **Only Installed is clickable**: it opens `InstalledRecordsModal`, which
+lists the meters that count is made of (`GET /meters?status=INSTALLED`, `useInstalledMeters`) joined by
+meter number to their completed installation (`useInstallationRecordsByMeter` →
+`indexInstallationsByMeter`, fields read through the export's own column definitions), grouped as
+Customer / Installer / Installation / Meter / Seal / Location / Disco / picture; phone numbers only for
+the admin tier. "Assigned" stays a plain count from the open dispatch batches. Cards show only fields `/meters/statistics` documents; a missing figure is "—", never 0 (the old
 Pending/Paid cards read undocumented fields and were removed).
 
 **Meter search has three paths, in order of precision.** A COMPLETE meter number → `GET /meters/meter-number/{n}` (`getMeterByNumber`): one request, whole inventory, exact match. A digits-only PARTIAL (serial or SIM fragment) → `GET /meters/search?q=` (`searchMeters`, added 2026-09-24): server-side, whole inventory, paginated. Anything else (a make, model or SGC term) → the paged `GET /meters` scan, because nothing covers those. `GET /meters` itself still has no search parameter. **Never "solve" search by raising a page cap**: that is slower and still wrong — add the endpoint the term needs. Note that an empty *envelope* from the search means the search didn't happen (fall back); an envelope with an empty list means no matches (don't).
@@ -258,13 +268,15 @@ restore, unlike users — so only delete a file the same flow just created.
 difference is that `components/common/PhotoUploadField.jsx` now produces that URL instead of the
 installer hosting the image elsewhere and pasting a link. **There is no pasted-link fallback** (removed
 2026-09-28): a failed upload means the job can't be reported yet, never that another link stands in.
-An installation photo has the API's own limit, **5 MB** (`MAX_PHOTO_SIZE_BYTES` = `MAX_FILE_SIZE_BYTES`,
-since 2026-10-02); a larger one is compressed in the browser first (`utils/imageCompression.js`), one within
-it is sent byte for byte, and nothing larger is sent. **Caution:** the API's nginx has been measured refusing
-any request body over 1 MiB with a CORS-less 413 the browser sees as "Failed to fetch" (gap AP). Until its
-`client_max_body_size` is raised, photos between ~1 MB and 5 MB fail there. Show uploaded photos with
-`components/common/UploadedPhoto.jsx`, never a bare `<img>`: the API's `Cross-Origin-Resource-Policy:
-same-origin` blocks a plain image (gap AQ). The only authoritative API documentation is
+An installation photo is capped at **3.5 MiB** (`MAX_PHOTO_SIZE_BYTES` = `3.5 * 1024 * 1024`, the ONE
+limit the photo pipeline uses — 1.5 MB under the API's 5 MB). One within it is sent byte for byte; a larger
+one is compressed adaptively in the browser first (`utils/imageCompression.js`, never above 4032 px — iOS
+canvas limit — nor below 1600 px), and nothing larger is sent. A large upload that gets no answer
+(dropped/timed out) is retried once at ~1 MB (`shouldRetrySmaller`). The API proxy's old 1 MiB body limit
+(gap AP, the real cause of "≤ 910 KB works") was raised server-side on 2026-10-02. Show uploaded photos with a
+**plain `<img src={url}>`** — the API allows its file links to be embedded on any site since 2026-10-04 (gap
+AQ closed). **Never `crossOrigin`**, and never `fetch` a photo for display: the storage bucket sends no CORS
+headers, so both fail (the export's embedded picture is best-effort for the same reason). The only authoritative API documentation is
 `https://api.memetering.com/api-docs`; the retired Render deployment's docs are obsolete.
 
 **`/uploads/excel`, `/uploads/excel-first-sheet` and `/uploads/excel-modified` are GONE** (removed
@@ -324,8 +336,23 @@ completed (INSTALLED + EXPORTED), failed (also shown on its own), meters held
 (open batches), meter need (`computeMeterCapacity`), completion = completed ÷ assigned ("—" when there
 are no jobs). It reads GET /users?role=INSTALLER and GET /installations for the five statuses that
 carry an installer only (never PENDING/CANCELLED); the drill-down filters that installer's loaded jobs
-in memory. No per-installer aggregate exists on the API (gap AG). Permission `INSTALLERS.VIEW_STATUS`:
+in memory. The drill-down has **Jobs** and **Meters** (2026-10-04): `installerMeterList` = meters in hand
+(open batches) + meters installed on their jobs; an installed meter and any job open the same
+`InstallationRecord` panel Meter Schedule uses (`installationDetailsOf`), phone for the admin tier only. No per-installer aggregate exists on the API (gap AG). Permission `INSTALLERS.VIEW_STATUS`:
 Admin, Super Admin, Supervisor (no money on the page); never Installer.
+
+**"Unassign meter" everywhere = `unassignActionFor` (`utils/meterUnassign.js`) + `UnassignMeterAction`
+(2026-10-04).** Two backend operations, chosen by where the meter is: **with an installer** (open batch
+item) → `POST /assignments/meters/return` via `returnMetersToStock` (ASSIGNMENTS.MANAGE — Admin, Super
+Admin, Supervisor; only the meter is released, the installer's jobs and `meters.status` are untouched);
+**installed** → the revert below (Super Admin). Offered on Meter Schedule meter cards, search results, the
+Query table, the Installed modal, Installer Job Status and Assignments. Never a delete, never optimistic.
+
+**Unassigning an installed meter = `POST /installations/{id}/revert`, Super Admin only
+(`canRevertInstallations`).** One confirmation, `installations/RevertInstallationModal.jsx`; one
+eligibility rule, `utils/installationRevert.js` (imported INSTALLED only — never EXPORTED, never a JED
+request). The server clears the seal/date/GPS/photo and keeps no readable audit (gap AS); say so in the
+confirmation, and never simulate an unassignment in React state.
 
 **One dispatch implementation:** `hooks/useMeterDispatch.js` owns "give these meter serials to this
 installer" — the ASSIGNMENTS.MANAGE check, the role's capacity rule, the live capacity read, the
@@ -418,7 +445,7 @@ Four, all of them in the real API's `User.role` enum (uppercase, used as-is):
 
 - **SUPERADMIN** — everything `ADMIN` has, plus the only role permitted to create/edit `ADMIN`, `SUPERADMIN` or `SUPERVISOR` accounts (enforced client-side in `UserManagement.jsx` via `isPrivilegedRole` **and** by the real backend). It is also the only role **not** capped by the meter-assignment rules — it assigns installations and meters independently (see "Meter assignment is role-dependent" below).
 - **ADMIN** — manages users (except privileged roles), confirms/reconciles payments, runs reports, configures meter types/settings/API keys, manages meter inventory, manages installations. Its meter dispatches **are** capped, per meter type, by the installer's open installations.
-- **SUPERVISOR** — the backend's own description is "an ADMIN whose access has been narrowed to installations and assignments", and this app's permission set mirrors it exactly. **Full** on `/installations` (create, cancel, assign, unassign, disco export and mark-sent) and on `/assignments` (dispatch and return meters). **Read-only** on `/schedule` (list, search, view — no upload, export, statistics or delete) and on `/users` (the Installer roster only — no create, edit, delete or restore). `/dashboard` shows it the pipeline view **without** the revenue KPI, the revenue trend or per-row amounts (money is `PAYMENTS.VIEW`); every read on it must be one Supervisor holds — its Installations Completed trend counts completed installation records (not `/finance/*`) and its Installers card reads the installer roster's `totalCount` (not `/dashboard-stats`, which carries `totalRevenue`). **No access at all** to Payments/Finance, Imports, Reports, Settings, API Keys or Uploads. It does **not** hold `INSTALLATIONS.COMPLETE` — starting, reporting and failing a job are Installer-only on the API. It is deliberately **outside** `permissions.isAdmin`, which is why every existing `isAdmin` gate denies it without that call site having to learn the new role; what it *may* reach is granted explicitly in `ROLE_PERMISSIONS[SUPERVISOR]`, an allow-list, never an admin set minus exclusions. Because it **can** dispatch meters, it is capped by the meter-assignment rules exactly like an Admin. It also gets **Installer Job Status** (`INSTALLERS.VIEW_STATUS` — operational figures only, built from reads it already holds) and **the Completed Installations export** (`INSTALLATIONS.EXPORT`, 2026-09-28 — its own capability; the workbook omits payment columns without `PAYMENTS.VIEW` and customer phone/email outside the admin tier). It gets the 3-minute idle-session timeout (it's an office account).
+- **SUPERVISOR** — the backend's own description is "an ADMIN whose access has been narrowed to installations and assignments", and this app's permission set mirrors it exactly. **Full** on `/installations` (create, cancel, assign, unassign, disco export and mark-sent), on `/assignments` (dispatch and return meters) and, since 2026-10-04, on `/imports` (upload sheets, history, undo, templates). On meters: list, search, view and (2026-10-04) **upload** (`/uploads`), **export** and **statistics** — never delete. **Read-only** on `/users` (the Installer roster only — no create, edit, delete or restore). Source of truth: the API's role table in the 2026-10-04 Frontend Integration Update. **JED Remita requests may be outside its API scope** (the role table lists no `/external/jed/*` access): every place that reads them treats a 403 as "not this role's" (`isPermissionError`) — totals then cover imported installations only and say so, the Installations page lists imported requests and its export is not blocked — never as a load failure. `/dashboard` shows it the pipeline view **without** the revenue KPI, the revenue trend or per-row amounts (money is `PAYMENTS.VIEW`); every read on it must be one Supervisor holds — its Installations Completed trend counts completed installation records (not `/finance/*`) and its Installers card reads the installer roster's `totalCount` (not `/dashboard-stats`, which carries `totalRevenue`). **No access at all** to Payments/Finance, Reports, Settings or API Keys. It does **not** hold `INSTALLATIONS.COMPLETE` — starting, reporting and failing a job are Installer-only on the API. It is deliberately **outside** `permissions.isAdmin`, which is why every existing `isAdmin` gate denies it without that call site having to learn the new role; what it *may* reach is granted explicitly in `ROLE_PERMISSIONS[SUPERVISOR]`, an allow-list, never an admin set minus exclusions. Because it **can** dispatch meters, it is capped by the meter-assignment rules exactly like an Admin. It also gets **Installer Job Status** (`INSTALLERS.VIEW_STATUS` — operational figures only, built from reads it already holds) and **the Completed Installations export** (`INSTALLATIONS.EXPORT`, 2026-09-28 — its own capability; the workbook omits payment columns without `PAYMENTS.VIEW` and customer phone/email outside the admin tier). It gets the 3-minute idle-session timeout (it's an office account).
 - **INSTALLER** — sees the shared "Awaiting Installation"/"Completed" queue (`InstallerDashboard.jsx`, mounted at `/dashboard` for this role), completes installs, and reports problems through the Complaint Form (`/complaints`, Installer-only — see "Pending" in `PROJECT_CONTEXT.md`: the backend has no complaints API yet, so it validates and produces a copyable summary but cannot record anything). **Installer does NOT have Uploads** (removed 2026-09-21: `UPLOADS.EXCEL` is no longer in the Installer permission set, so the sidebar item, the `/uploads` route guard and `ExcelUpload`'s own check all deny it). Cannot reach `/installations`, `/installer-status`, `/schedule`, `/uploads`, `/users`, `/reports`, `/payments`, `/settings` — gated in `App.jsx`. The idle-session timeout explicitly does **not** apply to Installer.
 
 The session's role is **verified server-side on every load** (`AuthContext` calls `GET /auth/profile`

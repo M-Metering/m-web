@@ -107,7 +107,7 @@ function ReportsOverview() {
                 </p>
                 {pendingValue.pendingValue?.prices?.length > 0 && (
                   <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
-                    Current prices: {pendingValue.pendingValue.prices.map((p) => `${p.name} ${formatCurrencyNGN(p.price)}`).join(' · ')}
+                    Current prices: {pendingValue.pendingValue.prices.map((p) => `${p.name}${p.disco ? ` (${p.disco})` : ""} ${formatCurrencyNGN(p.price)}`).join(' · ')}
                   </p>
                 )}
               </div>

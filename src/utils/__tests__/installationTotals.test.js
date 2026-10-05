@@ -37,6 +37,17 @@ describe('summarizeInstallationTotals — the status mapping', () => {
     expect(t.reconciles).toBe(true);
   });
 
+  it('covers imported installations only — and says so — when JED is outside the role (jedCounts null)', () => {
+    const t = summarizeInstallationTotals({
+      importedStats: stats({ total: 31, pending: 10, assigned: 5, inProgress: 2, failed: 1, installed: 7, exported: 3, cancelled: 3 }),
+      jedCounts: null,
+    });
+    expect(t).toMatchObject({ pending: 18, completed: 10, jedExcluded: true, awaitingPayment: null });
+    expect(t.breakdown.pending.jedPaid).toBeNull();
+    // A JED read that merely FAILED still throws — it is never mistaken for "excluded".
+    expect(() => summarizeInstallationTotals({ importedStats: stats(), jedCounts: jed(null, null) })).toThrow();
+  });
+
   it('flags statistics that do not add up to their own total', () => {
     const t = summarizeInstallationTotals({ importedStats: stats({ total: 50, pending: 1 }), jedCounts: jed(0, 0) });
     expect(t.reconciles).toBe(false);

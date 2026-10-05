@@ -121,8 +121,9 @@ function RevenueSummaryPanel({ id, title, collected, revenue, onRetry }) {
       {!collected.loading && v && v.byType.length > 0 && (
         <ul className="text-xs text-gray-600 dark:text-gray-300 space-y-0.5" aria-label="Total collected payments by meter type">
           {v.byType.map((t) => (
-            <li key={t.type} className="break-words">
+            <li key={`${t.disco || ''}|${t.type}`} className="break-words">
               {t.count.toLocaleString()} {t.type === 'UNSPECIFIED' ? 'with no meter type' : (t.name || formatPhaseLabel(t.type))}
+              {t.disco ? ` (${t.disco})` : ''}
               {t.unitPrice !== null ? ` × ${formatCurrencyNGN(t.unitPrice)} = ${formatCurrencyNGN(t.value)}` : ' — not valued'}
             </li>
           ))}

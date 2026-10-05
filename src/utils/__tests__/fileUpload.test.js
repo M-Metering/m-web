@@ -8,8 +8,9 @@ import {
   validateUploadBatch,
   uploadFailure,
   uploadedFiles,
-  photoCrossOrigin,
   MAX_PHOTO_SIZE_BYTES,
+  RETRY_PHOTO_SIZE_BYTES,
+  shouldRetrySmaller,
 } from '../fileUpload';
 
 // A stand-in for File: the util only reads name/type/size.
@@ -43,12 +44,12 @@ describe('validateUploadCandidate', () => {
     expect(tooBig.reason).toContain('5 MB or smaller');
   });
 
-  it('caps an installation photo at the API\'s 5 MB — the size compression must reach', () => {
-    expect(MAX_PHOTO_SIZE_BYTES).toBe(5 * MB);
+  it('caps an installation photo at 3.5 MiB — the size compression must reach', () => {
+    expect(MAX_PHOTO_SIZE_BYTES).toBe(3.5 * MB);
     expect(validateUploadCandidate(file({ size: MAX_PHOTO_SIZE_BYTES }), UPLOAD_CATEGORY.INSTALLATION_PHOTO).valid).toBe(true);
     const over = validateUploadCandidate(file({ size: MAX_PHOTO_SIZE_BYTES + 1 }), UPLOAD_CATEGORY.INSTALLATION_PHOTO);
     expect(over.valid).toBe(false);
-    expect(over.reason).toMatch(/couldn't be reduced to 5 MB/);
+    expect(over.reason).toBe('Image could not be reduced to the required size. Please choose another image.');
   });
 
   it('rejects an empty file and a missing one', () => {
@@ -114,8 +115,26 @@ describe('uploadFailure — what the operator is told, per status', () => {
     expect(uploadFailure(401).message).toMatch(/session has expired/);
   });
 
-  it('has a safe default for an unexpected status', () => {
+  it('tells a connection failure (no status at all) from a server refusal', () => {
     expect(uploadFailure(undefined)).toMatchObject({ retryable: true, useServerMessage: false });
+    expect(uploadFailure(undefined).message).toBe('Image upload failed. Check your connection and try again.');
+    expect(uploadFailure(500).message).toBe('Image upload was rejected by the server. Please try again.');
+    expect(uploadFailure(502).message).toBe('Image upload was rejected by the server. Please try again.');
+    expect(uploadFailure(413).message).toMatch(/could not be reduced to the required size/);
+  });
+});
+
+describe('shouldRetrySmaller', () => {
+  const big = RETRY_PHOTO_SIZE_BYTES + 1;
+  it('for a photo over the retry size that got no answer (dropped or timed out), or a 413', () => {
+    expect(shouldRetrySmaller({ code: 'NETWORK' }, big)).toBe(true);
+    expect(shouldRetrySmaller({ code: 'UPLOAD_TIMEOUT' }, big)).toBe(true);
+    expect(shouldRetrySmaller({ status: 413 }, big)).toBe(true);
+  });
+  it("never for the server's own verdict, or a photo already at the retry size", () => {
+    expect(shouldRetrySmaller({ status: 500 }, big)).toBe(false);
+    expect(shouldRetrySmaller({ status: 401 }, big)).toBe(false);
+    expect(shouldRetrySmaller({ code: 'NETWORK' }, RETRY_PHOTO_SIZE_BYTES)).toBe(false);
   });
 });
 
@@ -158,23 +177,5 @@ describe('uploadedFiles', () => {
     expect(uploadedFiles([RECORD])).toHaveLength(1);
     expect(uploadedFiles({ data: [] })).toEqual([]);
     expect(uploadedFiles(null)).toEqual([]);
-  });
-});
-
-describe('photoCrossOrigin', () => {
-  const API = 'https://api.memetering.com';
-
-  it("asks for an API-hosted photo in CORS mode, past the API's Cross-Origin-Resource-Policy", () => {
-    expect(photoCrossOrigin('https://api.memetering.com/api/v1/files/0c0ffee0-0000-4000-8000-000000000001', API)).toBe('anonymous');
-  });
-
-  it('leaves a photo hosted anywhere else alone — CORS mode would break it there', () => {
-    expect(photoCrossOrigin('https://drive.google.com/uc?id=abc', API)).toBeUndefined();
-    expect(photoCrossOrigin('https://api.memetering.com.evil.example/x.jpg', API)).toBeUndefined();
-  });
-
-  it('is undefined for a value that is not a URL', () => {
-    expect(photoCrossOrigin('', API)).toBeUndefined();
-    expect(photoCrossOrigin('not a url', API)).toBeUndefined();
   });
 });

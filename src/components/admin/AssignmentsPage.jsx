@@ -25,6 +25,7 @@ import { usePermissions } from '../auth/usePermissions';
 import StatusTabs from '../common/StatusTabs';
 import StatusBadge from '../common/StatusBadge';
 import InstallerSelect from '../installations/InstallerSelect';
+import { returnMetersToStock } from '../../utils/meterUnassign';
 import BatchResultSummary from '../installations/BatchResultSummary';
 import MeterCapacitySummary from '../installations/MeterCapacitySummary';
 import { useDiscoOptions } from '../../hooks/useDiscoOptions';
@@ -216,15 +217,15 @@ function AssignmentsPage() {
     setReturning(true);
     setReturnError(null);
     try {
-      const response = await jedApi.returnMeters(Array.from(selectedReturns));
+      // The one release call every screen uses (utils/meterUnassign.js).
+      const { rejected } = await returnMetersToStock(Array.from(selectedReturns));
       notifyDataChanged();
       setSelectedReturns(new Set());
       setRefreshKey((k) => k + 1);
       // Re-read the batch so the item statuses reflect the return.
       const fresh = await jedApi.getAssignmentBatch(detail.id);
       setDetail(fresh?.data || fresh || detail);
-      const summary = response?.data || response;
-      if (summary?.rejected?.length) {
+      if (rejected.length) {
         setReturnError('Some meters could not be returned — reopen the batch to check their status.');
       }
     } catch (err) {

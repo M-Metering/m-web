@@ -19,23 +19,24 @@ There is no ORM, no server-side rendering, no edge functions — the web server 
 - **Pages:** one lazy-loaded component per route via `React.lazy()` + a shared `<Suspense fallback={<PageLoader />}>`. Route table (as of this writing):
   - `/` → redirect to `/dashboard`
   - `/dashboard` → `AdminDashboard` (admin-tier) or `InstallerDashboard` (installer) — same URL, different component by role
-  - `/installations` → `AdminInstallations` (admin-tier only)
-  - `/installations/:accountNumber` → `InstallationDetail` (any role with view access) — the single click-through detail/completion view
-  - `/schedule` → `MeterSchedule` (meter inventory — admin-tier only)
-  - `/users` → `UserManagement` (admin-tier only)
-  - `/uploads` → `ExcelUpload` (admin-tier only — Installer removed 2026-09-21)
-  - `/imports` → `ImportsPage` (admin-tier) — multi-disco spreadsheet import
-  - `/assignments` → `AssignmentsPage` (admin-tier) — dispatch meters to installers
-  - `/installation-requests` → `InstallationRequests` (admin-tier) — imported jobs, installer dispatch, disco export
+  - `/installations` → `InstallationsPage` (`canViewAllInstallations`: admin tier + Supervisor) — "All Requests" (`InstallationRequests`: imported jobs + JED rows, dispatch, export, Super Admin unassign) and "JED Queue" (`?view=jed`, `AdminInstallations`)
+  - `/installations/:accountNumber` → `InstallationDetail` (any role with view access) — the JED request detail/completion view
+  - `/schedule` → `MeterSchedule` (`canViewSchedule`) — plain summary cards (Installed opens `InstalledRecordsModal`), inventory and query tabs, assign/unassign/delete
+  - `/users` → `UserManagement` (`canViewUsers`; Supervisor read-only)
+  - `/uploads` → `ExcelUpload` (`canUploadExcel`: admin tier + Supervisor; never Installer)
+  - `/imports` → `ImportsPage` (`canRunImports`) — multi-disco spreadsheet import, history, undo
+  - `/assignments` → `AssignmentsPage` (`canViewAssignments`) — dispatch/return meters, batches
+  - `/installer-status` → `InstallerJobStatus` (`canViewInstallerStatus`) — per-installer workload, jobs and meters
+  - `/installation-requests` → redirect to `/installations`
   - `/my-jobs` → `MyJobs` (Installer only) — jobs dispatched to them + their meters
   - `/complaints` → `ComplaintForm` (Installer only; no backend endpoint yet — validates and produces a copyable summary, nothing is stored)
   - `/reports` → `AdminReports` (admin-tier only)
   - `/payments` → `PaymentsPage` (admin-tier only)
   - `/settings` → `SettingsPage` (admin-tier only)
   - `*` → redirect to `/dashboard`
-- **Components:** organized by feature under `src/components/{admin,auth,common,contexts,dashboard,installation,schedule,services,settings,uploads}/`. No atomic-design layer, no `pages/` vs `components/` split — a "page" is just a component that happens to be routed to directly.
+- **Components:** organized by feature under `src/components/{admin,auth,common,complaints,contexts,dashboard,installation,installations,installers,schedule,services,settings,uploads}/` (`PROJECT_CONTEXT.md` §4 lists what each holds). No atomic-design layer, no `pages/` vs `components/` split — a "page" is just a component that happens to be routed to directly.
 - **Shared components:** `src/components/common/` — `Navigation.jsx` (sidebar), `Header.jsx` (top bar), `ConfirmationModal.jsx`/`InfoModal.jsx` (the two modal patterns), `PaymentTimeline.jsx`, `GenerateRRRModal.jsx`, `ErrorBoundary.jsx`, `ErrorNotification.jsx`, `Footer.jsx`.
-- **Hooks:** `src/hooks/useAdminIdleTimeout.js` (the 3-minute Admin/Super Admin inactivity logout) and `src/hooks/useNavigation.js` (a page-name/history-stack hook — **currently unused**; see `CodeBaseAudit.md`). `usePermissions.jsx` (in `src/components/auth/`) is the RBAC hook every page actually consumes.
+- **Hooks:** shared data hooks in `src/hooks/` — dispatch (`useMeterDispatch`), who-holds-which-meter (`useMeterHolders`), capacity, installation totals, pending value, revenue, installation records by meter, installed meters, disco options — plus `useAdminIdleTimeout.js` (the 3-minute office-role inactivity logout). `useNavigation.js` is **unused** (see `CodeBaseAudit.md`). Pure business rules live in `src/utils/`, each with tests in `src/utils/__tests__/`. `usePermissions.jsx` (in `src/components/auth/`) is the RBAC hook every page actually consumes.
 - **State:** three React Contexts (`AuthContext`, `ThemeContext`, `DataRefreshContext`) plus local component state everywhere else — no global store library.
 - **Services/API layer:** `src/components/services/api.js` (the `JEDApiService` class, exported as a singleton `jedApi`) and `api.config.js` (endpoint paths + shared config/util functions). This is the only module that calls `fetch`.
 
@@ -94,12 +95,12 @@ No intermediate states exist between `PAID` and `COMPLETED` on the real API — 
 ## API Architecture
 
 - **Base URL:** `API_CONFIG.BASE_URL`, from `VITE_API_BASE_URL` (default `https://api.memetering.com`) + a fixed `/api/v1` version prefix.
-- **Service organization:** one class (`JEDApiService`), one method per real endpoint, grouped by comment-delimited section (Auth, Verification, JED Integration, Admin/Dashboard, Meters, Uploads, Settings, API Keys, Users, Token/Storage, Health Check). `api.config.js` holds the endpoint path map (`ENDPOINTS.{AUTH,VERIFICATION,JED,APIKEYS,METERS,USERS,ADMIN,SETTINGS,UPLOADS}`) and shared utilities (`buildUrl`, `buildHeaders`, `buildQueryString`, retry/timeout policy).
+- **Service organization:** one class (`JEDApiService`), one method per real endpoint, grouped by comment-delimited section (Auth, Verification, JED Integration, Admin/Dashboard, Meters, Uploads, Settings, API Keys, Users, Token/Storage, Health Check). `api.config.js` holds the endpoint path map (`ENDPOINTS.{AUTH,VERIFICATION,JED,APIKEYS,METERS,USERS,ADMIN,SETTINGS,UPLOADS,FILES,FINANCE,DISCOS,IMPORTS,ASSIGNMENTS,INSTALLATIONS}`) and shared utilities (`buildUrl`, `buildHeaders`, `buildQueryString`, retry/timeout policy).
 - **Request handling:** `makeRequest()` centralizes retry (max 2, exponential backoff, only on network errors or 502/503/504), timeout (`AbortController`, 30s default / 60s for export-upload endpoints), and optional in-memory response caching (30s TTL, keyed by a JSON-stringified param signature).
 - **Error handling:** `handleErrorResponse()` maps HTTP status to a typed, prefixed error string (`AUTH_ERROR:`, `VALIDATION_ERROR:`, `PERMISSION_ERROR:`, `NOT_FOUND:`, `SERVER_ERROR:`) and surfaces per-field validation messages when the real API returns a `{ errors: [{ field, message }] }` array. A 401 always clears local tokens as a side effect.
 - **Authentication:** Bearer JWT (`Authorization: Bearer <token>`) attached automatically by `buildHeaders()` for every call *except* endpoints that use a real API key instead (`X-API-Key`, from `/apikeys`) — `POST /external/jed/generate-ref` and `checkRemitaStatusByRRR` (still used by `ConfirmPaymentTab.jsx`'s inline lookup). The order-ID variant of that status lookup was removed along with the standalone "RRR/Order Lookup" diagnostic tab it exclusively supported. See "Active API Key" below.
 - **Response handling:** JSON is the expected content type; an HTML/text response (typically a misconfigured-CORS or server error page) is detected and surfaced as a real error instead of silently parsed as JSON.
-- **45 real endpoints total**, confirmed directly against the live OpenAPI spec (`GET /api-docs/swagger-ui-init.js` on the Pharez API host — the spec is embedded in that JS file; there is no separate static `/api-docs.json`). Nothing in `api.config.js` should be added without similarly confirming it against that spec first — see `CLAUDE.md` rule 4.
+- **96 documented operations on 2026-10-04** (not all used), confirmed directly against the live OpenAPI spec (`GET /api-docs/swagger-ui-init.js` on `https://api.memetering.com` — the only authoritative docs — the spec is embedded in that JS file; there is no separate static `/api-docs.json`). Nothing in `api.config.js` should be added without similarly confirming it against that spec first — see `CLAUDE.md` rule 4.
 
 ### Active API Key mechanism
 
@@ -107,7 +108,7 @@ Two endpoints (`generate-ref`, Remita status lookups) require a real API key rat
 
 ## Role Architecture
 
-See `CLAUDE.md`'s "Roles" section for the authoritative summary. Structurally: `permissions.js` defines `ROLES`, `PERMISSIONS` (dot-namespaced strings like `installations:view`), `ROLE_PERMISSIONS` (a `Set` per role — `SUPERADMIN` and `ADMIN` share one `ADMIN_TIER_PERMISSIONS` array; `INSTALLER` has its own, smaller `Set`), and `PAGE_ACCESS` (page-name → required-permissions map, consumed by the largely-unused `canAccessPage()` — see `CodeBaseAudit.md`). `usePermissions.jsx` is the actual consumption point — it pre-computes named booleans (`isAdmin`, `canViewInstallations`, `canManageSchedule`, etc.) once per render from `useAuth()`'s current user, and every gated route/nav-item/button in the app reads from this hook rather than re-deriving a role check.
+See `CLAUDE.md`'s "Roles" section for the authoritative summary. Structurally: `permissions.js` defines `ROLES`, `PERMISSIONS` (dot-namespaced strings like `installations:view`), `ROLE_PERMISSIONS` (a `Set` per role — `SUPERADMIN` and `ADMIN` share one `ADMIN_TIER_PERMISSIONS` array; `SUPERVISOR` is an explicit allow-list, never the admin set minus exclusions; `INSTALLER` has its own, smaller `Set`), and `PAGE_ACCESS` (page-name → required-permissions map, consumed by the largely-unused `canAccessPage()` — see `CodeBaseAudit.md`). `usePermissions.jsx` is the actual consumption point — it pre-computes named booleans (`isAdmin`, `canViewInstallations`, `canManageSchedule`, etc.) once per render from `useAuth()`'s current user, and every gated route/nav-item/button in the app reads from this hook rather than re-deriving a role check.
 
 ## UI Architecture
 
@@ -121,4 +122,4 @@ See `CLAUDE.md`'s "Roles" section for the authoritative summary. Structurally: `
 
 - **Host:** any static web server (since 2026-10-01; the Vercel test deployment and `vercel.json` were retired). `DEPLOYMENT.md` is the host-neutral checklist: SPA fallback to `/index.html`, asset caching, and the response-only security headers. The **Content-Security-Policy ships inside the built `index.html`** as a `<meta>` tag generated by `vite.config.js` from `VITE_API_BASE_URL`, so it can't drift from the API the app calls.
 - **Build:** `npm run build` → `vite build` → static `dist/` output, service worker + manifest generated by `vite-plugin-pwa`.
-- **Environment:** `VITE_API_BASE_URL` is the only environment variable this app reads (`src/.env`, gitignored; `src/.env.example` is the committed template; `envDir: 'src'` in `vite.config.js` — before 2026-10-01 Vite silently ignored `src/.env`). The hosting platform's own settings (env var value, domain, headers) are outside this repository.
+- **Environment:** `VITE_API_BASE_URL` (required) and the optional `VITE_FILE_STORAGE_ORIGIN` (lets the export fetch photos to embed; see `DEPLOYMENT.md`) are the only environment variables this app reads (`src/.env`, gitignored; `src/.env.example` is the committed template; `envDir: 'src'` in `vite.config.js` — before 2026-10-01 Vite silently ignored `src/.env`). The hosting platform's own settings (env var value, domain, headers) are outside this repository.

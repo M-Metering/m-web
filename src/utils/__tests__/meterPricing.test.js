@@ -46,7 +46,7 @@ describe('valueInstallations', () => {
     ], index);
     expect(v.total).toBe(100000);
     expect(v.unpriced).toMatchObject({ count: 3, unknownType: 1, noPrice: 1, ambiguous: 1, examples: ['X1', 'X2', 'X3'] });
-    expect(unpricedNote(v.unpriced)).toMatch(/1 with no meter type, 1 whose meter type has no active price, 1 whose meter type has conflicting prices/);
+    expect(unpricedNote(v.unpriced)).toMatch(/1 with no meter type, 1 whose meter type has no active price for their disco, 1 whose meter type has conflicting prices/);
   });
 
   it('ignores inactive meter types', () => {
@@ -57,5 +57,46 @@ describe('valueInstallations', () => {
   it('treats a duplicate meter type at the SAME price as one price', () => {
     const index = buildPriceIndex([...TYPES, { id: 9, name: 'SINGLE PHASE', amount: 100000, isActive: true }]);
     expect(valueInstallations(jobs('SINGLE PHASE', 3), index).total).toBe(300000);
+  });
+});
+
+describe('per-disco prices (API, 2026-10-04)', () => {
+  // The live shape: each disco has its own list; today both hold the same amounts.
+  const PER_DISCO = [
+    { id: 16, discoCode: 'JED', name: 'Single Phase', amount: '107500', isActive: true },
+    { id: 15, discoCode: 'JED', name: 'Three Phase', amount: '189000', isActive: true },
+    { id: 9, discoCode: 'ABA_POWER', name: 'Single Phase', amount: '107500', isActive: true },
+    { id: 8, discoCode: 'ABA_POWER', name: 'Three Phase', amount: '189000', isActive: true },
+  ];
+  const imported = (discoCode, meterType, accountNumber = 'X') => ({ source: 'MULTI', discoCode, meterType, accountNumber });
+  const jed = (discoCode, meterType) => ({ source: 'JED', discoCode, meterType, accountNumber: 'J' });
+
+  it('two discos with the same meter type are not "conflicting prices"', () => {
+    const v = valueInstallations([imported('ABA_POWER', 'SINGLE PHASE'), jed('JED', 'SINGLE PHASE')], buildPriceIndex(PER_DISCO));
+    expect(v.unpriced.count).toBe(0);
+    expect(v.total).toBe(215000);
+  });
+
+  it("values each installation from its own disco's list when the discos differ", () => {
+    const raised = PER_DISCO.map((t) => (t.id === 9 ? { ...t, amount: 120000 } : t)); // Aba Single Phase only
+    const v = valueInstallations([
+      imported('ABA_POWER', 'SINGLE PHASE'), imported('ABA_POWER', 'SINGLE PHASE'), jed('JED', 'SINGLE PHASE'),
+    ], buildPriceIndex(raised));
+    expect(v.total).toBe(2 * 120000 + 107500);
+    expect(v.byType).toEqual([
+      { type: 'SINGLE PHASE', disco: 'ABA_POWER', name: 'Single Phase', count: 2, unitPrice: 120000, value: 240000, reason: null },
+      { type: 'SINGLE PHASE', disco: 'JED', name: 'Single Phase', count: 1, unitPrice: 107500, value: 107500, reason: null },
+    ]);
+  });
+
+  it("prices a JED Remita request from JED's list when its own disco code has none", () => {
+    const v = valueInstallations([jed('JEDC', 'THREE PHASE'), jed('', 'THREE PHASE')], buildPriceIndex(PER_DISCO));
+    expect(v.total).toBe(2 * 189000);
+  });
+
+  it("never prices an imported job from another disco's list", () => {
+    const v = valueInstallations([imported('IKEJA', 'SINGLE PHASE', 'IK1')], buildPriceIndex(PER_DISCO));
+    expect(v.total).toBe(0);
+    expect(v.unpriced).toMatchObject({ count: 1, noPrice: 1, examples: ['IK1'] });
   });
 });

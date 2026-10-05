@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  summarizeInstallerStats, totalInstallerStats, filterInstallerJobs, formatCompletionRate, jobInstallerId,
+  summarizeInstallerStats, totalInstallerStats, filterInstallerJobs, formatCompletionRate, jobInstallerId, installerMeterList,
 } from '../installerStats';
 
 const INSTALLERS = [
@@ -109,5 +109,34 @@ describe('filterInstallerJobs', () => {
     expect(ids(filterInstallerJobs(JOBS, { account: '104' }))).toEqual([4]);
     expect(ids(filterInstallerJobs(JOBS, { meterNumber: '7001' }))).toEqual([4]);
     expect(ids(filterInstallerJobs(JOBS, { meterNumber: '0239110006909' }))).toEqual([3]);
+  });
+});
+
+describe('installerMeterList', () => {
+  it('merges meters in hand with meters installed on the installer\'s jobs, one entry per serial', () => {
+    const row = {
+      heldMeters: [
+        { meterNumber: '0239110007001', phaseType: 'THREE PHASE', assignedAt: '2026-09-05T08:00:00Z', batchRef: 'B-40' },
+        { meterNumber: '0239110006909', phaseType: 'SINGLE PHASE' }, // also on a report below
+      ],
+      jobs: [
+        { id: 3, status: 'INSTALLED', meterNumber: '0239110006909', meterType: 'Single Phase', installationDate: '2026-09-10', accountNumber: '1003' },
+        { id: 5, status: 'EXPORTED', meterNumber: '0239110000001', meterType: 'SINGLE PHASE', accountNumber: '1005' },
+        { id: 1, status: 'ASSIGNED', meterNumber: null, accountNumber: '1001' }, // not installed: no meter yet
+      ],
+    };
+    const list = installerMeterList(row);
+    expect(list.map((m) => [m.meterNumber, m.state])).toEqual([
+      ['0239110007001', 'HELD'],
+      ['0239110000001', 'INSTALLED'],
+      ['0239110006909', 'INSTALLED'], // the report wins over a stale "in hand"
+    ]);
+    expect(list[0]).toMatchObject({ phaseType: 'THREE PHASE', batchRef: 'B-40', job: null });
+    expect(list[2]).toMatchObject({ phaseType: 'SINGLE PHASE', installedOn: '2026-09-10', job: { accountNumber: '1003' } });
+  });
+
+  it('is empty for an installer with nothing assigned', () => {
+    expect(installerMeterList({ heldMeters: [], jobs: [] })).toEqual([]);
+    expect(installerMeterList(null)).toEqual([]);
   });
 });

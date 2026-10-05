@@ -22,8 +22,16 @@
 //    (removed 2026-09-28): an installation report must carry a picture this
 //    app actually stored, so a failed upload means the job can't be reported
 //    yet — never that some other link stands in for it.
-//  - A photo over the API's 5 MB limit is compressed in the browser first
-//    (utils/imageCompression.js), and nothing over 5 MB is sent.
+//  - A photo over MAX_PHOTO_SIZE_BYTES (3.5 MiB) is compressed in the browser
+//    first (utils/imageCompression.js); one within it is sent unchanged, and
+//    nothing larger is sent. The File handed to uploadFiles IS the processed
+//    one (`prepared.file`), never the original selection.
+//  - If a photo over ~1 MB gets no response (dropped or timed out — a weak
+//    mobile link) or a 413, it is compressed to ~1 MB and retried ONCE
+//    (shouldRetrySmaller; history in API_GAP_REPORT.md, gap AP).
+//  - The field reports "Processing image…" then "Uploading image…", and tells
+//    the parent it is busy (onBusyChange) so the report can't be submitted
+//    with a photo still on its way.
 //  - Coordinates go with the photo only when both are valid
 //    (validCoordinates). The form passes them as typed, and a half-entered
 //    value must not make the upload itself fail.
@@ -46,8 +54,10 @@ import {
   validateUploadCandidate,
   uploadFailure,
   uploadedFiles,
+  PHOTO_PROCESSING_MESSAGES,
+  RETRY_PHOTO_SIZE_BYTES,
+  shouldRetrySmaller,
 } from '../../utils/fileUpload';
-import UploadedPhoto from './UploadedPhoto';
 import { prepareUploadImage } from '../../utils/imageCompression';
 import { validCoordinates } from '../../utils/installationReport';
 
@@ -60,6 +70,7 @@ import { validCoordinates } from '../../utils/installationReport';
  * @param {string} [props.category]
  * @param {string} [props.entityType] - for the later GET /uploads?entityType=&entityId= lookup
  * @param {string|number} [props.entityId]
+ * @param {(busy: boolean) => void} [props.onBusyChange] - true while a photo is being processed or uploaded
  * @param {{latitude?: number|string, longitude?: number|string}} [props.coordinates]
  *   Stored on the file record too, so a photo keeps its own location even if
  *   the form's coordinates are edited afterwards.
@@ -73,16 +84,26 @@ function PhotoUploadField({
   entityType,
   entityId,
   coordinates,
+  onBusyChange,
 }) {
   const cameraRef = useRef(null);
   const galleryRef = useRef(null);
-  const [uploading, setUploading] = useState(false);
+  // null | 'processing' | 'uploading'
+  const [stage, setStageState] = useState(null);
+  const uploading = stage !== null;
+  // The parent hears about busy/idle in the SAME update as the stage itself.
+  // Via an effect it lagged one render: "Photo attached" showed while the
+  // parent's submit button still said it was waiting.
+  const setStage = (next) => {
+    setStageState(next);
+    onBusyChange?.(next !== null);
+  };
   const [error, setError] = useState(null);
   // The stored file's numeric id, so a replacement can delete what it replaces.
   // Only set for a file THIS field uploaded.
   const [uploadedId, setUploadedId] = useState(null);
   // The url whose thumbnail couldn't be displayed. That is a display problem
-  // (see UploadedPhoto), not a failed upload: the photo is stored and its url
+  // (e.g. a link that has stopped resolving), not a failed upload: the photo is stored and its url
   // is what the report submits, so the field still says "Photo attached".
   const [previewFailedFor, setPreviewFailedFor] = useState(null);
 
@@ -105,24 +126,52 @@ function PhotoUploadField({
 
     setError(null);
     const replacing = uploadedId;
-    setUploading(true);
+    const meta = {
+      category,
+      entityType,
+      entityId: entityId != null ? String(entityId) : undefined,
+      ...(validCoordinates(coordinates?.latitude, coordinates?.longitude) || {}),
+    };
+    const sizeKb = (f) => `${Math.round(f.size / 1024)} KB`;
+    setStage('processing');
     try {
-      // Shrink an oversized photo first, then fail fast in the browser. The
-      // server re-checks from the file's real bytes, so this is a courtesy,
-      // not the gate.
+      // Bring an oversized photo within the limit, then fail fast in the
+      // browser. The server re-checks from the file's real bytes, so this is a
+      // courtesy, not the gate.
       const prepared = await prepareUploadImage(file);
-      const { valid, reason } = validateUploadCandidate(prepared, category);
+      if (prepared.outcome === 'unprocessable') {
+        // A type the browser can't read is a type problem; say which types work.
+        const typeCheck = validateUploadCandidate(file, category);
+        setError(typeCheck.valid ? PHOTO_PROCESSING_MESSAGES.unprocessable : typeCheck.reason);
+        return;
+      }
+      const { valid, reason } = validateUploadCandidate(prepared.file, category);
       if (!valid) {
         setError(reason);
         return;
       }
 
-      const response = await jedApi.uploadFiles([prepared], {
-        category,
-        entityType,
-        entityId: entityId != null ? String(entityId) : undefined,
-        ...(validCoordinates(coordinates?.latitude, coordinates?.longitude) || {}),
-      });
+      let sent = prepared.file;
+      if (import.meta.env.DEV) {
+        console.info(`[PhotoUploadField] ${file.name}: original ${sizeKb(file)} → uploading ${sizeKb(sent)} (${prepared.outcome})`);
+      }
+      setStage('uploading');
+      let response;
+      try {
+        response = await jedApi.uploadFiles([sent], meta);
+      } catch (err) {
+        if (!shouldRetrySmaller(err, sent.size)) throw err;
+        // No answer for a large photo: one more try, much smaller. Anything
+        // else fails as it did.
+        console.warn('[PhotoUploadField] Large upload got no response; retrying smaller:', err?.message);
+        setStage('processing');
+        const smaller = await prepareUploadImage(file, { maxBytes: RETRY_PHOTO_SIZE_BYTES });
+        if (smaller.outcome === 'unchanged' || smaller.file.size > RETRY_PHOTO_SIZE_BYTES) throw err;
+        sent = smaller.file;
+        if (import.meta.env.DEV) console.info(`[PhotoUploadField] retry: uploading ${sizeKb(sent)}`);
+        setStage('uploading');
+        response = await jedApi.uploadFiles([sent], meta);
+      }
       const [stored] = uploadedFiles(response);
       if (!stored?.url) throw new Error('The server did not return a link for this photo.');
 
@@ -133,9 +182,9 @@ function PhotoUploadField({
     } catch (err) {
       console.error('[PhotoUploadField] Upload failed:', err);
       const { message, useServerMessage } = uploadFailure(err?.status);
-      setError(useServerMessage ? getErrorMessage(err, "That file couldn't be uploaded.") : message);
+      setError(useServerMessage ? getErrorMessage(err, 'Image upload was rejected by the server. Please try again.') : message);
     } finally {
-      setUploading(false);
+      setStage(null);
     }
   };
 
@@ -161,7 +210,10 @@ function PhotoUploadField({
               <ImageIcon className="w-6 h-6" />
             </span>
           ) : (
-            <UploadedPhoto
+            // A plain <img>: since 2026-10-04 the API lets its file links be
+            // embedded on any site. NOT crossOrigin — the storage bucket sends
+            // no CORS headers, so a CORS-mode request fails.
+            <img
               src={value}
               alt="Installation photo"
               onError={() => setPreviewFailedFor(value)}
@@ -201,7 +253,7 @@ function PhotoUploadField({
         </div>
       ) : uploading ? (
         <div role="status" className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm font-medium text-gray-700 dark:text-gray-200">
-          <Loader2 className="w-4 h-4 animate-spin" /> Uploading…
+          <Loader2 className="w-4 h-4 animate-spin" /> {stage === 'processing' ? 'Processing image…' : 'Uploading image…'}
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -251,7 +303,7 @@ function PhotoUploadField({
       />
 
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        {allowedTypesLabel(category)}, up to 5 MB. Larger photos are compressed automatically.
+        {allowedTypesLabel(category)}. Photos over 3.5 MB are compressed automatically.
       </p>
 
       {error && (

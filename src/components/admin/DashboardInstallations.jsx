@@ -58,6 +58,14 @@ function KpiCard({ icon: Icon, tone, title, value, loading, error, onRetry, chil
  * @param {ReturnType<import('../../utils/installationTotals').summarizeInstallationTotals>|null} props.totals
  *   Operational counts only — this component renders no money.
  */
+// Shown when the role may not read JED's Remita requests (a 403 — SUPERVISOR):
+// the counts are then imported installations only, and must say so.
+const JedExcludedNote = () => (
+  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+    Imported installations only. JED Remita requests aren&apos;t available to your role.
+  </p>
+);
+
 export function InstallationKpis({
   totals, loading, error, onRetry,
   activeInstallers, installersLoading, installersError, onRetryInstallers,
@@ -77,21 +85,26 @@ export function InstallationKpis({
             </p>
             <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 break-words">
               {n(totals.breakdown.pending.withInstaller)} with installers · {n(totals.breakdown.pending.unassigned)} not yet
-              assigned · {n(totals.breakdown.pending.failed)} after a failed attempt · {n(totals.breakdown.pending.jedPaid)} paid JED
+              assigned · {n(totals.breakdown.pending.failed)} after a failed attempt
+              {totals.jedExcluded ? '' : ` · ${n(totals.breakdown.pending.jedPaid)} paid JED`}
             </p>
+            {totals.jedExcluded && <JedExcludedNote />}
           </>
         )}
       </KpiCard>
       <KpiCard icon={CheckCircle} tone="green" title="Completed Installations" loading={loading} error={error} onRetry={onRetry}
         value={totals ? n(totals.completed) : null}>
         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 break-words">
-          {totals && `${n(totals.breakdown.completed.jed)} JED · ${n(totals.breakdown.completed.imported)} imported`}
+          {totals && (totals.jedExcluded
+            ? `${n(totals.breakdown.completed.imported)} imported`
+            : `${n(totals.breakdown.completed.jed)} JED · ${n(totals.breakdown.completed.imported)} imported`)}
         </p>
         {totals && (totals.awaitingPayment > 0 || totals.cancelled > 0) && (
           <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
-            Not counted: {n(totals.awaitingPayment)} awaiting payment, {n(totals.cancelled)} cancelled.
+            Not counted: {totals.awaitingPayment > 0 ? `${n(totals.awaitingPayment)} awaiting payment, ` : ''}{n(totals.cancelled)} cancelled.
           </p>
         )}
+        {totals?.jedExcluded && <JedExcludedNote />}
       </KpiCard>
       <KpiCard icon={Users} tone="brand" title="Installers" loading={installersLoading} error={installersError}
         onRetry={onRetryInstallers} value={activeInstallers === null ? null : n(activeInstallers)} />

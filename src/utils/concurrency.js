@@ -27,4 +27,21 @@ export async function mapWithConcurrency(items, limit, fn) {
   return results;
 }
 
+/**
+ * Settle with `promise`, or with `fallback` once `ms` has passed — whichever
+ * is first. For best-effort steps that must never hold a user-facing action
+ * open indefinitely (e.g. enriching an export). The original promise is not
+ * cancelled; its late result or rejection is ignored.
+ * @template T, F
+ * @param {Promise<T>} promise
+ * @param {number} ms
+ * @param {F} fallback
+ * @returns {Promise<T|F>}
+ */
+export function withDeadline(promise, ms, fallback) {
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), ms); });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+}
+
 export default mapWithConcurrency;

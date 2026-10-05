@@ -2,7 +2,7 @@
 // /uploads/excel, which was removed from the API on 2026-09-25 (and had never
 // actually been deployed). The round-trip through buildXlsxBuffer proves the
 // reader and the writer agree on the same file.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { buildXlsxBuffer, readSpreadsheetRows, parseCsvRows, COLUMN_TYPES } from '../xlsx';
 
 const asFile = (buffer, name) => ({
@@ -11,6 +11,11 @@ const asFile = (buffer, name) => ({
 });
 
 describe('readSpreadsheetRows — .xlsx', () => {
+  // ExcelJS is a large lazy-loaded module. Its first import, under a full parallel
+  // run, has exceeded the default 5 s test timeout and failed whichever test ran
+  // first. Pay that cost once, here, with room to spare.
+  beforeAll(async () => { await import('exceljs'); }, 60000);
+
   const sheet = (rows) => ([{
     name: 'Paid',
     columns: [

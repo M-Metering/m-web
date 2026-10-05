@@ -247,6 +247,22 @@ Two limits remain, and the frontend does not claim otherwise:
 `API_GAP_REPORT.md`, gap **AC**, specifies the server-side rule set, including which checks a
 `SUPERADMIN` skips and which it keeps.
 
+## Unassigning Meters and Undoing Installations (2026-10-04)
+
+Two destructive-ish operations, each gated client-side by the same role the API enforces, each behind a
+confirmation that names exactly what will change, and neither ever simulated in React state:
+
+- **Return a held meter** — `POST /assignments/meters/return`, `ASSIGNMENTS.MANAGE` (Admin, Super Admin,
+  Supervisor). Releases only the dispatch; the meter record, its type and the installer's jobs are untouched.
+- **Undo an installation** — `POST /installations/{id}/revert`, **Super Admin only** (`canRevertInstallations`;
+  the API answers 403 to Admin and Supervisor). It is irreversible on the server: seal, date, GPS, photo and
+  recognised revenue are cleared, and the optional reason is kept only in the server log, so there is no
+  readable audit trail (API_GAP_REPORT.md, gap AS). Refused for EXPORTED jobs (409); JED requests have no undo.
+
+Both decide eligibility through one rule (`utils/meterUnassign.js` / `utils/installationRevert.js`), so no
+screen can offer an action another screen refuses. Neither deletes a meter (`DELETE /meters/{n}` stays
+Super Admin only, below).
+
 ## Deleting Imported Meter Records (2026-09-23)
 
 - **Super Admin only.** Deletion moved from the whole admin tier to `isSuperAdmin`, matching the rule

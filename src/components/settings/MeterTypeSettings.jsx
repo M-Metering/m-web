@@ -8,6 +8,23 @@ import jedApi from '../services/api';
 import ConfirmationModal from '../common/ConfirmationModal';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
+import { useDiscoOptions } from '../../hooks/useDiscoOptions';
+import { fetchAllPages } from '../../utils/fetchAllPages';
+
+// PRICES ARE PER DISCO (API, 2026-10-04). Every meter-type price belongs to
+// exactly one disco; each disco has its own list, and changing one never
+// affects another. So:
+//   - the list can be narrowed to one disco (GET /settings/meter-type?discoCode=)
+//     and always shows which disco each price belongs to — without that, two
+//     identical-looking "Single Phase" rows appear;
+//   - creating a price REQUIRES discoCode (400 without it). One active price per
+//     meter type per disco: a duplicate is a 409 whose message says so, shown
+//     as is. To change a price, edit the existing row;
+//   - editing sends only { name, amount } (a price's disco can't be changed).
+// Bodies are exactly the documented ones: `description` is in neither, and
+// the API rejects unknown keys, so the form no longer has that field.
+const ALL_DISCOS = '';
+const emptyForm = (discoCode = '') => ({ discoCode, name: '', amount: '' });
 
 const MeterTypeSettings = () => {
   // A price change re-values every pending installation (utils/meterPricing.js),
@@ -18,65 +35,26 @@ const MeterTypeSettings = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [discoFilter, setDiscoFilter] = useState(ALL_DISCOS);
+  const { discos, loading: discosLoading, error: discosError } = useDiscoOptions();
   const [isCreating, setIsCreating] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    amount: ''
-  });
+  const [formData, setFormData] = useState(emptyForm());
   const [actionLoading, setActionLoading] = useState(null);
   const [itemToDelete, setItemToDelete] = useState(null);
-  const [pagination, setPagination] = useState({
-    currentPage: 1,
-    totalPages: 1,
-    totalCount: 0,
-    hasNext: false,
-    hasPrev: false,
-    limit: 10
-  });
-  
-  // Fetch meter types - Updated to handle API response correctly
+  // Every page, filtered server-side by disco when one is chosen. This screen
+  // used to read only page 1 (10 rows) and had no pager, so per-disco prices —
+  // which multiply the rows — could silently fall off the end.
+  // Search is applied client-side by `filteredMeterTypes` below.
   const fetchMeterTypes = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-
-      // GET /settings/meter-type documents only `page` and `limit` — the
-      // previous `query` param was ignored by the server (and, being in the
-      // effect deps, re-fetched on every keystroke). Search is applied
-      // client-side by `filteredMeterTypes` below.
-      const response = await jedApi.getMeterTypes({
-        page: pagination.currentPage,
-        limit: pagination.limit
-      });
-
-      // Handle different response structures from the API
-      let data = [];
-      let paginationData = pagination;
-
-      if (response?.success && response?.data) {
-        // Response format: { success: true, data: [...], pagination: {...} }
-        data = Array.isArray(response.data) ? response.data : [];
-        paginationData = response.pagination || pagination;
-      } else if (Array.isArray(response?.data)) {
-        // Response format: { data: [...] }
-        data = response.data;
-      } else if (Array.isArray(response)) {
-        // Response is directly an array
-        data = response;
-      } else if (response?.meterTypes) {
-        // Response format: { meterTypes: [...] }
-        data = Array.isArray(response.meterTypes) ? response.meterTypes : [];
-      }
-
+      const data = await fetchAllPages(
+        (params) => jedApi.getMeterTypes(params),
+        discoFilter ? { discoCode: discoFilter } : {}
+      );
       setMeterTypes(data);
-      setPagination(prev => ({
-        ...prev,
-        ...paginationData,
-        totalCount: data.length,
-        totalPages: Math.ceil(data.length / prev.limit)
-      }));
     } catch (err) {
       console.error('[Settings] Failed to fetch meter types:', err);
       setError(getErrorMessage(err, 'Failed to load meter types'));
@@ -84,15 +62,18 @@ const MeterTypeSettings = () => {
     } finally {
       setLoading(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pagination.currentPage, pagination.limit]);
+  }, [discoFilter]);
 
   useEffect(() => {
     fetchMeterTypes();
   }, [fetchMeterTypes]);
 
-  // Validate form data
-  const validateForm = () => {
+  // Validate form data. `requireDisco` only on create: an edit can't change it.
+  const validateForm = ({ requireDisco = false } = {}) => {
+    if (requireDisco && !formData.discoCode) {
+      setError('Choose the disco this price is for.');
+      return false;
+    }
     if (!formData.name.trim()) {
       setError('Meter type name is required');
       return false;
@@ -109,23 +90,24 @@ const MeterTypeSettings = () => {
 
   // Create meter type - POST /settings/meter-type
   const handleCreate = async () => {
-    if (!validateForm()) return;
+    if (!validateForm({ requireDisco: true })) return;
 
     try {
       setActionLoading('create');
       setError(null);
 
+      // Exactly the documented body: discoCode, name, amount.
       const payload = {
+        discoCode: formData.discoCode,
         name: formData.name.trim(),
         amount: parseFloat(formData.amount),
-        description: formData.description.trim() || undefined
       };
 
       await jedApi.createMeterType(payload);
 
       await fetchMeterTypes();
       notifyDataChanged();
-      setFormData({ name: '', description: '', amount: '' });
+      setFormData(emptyForm());
       setIsCreating(false);
     } catch (err) {
       console.error('[Settings] Failed to create meter type:', err);
@@ -145,10 +127,10 @@ const MeterTypeSettings = () => {
       setActionLoading(`update-${id}`);
       setError(null);
 
+      // Exactly the documented body: name, amount. The disco can't change.
       const payload = {
         name: formData.name.trim(),
         amount: parseFloat(formData.amount),
-        description: formData.description.trim() || undefined
       };
 
       await jedApi.updateMeterType(id, payload);
@@ -156,7 +138,7 @@ const MeterTypeSettings = () => {
       await fetchMeterTypes();
       notifyDataChanged();
       setEditingId(null);
-      setFormData({ name: '', description: '', amount: '' });
+      setFormData(emptyForm());
     } catch (err) {
       console.error('[Settings] Failed to update meter type:', err);
 
@@ -191,8 +173,8 @@ const MeterTypeSettings = () => {
   const startEdit = (meterType) => {
     setEditingId(meterType.id);
     setFormData({
+      discoCode: meterType.discoCode || '',
       name: meterType.name,
-      description: meterType.description || '',
       amount: meterType.amount?.toString() || ''
     });
     setIsCreating(false);
@@ -203,7 +185,7 @@ const MeterTypeSettings = () => {
   const cancelEdit = () => {
     setEditingId(null);
     setIsCreating(false);
-    setFormData({ name: '', description: '', amount: '' });
+    setFormData(emptyForm());
     setError(null);
   };
 
@@ -224,9 +206,14 @@ const MeterTypeSettings = () => {
     const search = searchTerm.toLowerCase();
     return meterTypes.filter(type =>
       type.name?.toLowerCase().includes(search) ||
-      type.description?.toLowerCase().includes(search)
+      type.discoCode?.toLowerCase().includes(search)
     );
   }, [meterTypes, searchTerm]);
+
+  // Grouped by disco, then name, so each disco's list reads as one block.
+  const sortedMeterTypes = useMemo(() => [...filteredMeterTypes].sort((a, b) =>
+    String(a.discoCode || '').localeCompare(String(b.discoCode || '')) || String(a.name || '').localeCompare(String(b.name || ''))
+  ), [filteredMeterTypes]);
 
   if (loading && meterTypes.length === 0) {
     return (
@@ -248,7 +235,7 @@ const MeterTypeSettings = () => {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Meter Types</h2>
-          <p className="text-sm text-gray-600 dark:text-gray-400">Manage installation pricing by meter type</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400">Installation prices by meter type. Each disco has its own price list.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -265,14 +252,15 @@ const MeterTypeSettings = () => {
             onClick={() => {
               setIsCreating(true);
               setEditingId(null);
-              setFormData({ name: '', description: '', amount: '' });
+              // Pre-fill the disco the list is narrowed to, if any.
+              setFormData(emptyForm(discoFilter));
               setError(null);
             }}
             disabled={!!actionLoading}
             className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-gray-900 rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-50"
           >
             <Plus className="w-4 h-4" />
-            Add Meter Type
+            Add Price
           </button>
         </div>
       </div>
@@ -300,17 +288,37 @@ const MeterTypeSettings = () => {
         </div>
       )}
 
-      {/* Search Bar */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-        <input
-          type="text"
-          placeholder="Search meter types..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="form-input w-full pl-10 pr-4 py-2"
-        />
+      {/* Disco + search */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="sm:w-56">
+          <label htmlFor="meter-price-disco" className="sr-only">Disco</label>
+          <select
+            id="meter-price-disco"
+            value={discoFilter}
+            onChange={(e) => setDiscoFilter(e.target.value)}
+            disabled={discosLoading}
+            className="form-input w-full px-3 py-2"
+          >
+            <option value={ALL_DISCOS}>All discos</option>
+            {discos.map((d) => (
+              <option key={d.code} value={d.code}>{d.name ? `${d.name} (${d.code})` : d.code}</option>
+            ))}
+          </select>
+        </div>
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search meter types..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="form-input w-full pl-10 pr-4 py-2"
+          />
+        </div>
       </div>
+      {discosError && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">{discosError} The disco filter is unavailable; every price is still listed.</p>
+      )}
 
       {/* Delete Confirmation Modal */}
       <ConfirmationModal
@@ -318,18 +326,35 @@ const MeterTypeSettings = () => {
         onClose={() => setItemToDelete(null)}
         onConfirm={handleDelete}
         loading={actionLoading === `delete-${itemToDelete?.id}`}
-        title="Deactivate Meter Type"
-        message={`Are you sure you want to deactivate "${itemToDelete?.name}"? This action cannot be undone.`}
+        title="Deactivate Price"
+        message={`Are you sure you want to deactivate the "${itemToDelete?.name}" price for ${itemToDelete?.discoCode || 'this disco'}? This action cannot be undone.`}
       />
 
       {/* Create Form */}
       {isCreating && (
         <div className="card p-6">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-            Create New Meter Type
+            Add a Price
           </h3>
           <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label htmlFor="meter-price-new-disco" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Disco *
+                </label>
+                <select
+                  id="meter-price-new-disco"
+                  value={formData.discoCode}
+                  onChange={(e) => setFormData({ ...formData, discoCode: e.target.value })}
+                  disabled={discosLoading}
+                  className="form-input w-full px-3 py-2"
+                >
+                  <option value="">Choose a disco…</option>
+                  {discos.map((d) => (
+                    <option key={d.code} value={d.code}>{d.name ? `${d.name} (${d.code})` : d.code}</option>
+                  ))}
+                </select>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Name *
@@ -361,18 +386,6 @@ const MeterTypeSettings = () => {
                   />
                 </div>
               </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Description
-              </label>
-              <textarea
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                placeholder="Optional description"
-                rows={3}
-                className="form-input w-full px-3 py-2"
-              />
             </div>
             <div className="flex gap-2 justify-end">
               <button
@@ -411,13 +424,13 @@ const MeterTypeSettings = () => {
             <thead className="bg-gray-50 dark:bg-gray-700">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                  Disco
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                   Meter Type
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                   Amount
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Description
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                   Status
@@ -428,17 +441,20 @@ const MeterTypeSettings = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-              {filteredMeterTypes.length === 0 ? (
+              {sortedMeterTypes.length === 0 ? (
                 <tr>
                   <td colSpan="5" className="px-6 py-8 text-center text-gray-500 dark:text-gray-400">
                     {searchTerm ? 'No meter types found matching your search' : 'No meter types configured yet'}
                   </td>
                 </tr>
               ) : (
-                filteredMeterTypes.map((type) => (
+                sortedMeterTypes.map((type) => (
                   <tr key={type.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                     {editingId === type.id ? (
                       <>
+                        <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300" title="A price's disco can't be changed">
+                          {type.discoCode || '—'}
+                        </td>
                         <td className="px-6 py-4">
                           <input
                             type="text"
@@ -454,14 +470,6 @@ const MeterTypeSettings = () => {
                             onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
                             min="1"
                             step="1"
-                            className="form-input w-full px-3 py-1 text-sm"
-                          />
-                        </td>
-                        <td className="px-6 py-4">
-                          <input
-                            type="text"
-                            value={formData.description}
-                            onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                             className="form-input w-full px-3 py-1 text-sm"
                           />
                         </td>
@@ -502,6 +510,11 @@ const MeterTypeSettings = () => {
                     ) : (
                       <>
                         <td className="px-6 py-4">
+                          <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            {type.discoCode || '—'}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
                           <div className="text-sm font-medium text-gray-900 dark:text-white">
                             {type.name}
                           </div>
@@ -509,11 +522,6 @@ const MeterTypeSettings = () => {
                         <td className="px-6 py-4">
                           <div className="text-sm font-semibold text-brand-600 dark:text-brand-400">
                             {formatCurrency(type.amount)}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="text-sm text-gray-600 dark:text-gray-400">
-                            {type.description || '—'}
                           </div>
                         </td>
                         <td className="px-6 py-4">
@@ -563,7 +571,7 @@ const MeterTypeSettings = () => {
       <div className="bg-brand-50 dark:bg-brand-900/20 border border-brand-200 dark:border-brand-800 rounded-lg p-4">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
           <div>
-            <span className="text-brand-700 dark:text-brand-300">Total Types:</span>
+            <span className="text-brand-700 dark:text-brand-300">Prices:</span>
             <span className="ml-2 font-bold text-brand-900 dark:text-brand-100">{meterTypes.length}</span>
           </div>
           <div>

@@ -219,6 +219,18 @@ describe('Supervisor dashboard', () => {
     expect(jedApi.getInstallations).toHaveBeenCalledWith(expect.objectContaining({ status: 'EXPORTED' }));
   });
 
+  it('still shows Pending and Completed when JED requests are forbidden to the role (403)', async () => {
+    jedApi.getAllCustomerRequests.mockRejectedValue(Object.assign(new Error('PERMISSION_ERROR:Insufficient permissions'), {}));
+    renderDashboard();
+    // Imported only: PENDING 10 + ASSIGNED 5 + IN_PROGRESS 2 + FAILED 1 — never "Unavailable".
+    expect(await kpi('Pending Installations')).toBe('18');
+    expect(await kpi('Completed Installations')).toBe('10');
+    expect(within(card('Pending Installations')).getByText(/JED Remita requests aren.t available to your role/)).toBeTruthy();
+    // The trend still renders from the imported records.
+    expect(await screen.findByRole('img', { name: /Installations Completed chart/ })).toBeTruthy();
+    expect(screen.queryByText(/Couldn.t load/)).toBeNull();
+  });
+
   it("offers the Supervisor's own pages as shortcuts, and no admin tools", async () => {
     renderDashboard();
     await kpi('Pending Installations');
