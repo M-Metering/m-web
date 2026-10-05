@@ -173,3 +173,31 @@ html {
     margin: 12mm;
   }
 }
+
+/* ============================================
+   REPORT PRINT (2026-10-05) — components/reports/ReportExportBar.jsx.
+   While printing a report the body carries .printing-report: the whole app
+   (#root) is hidden and only the report portal prints, on A4, portrait or
+   landscape per report, with page numbers where the browser supports
+   @page margin boxes (Chrome/Edge do). Off screen it never shows.
+   ============================================ */
+.report-print-root { display: none; }
+@media print {
+  body.printing-report > #root { display: none !important; }
+  body.printing-report .report-print-root { display: block; }
+  @page report-portrait {
+    size: A4 portrait;
+    margin: 12mm 12mm 16mm;
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #555; }
+  }
+  @page report-landscape {
+    size: A4 landscape;
+    margin: 12mm 12mm 16mm;
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #555; }
+  }
+  .report-print-root.portrait { page: report-portrait; }
+  .report-print-root.landscape { page: report-landscape; }
+  .report-print-root thead { display: table-header-group; }
+  .report-print-root tr { break-inside: avoid; }
+  .report-print-root h2 { break-after: avoid; }
+}

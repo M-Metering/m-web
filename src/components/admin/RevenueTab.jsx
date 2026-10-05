@@ -1,8 +1,13 @@
 // src/components/admin/RevenueTab.jsx
 // Recognised revenue across both discos — GET /finance/revenue/summary and
 // /finance/revenue/transactions (added 2026-09-24). SUPERADMIN/ADMIN only;
-// SUPERVISOR and INSTALLER get a 403, which is why this lives inside the
-// Payments page rather than anywhere a Supervisor can reach.
+// SUPERVISOR and INSTALLER get a 403, which is why this lives inside Reports
+// (admin tier) rather than anywhere a Supervisor can reach.
+//
+// EXPORT (2026-10-05): Excel / CSV / Print export exactly the filtered set on
+// screen — the same server-side filters and search, EVERY page (via
+// loadRevenueTransactions, the Dashboard's own loader) — plus the summary the
+// screen shows. A set too large to read in full is refused, never truncated.
 //
 // TWO THINGS THIS SCREEN MUST NOT DO:
 //
@@ -31,6 +36,9 @@ import { useDiscoOptions } from '../../hooks/useDiscoOptions';
 import { METER_PHASE_TYPES, installationStatusLabel } from '../../utils/installationStatus';
 import { jedStatusLabel } from '../../utils/statusBadge';
 import { formatPhaseLabel } from '../../utils/installationScope';
+import { loadRevenueTransactions } from '../../hooks/useRevenueSummary';
+import ReportExportBar, { NO_DATA_TEXT } from '../reports/ReportExportBar';
+import { buildPaymentsDealsReport, dateRangeText } from '../../utils/reportData';
 
 // Exactly the documented rangePreset values — no invented ranges — plus
 // "All time" (no range sent) and "Custom" (the documented from/to).
@@ -169,6 +177,34 @@ function RevenueTab({ defaultRange = 'thisMonth' } = {}) {
 
   const changeRange = (id) => { setRangePreset(id); setPage(1); };
 
+  // The export: same filters, same search, every page, same summary.
+  const buildReport = useCallback(async () => {
+    const params = { ...filters };
+    if (searchTerm) params.search = searchTerm;
+    const all = await loadRevenueTransactions(params);
+    if (all.truncated) {
+      throw Object.assign(new Error('Revenue export truncated'), {
+        userMessage: 'This report has too many records to export in one file. Narrow the date range or filters and try again.',
+      });
+    }
+    const disco = discos.find((d) => d.code === discoCode);
+    const range = rangePreset === 'custom'
+      ? dateRangeText(customFrom, customTo) || 'All time'
+      : RANGE_PRESETS.find((p) => p.id === rangePreset)?.label || rangePreset;
+    return buildPaymentsDealsReport({
+      rows: all.rows.map(normalizeRevenueTransaction),
+      statusLabel: sourceStatusLabel,
+      summary: summaryError ? null : summary,
+      searching: !!searchTerm,
+      filters: [
+        { label: 'Date range', value: range },
+        { label: 'Meter type', value: meterType ? formatPhaseLabel(meterType) : 'All meter types' },
+        { label: 'Disco', value: disco ? (disco.name ? `${disco.name} (${disco.code})` : disco.code) : (discoCode || 'All discos') },
+        ...(searchTerm ? [{ label: 'Search', value: `"${searchTerm}"` }] : []),
+      ],
+    });
+  }, [filters, searchTerm, discos, discoCode, rangePreset, customFrom, customTo, meterType, summary, summaryError]);
+
   // meta.totals covers the WHOLE filtered set, not just this page — so the
   // count under the table is the real one without a second request.
   const totalCount = pagination?.totalCount ?? meta?.totals?.count ?? rows.length;
@@ -227,6 +263,15 @@ function RevenueTab({ defaultRange = 'thisMonth' } = {}) {
           <option value="">All discos</option>
           {discos.map((d) => <option key={d.code} value={d.code}>{d.name ? `${d.name} (${d.code})` : d.code}</option>)}
         </select>
+      </div>
+
+      <div className="card p-3 sm:p-4">
+        <ReportExportBar
+          build={buildReport}
+          label="Export payments and deals"
+          disabled={rowsLoading || summaryLoading || !!rowsError || rows.length === 0}
+          disabledReason={rowsLoading || summaryLoading ? 'Loading…' : rowsError ? null : rows.length === 0 ? NO_DATA_TEXT : null}
+        />
       </div>
 
       {/* Summary */}

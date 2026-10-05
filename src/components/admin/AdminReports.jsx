@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { flushSync } from 'react-dom';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
 import { PERMISSIONS, hasPermission } from '../auth/permissions';
@@ -17,7 +18,8 @@ import {
   LayoutDashboard,
   Receipt,
   ListChecks,
-  Printer
+  Printer,
+  BadgeCheck
 } from 'lucide-react';
 import { formatDateTime } from '../../utils/date';
 import { formatCurrencyNGN } from '../../utils/currency';
@@ -29,6 +31,9 @@ import StatusBadge from '../common/StatusBadge';
 import StatusTabs from '../common/StatusTabs';
 import ReportsOverview from './ReportsOverview';
 import RevenueTab from './RevenueTab';
+import RemitaPaymentsList from './RemitaPaymentsList';
+import ConfirmPaymentTab from './ConfirmPaymentTab';
+import BulkConfirmPaymentsTab from './BulkConfirmPaymentsTab';
 
 // Export fields — trimmed to only what the real JedCustomerRequest schema
 // actually returns (id, accountNumber, custNames, gsm, email, address,
@@ -802,22 +807,74 @@ function JedRequestsReport() {
   );
 }
 
+// Reports is the one place for detailed payment, deal and revenue information
+// (2026-10-05: the standalone Payments page was merged in; /payments now
+// redirects to ?tab=transactions). Each piece lives in exactly one tab:
+//   Overview             — the shared payment panel + installation figures
+//                          (ReportsOverview; the same hooks as the Dashboard)
+//   Payments & deals     — Recognised revenue (RevenueTab, both domains) and
+//                          Remita payments (JED payment records by date paid)
+//   Payment confirmation — the two admin actions that used to sit on the
+//                          Payments page: confirm one payment, upload paid customers
+//   JED requests         — the JED/Remita request register with its exports
+// The whole route is admin-tier (App.jsx), exactly as /payments was.
 const REPORT_TABS = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'transactions', label: 'Payments & deals', icon: Receipt },
+  { id: 'confirm', label: 'Payment confirmation', icon: BadgeCheck },
   { id: 'jed', label: 'JED requests', icon: ListChecks },
 ];
 
+const PAYMENT_VIEWS = [
+  { id: 'revenue', label: 'Recognised revenue' },
+  { id: 'remita', label: 'Remita payments' },
+];
+const CONFIRM_VIEWS = [
+  { id: 'single', label: 'Confirm a payment' },
+  { id: 'bulk', label: 'Upload paid customers' },
+];
+
+// A two-option switch inside a tab — the same pill style the retired
+// Payments page used for its tabs, so nothing new is introduced.
+function ViewSwitch({ views, value, onChange, label }) {
+  return (
+    <div className="card p-2 sm:p-3 print:hidden">
+      <div role="group" aria-label={label} className="flex gap-1 sm:gap-2 overflow-x-auto">
+        {views.map((v) => (
+          <button key={v.id} type="button" onClick={() => onChange(v.id)} aria-pressed={value === v.id}
+            className={`px-3 sm:px-4 py-2 rounded-lg font-medium transition-colors whitespace-nowrap text-xs sm:text-sm ${
+              value === v.id
+                ? 'bg-brand-500 text-gray-900'
+                : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+            }`}>
+            {v.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
- * Admin Reports (revamped 2026-09-27).
- *   Overview          — system-wide installation, value and revenue figures,
- *                       from the same hooks as the Dashboard (ReportsOverview)
- *   Payments & deals  — every recognised payment record, both domains,
- *                       filtered and paged server-side (the shared RevenueTab)
- *   JED requests      — the JED/Remita request register with its exports
+ * Admin Reports. The tab and the inner view are kept in the URL
+ * (?tab=…&view=…) so the old /payments link and any bookmark land on the
+ * right place; `replace` keeps tab switches out of the Back history.
  */
 function AdminReports() {
-  const [tab, setTab] = useState('overview');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requested = searchParams.get('tab');
+  const tab = REPORT_TABS.some((t) => t.id === requested) ? requested : 'overview';
+  const view = searchParams.get('view');
+  const paymentView = PAYMENT_VIEWS.some((v) => v.id === view) ? view : 'revenue';
+  const confirmView = CONFIRM_VIEWS.some((v) => v.id === view) ? view : 'single';
+
+  const go = useCallback((nextTab, nextView = null) => {
+    const params = new URLSearchParams();
+    if (nextTab !== 'overview') params.set('tab', nextTab);
+    if (nextView) params.set('view', nextView);
+    setSearchParams(params, { replace: true });
+  }, [setSearchParams]);
+
   return (
     <div className="space-y-4 sm:space-y-6">
       <div className="flex items-center gap-3 min-w-0 print:hidden">
@@ -825,17 +882,28 @@ function AdminReports() {
           <BarChart3 className="w-6 h-6 text-brand-600 dark:text-brand-400" />
         </div>
         <div className="min-w-0">
-          <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900 dark:text-white">Admin Reports</h1>
+          <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900 dark:text-white">Reports</h1>
           <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 mt-1">
-            Live installation, payment and revenue data across every disco
+            Payments, deals, revenue and installation reporting across every disco
           </p>
         </div>
       </div>
       <div className="card overflow-hidden print:hidden">
-        <StatusTabs tabs={REPORT_TABS} activeTab={tab} onChange={setTab} />
+        <StatusTabs tabs={REPORT_TABS} activeTab={tab} onChange={(t) => go(t)} />
       </div>
       {tab === 'overview' && <ReportsOverview />}
-      {tab === 'transactions' && <RevenueTab defaultRange="all" />}
+      {tab === 'transactions' && (
+        <>
+          <ViewSwitch views={PAYMENT_VIEWS} value={paymentView} onChange={(v) => go('transactions', v)} label="Payment records" />
+          {paymentView === 'revenue' ? <RevenueTab defaultRange="all" /> : <RemitaPaymentsList />}
+        </>
+      )}
+      {tab === 'confirm' && (
+        <>
+          <ViewSwitch views={CONFIRM_VIEWS} value={confirmView} onChange={(v) => go('confirm', v)} label="Payment confirmation" />
+          {confirmView === 'single' ? <ConfirmPaymentTab /> : <BulkConfirmPaymentsTab />}
+        </>
+      )}
       {tab === 'jed' && <JedRequestsReport />}
     </div>
   );

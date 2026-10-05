@@ -34,6 +34,15 @@ requests, explains the omission once, and its export works. **Backend question:*
 see JED's PAID/COMPLETED requests? If yes, grant read access (without amounts) and the figures will
 include them automatically.
 
+### Open question (2026-10-05): do the server's phase counts match the inventory's phase values?
+
+`GET /meters/statistics` returns `singlePhase`/`threePhase` and `GET /meters?phaseType=` filters by an
+exact value, but the meter import keeps raw cells, so a meter stored as "3 Phase" may be invisible to
+both while the app (which canonicalises with `normalizePhase`) counts it as Three Phase. Not confirmed
+live. `scripts/diagnostics/verify-live-data.mjs` section 11 shows the raw spellings, the scan total and
+the server totals side by side. If they differ, the backend should canonicalise `phaseType` on import
+(and backfill) so its filters and statistics agree with the inventory.
+
 ### New — Gap AS: undoing an installation is destructive and leaves no readable audit trail
 
 `POST /installations/{id}/revert` is the only way to separate an installed meter from a customer. Per

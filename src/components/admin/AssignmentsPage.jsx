@@ -44,7 +44,7 @@ const METER_MAX_PAGES = 100;
 
 function AssignmentsPage() {
   const permissions = usePermissions();
-  const { notifyDataChanged } = useDataRefresh();
+  const { notifyDataChanged, refreshSignal } = useDataRefresh();
   const { discos, loading: discosLoading } = useDiscoOptions();
 
   // A Supervisor holds ASSIGNMENTS.VIEW without MANAGE: it reaches this page
@@ -107,7 +107,9 @@ function AssignmentsPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [activeTab, metersReload]);
+  // refreshSignal: an assign, return, install or revert anywhere re-reads the
+  // list, so the "available" count never lags the server.
+  }, [activeTab, metersReload, refreshSignal]);
 
   // Who holds which meter right now, from the open dispatch batches. GET
   // /meters keeps a dispatched meter at status AVAILABLE and may not carry
@@ -218,7 +220,12 @@ function AssignmentsPage() {
     setReturnError(null);
     try {
       // The one release call every screen uses (utils/meterUnassign.js).
-      const { rejected } = await returnMetersToStock(Array.from(selectedReturns));
+      const requested = Array.from(selectedReturns);
+      const { rejected } = await returnMetersToStock(requested);
+      // A meter dispatched earlier in this session and now returned is
+      // available again: stop excluding it from the picker.
+      const back = new Set(requested.filter((n) => !rejected.some((r) => r.meterNumber === n)));
+      setDispatched((prev) => new Set([...prev].filter((n) => !back.has(n))));
       notifyDataChanged();
       setSelectedReturns(new Set());
       setRefreshKey((k) => k + 1);

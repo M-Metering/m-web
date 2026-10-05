@@ -34,9 +34,9 @@ const AdminReports = lazy(() => import('./components/admin/AdminReports'));
 const InstallationsPage = lazy(() => import('./components/installations/InstallationsPage'));
 // Simple operational Payments experience: real payment records, Confirm
 // Payment, and bulk-import. The old diagnostic "RRR / Order Lookup" and
-// "Webhook Replay" tabs were removed — see PaymentsPage.jsx's own header
+// "Webhook Replay" tabs were removed. The Payments page itself was merged into
+// Reports on 2026-10-05 (/payments redirects to Reports → Payments & deals).
 // comment and API_GAP_REPORT.md.
-const PaymentsPage = lazy(() => import('./components/admin/PaymentsPage'));
 // Meter Schedule is the single entry point for meter inventory (list,
 // filter, search, export, statistics, delete via the real GET /meters,
 // GET /meters/statistics, DELETE /meters/{meterNumber} endpoints) — a
@@ -250,7 +250,9 @@ function AppContent() {
                 <Route path="/installation-requests" element={<Navigate to="/installations" replace />} />
                 <Route path="/my-jobs" element={permissions.canViewMyJobs ? <MyJobs /> : <AccessDenied />} />
                 <Route path="/reports" element={permissions.isAdmin ? <AdminReports /> : <AccessDenied />} />
-                <Route path="/payments" element={permissions.isAdmin ? <PaymentsPage /> : <AccessDenied />} />
+                {/* Merged into Reports (2026-10-05). Same admin-tier audience, so the
+                    redirect target is gated exactly as /payments was. */}
+                <Route path="/payments" element={<Navigate to="/reports?tab=transactions" replace />} />
                 <Route path="/settings" element={permissions.isAdmin ? <SettingsPage /> : <AccessDenied />} />
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>

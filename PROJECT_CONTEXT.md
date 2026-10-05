@@ -8,7 +8,7 @@ owner, never by an assistant). As of 2026-10-05 a large set of changes is **unco
 cap + compression + one smaller retry), Supervisor fixes, and everything listed under 2026-10-04/05 in
 section 5. The owner commits, pushes and deploys; don't do any of those unless asked.
 
-**How to verify the tree.** `npm run lint` (clean), `npm test` (48 test files, 693 tests, all passing on
+**How to verify the tree.** `npm run lint` (clean), `npm test` (53 test files, 726 tests, all passing on
 2026-10-05), `npm run build` (succeeds). There is no type checker; lint + tests + build are the gate.
 Live-API checks need real credentials (`scripts/diagnostics/verify-live-data.mjs`, read-only) — none
 are stored in this repo.
@@ -94,7 +94,7 @@ jedc-meter-management/
 │   │                           #    report export, xlsx, uploads/compression, identifiers, dates, currency …)
 │   └── components/
 │       ├── admin/              # AdminDashboard, DashboardInstallations, AdminReports (+ ReportsOverview, RevenueTab),
-│       │                       #   RevenueSummaryPanel, PaymentsPage (+ Confirm/BulkConfirm tabs), TrendChart,
+│       │                       #   RevenueSummaryPanel, RemitaPaymentsList, ConfirmPaymentTab, BulkConfirmPaymentsTab, TrendChart,
 │       │                       #   InstallationRequests ("All Requests"), AdminInstallations ("JED Queue"),
 │       │                       #   ImportsPage, AssignmentsPage, UserManagement
 │       ├── auth/               # Login, VerificationModal, permissions.js, usePermissions.jsx
@@ -109,6 +109,7 @@ jedc-meter-management/
 │       │                       #   BatchResultSummary, JedAssignmentNotice, RevertInstallationModal, UnassignMeterAction
 │       ├── installers/         # InstallerJobStatus (/installer-status)
 │       ├── schedule/           # MeterSchedule (inventory/query/cards), InstalledRecordsModal, MeterDrillDown (InstallationRecord)
+│       ├── reports/            # ReportExportBar (+ PrintableReport) — Excel / CSV / Print for any report
 │       ├── services/           # api.js (the only network client), api.config.js (endpoint map/config)
 │       ├── settings/           # SettingsPage, MeterTypeSettings, ApiKeySettings
 │       └── uploads/            # ExcelUpload (meter workbook → POST /meters/upload)
@@ -552,6 +553,37 @@ jedc-meter-management/
     "Assigned" comes from the open dispatch batches because the API leaves `meters.status` at AVAILABLE.
   - **Completed Installations export** can no longer hang on "Preparing…": picture fetching and the meter
     lookup are time- and size-bounded; Preparing → Downloading → Download complete; one export at a time.
+  - **Report export & print (2026-10-05).** Dashboard → Generate Report always failed: its default and
+    pending/completed options exported JED customer requests (`/meters/customer-requests/export`,
+    `/external/jed/requests/export`), which answer 404 "No requests found to export" when the JED flow is
+    empty — and only ever covered JED ("Pending Requests" was unpaid INITIATED, not Pending
+    Installations). Now it offers the Summary report (= Reports → Overview, Excel/CSV/Print) and the
+    server's meter-inventory export. Reports → Overview, Payments & deals (Recognised revenue and Remita
+    payments) have Export Excel / Export CSV / Print-PDF through one shared model
+    (`utils/reportData.js` → `utils/reportExport.js` → `ReportExportBar`). The Overview figures and the
+    payment panel now render from the same helpers the exports use. Exports follow the screen's filters,
+    read every page, refuse rather than truncate, and never write an empty file. Object URLs are now
+    revoked a second after the download starts (Safari/mobile). Checked in headless Chrome: A4
+    portrait/landscape print with repeated headers and page numbers, only the report printed; the .xlsx
+    keeps identifiers as text and amounts as numbers; the CSV is UTF-8 with BOM and correctly quoted.
+  - **Payments merged into Reports (2026-10-05).** Audit of the old Payments page: its summary panel and
+    Revenue tab were the same panel/component Reports already had (dropped as duplicates); its Remita
+    payment records list, Confirm Payment and Upload Paid Customers were unique and moved. Reports now has
+    Overview · Payments & deals (Recognised revenue / Remita payments) · Payment confirmation (confirm one /
+    upload paid customers) · JED requests, with the tab in the URL. `/payments` redirects to
+    `/reports?tab=transactions`; the nav item and `PaymentsPage.jsx` are gone. No calculation, API call or
+    permission changed — both routes were admin-tier; Supervisor and Installer still have neither.
+  - **Three Phase "418 vs 59" (2026-10-05).** The Assignments picker's count line always printed the
+    all-phase total of dispatchable meters, even with Three Phase selected (it only switched to the
+    filtered count above 200 matches); Meter Schedule's "Three Phase" is `/meters/statistics`
+    `threePhase`, every status. Different populations, and the picker label was wrong. Fixed: the count
+    line and phase dropdown are per phase ("Three Phase (N)", "N available Three Phase meters"). Meter
+    Schedule's **Available** card now excludes meters with installers (`shelfAvailableCount`), so the
+    status cards partition Total and "All phases (N)" in the picker equals that card; each card has a
+    hover description. The picker's meter list now re-reads on `refreshSignal`, and a returned meter is
+    no longer kept out of it for the rest of the session. Not verified against live data (no
+    credentials here): run `verify-live-data.mjs` (section 11) to see the real per-phase table and
+    whether any raw phase spellings make the server's phase counts differ from the app's.
   - **Complaint Form notice reworded (2026-10-05)** for installers, without technical terms: "complaints
     are not yet submitted automatically … copy [the summary] and share it with your supervisor or
     administrator." Behaviour unchanged (nothing is sent or stored).
@@ -616,7 +648,7 @@ jedc-meter-management/
 - **The `User` schema exposes no deactivated flag.** `DELETE /users/{id}` is a working soft delete and `POST /users/{id}/restore` reverses it, but nothing in the documented `User` response marks an account as deactivated — so this app offers Restore inline right after a deactivation rather than building a "deactivated accounts" list it would have to guess at. `API_GAP_REPORT.md`, gap **AD**.
 - **The `role` query-parameter enum is stale on `/users` and `/users/search`** — it still lists only SUPERADMIN/ADMIN/INSTALLER even though `User.role` includes SUPERVISOR, so the app never sends `role=SUPERVISOR` and filters client-side instead. `API_GAP_REPORT.md`, gap **AE**.
 - **`GET /installations/search` is integrated in the service layer but not wired to a screen.** The Installations page loads its scope once and filters locally, because its faceted filters need the rows in hand; a server-side search would change that design, so it was left as a deliberate choice rather than a half-migration.
-- **`GET /finance/revenue/breakdown` has a service method but no screen.** The Revenue tab uses `summary` and `transactions`; the grouped/charted view is still to build.
+- **`GET /finance/revenue/breakdown` has a service method but no screen.** Reports → Payments & deals (Recognised revenue) uses `summary` and `transactions`; the grouped/charted view is still to build.
 
 - **No installer-assignment mechanism for JED Remita requests** *(this bullet predates the multi-disco flow: imported installations and meters ARE assigned for real via `/assignments/*` since 2026-09-21/23)* — for either customer requests *or* individual meters. The real API has no `installerId`/`assignedTo` field on a customer request or on a `Meter` record, and no assign/unassign endpoint (single or bulk) — `GET /external/jed/requests/installer` only filters by status, not by installer, and there is no equivalent "meters for this installer" endpoint at all. Every installer sees the same shared "Awaiting Installation" queue. The Installations page (`/installations`) has real, working multi-select and an "Assign Installer" action, but it opens an explanatory modal rather than persisting anything — a client-side/localStorage-only version was explicitly considered and declined twice (2026-08-25, re-confirmed 2026-08-27 when an Installer-facing "Assigned Meters" view was requested) since it would violate the requirement that assignment be authoritative and cross-device. See `API_GAP_REPORT.md`.
 - **`Meter.installedAt` is frequently `null` even when `status` is `INSTALLED`** (confirmed live 2026-08-27) — Meter Schedule shows the real value when present and never fabricates one; the Query-tab table says "Installed (date unavailable)" rather than a contradictory "Not Installed" when the status says otherwise. See `API_GAP_REPORT.md`.

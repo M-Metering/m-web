@@ -10,12 +10,15 @@
 //
 // Every count is a server-side aggregate (GET /installations/statistics and
 // JED totalCounts); nothing is summed from a page of rows.
+import { useCallback } from 'react';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { usePermissions } from '../auth/usePermissions';
 import { useInstallationTotals } from '../../hooks/useDashboardInstallations';
 import { usePaymentRevenueSummary } from '../../hooks/usePaymentRevenueSummary';
 import { formatCurrencyNGN } from '../../utils/currency';
 import RevenueSummaryPanel from './RevenueSummaryPanel';
+import ReportExportBar from '../reports/ReportExportBar';
+import { overviewInstallationFigures, paymentFigures, buildOverviewReport } from '../../utils/reportData';
 
 function Figure({ label, value, hint }) {
   return (
@@ -38,8 +41,31 @@ function ReportsOverview() {
   const revenue = paymentSummary.revenue;
   const pendingValue = paymentSummary.pendingValue;
 
+  // The export is built from the values rendered below — the same totals,
+  // the same payment figures (paymentFigures), the same recorded total and
+  // prices — so the file and the screen can't disagree.
+  const buildReport = useCallback(async () => buildOverviewReport({
+    totals: t,
+    payment: showMoney ? paymentFigures(paymentSummary.collected, paymentSummary.revenue) : null,
+    recordedTotal: showMoney ? {
+      amount: revenue.summary?.recognisedTotal ?? null,
+      error: !!revenue.error || !revenue.summary || revenue.summary.recognisedTotal === null,
+    } : null,
+    prices: showMoney ? (pendingValue.pendingValue?.prices || []) : [],
+    showMoney,
+  }), [t, showMoney, paymentSummary.collected, paymentSummary.revenue, revenue, pendingValue.pendingValue]);
+  const moneyLoading = showMoney && (paymentSummary.collected.loading || paymentSummary.revenue.loading);
+
   return (
     <div className="space-y-4 sm:space-y-6">
+      <div className="card p-3 sm:p-4">
+        <ReportExportBar
+          build={buildReport}
+          label="Export the overview"
+          disabled={totalsState.loading || !t || !!totalsState.error || moneyLoading}
+          disabledReason={totalsState.loading || moneyLoading ? 'Loading…' : (!t || totalsState.error ? 'Figures unavailable.' : null)}
+        />
+      </div>
       <section aria-labelledby="reports-installations" className="space-y-2">
         <h2 id="reports-installations" className="text-sm font-semibold text-gray-700 dark:text-gray-300">Installations · all discos</h2>
         {totalsState.loading ? (
@@ -60,17 +86,10 @@ function ReportsOverview() {
         ) : (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3">
-              <Figure label="Total requests" value={n(t.pending + t.completed + t.awaitingPayment + t.cancelled)}
-                hint="Every JED and imported request" />
-              <Figure label="Pending installations" value={n(t.pending)} hint="= Dashboard Pending / Awaiting Installations" />
-              <Figure label="Completed installations" value={n(t.completed)} />
-              <Figure label="Pending, with an installer" value={n(t.breakdown.pending.withInstaller)} hint="Part of pending: assigned or in progress" />
-              <Figure label="Pending, not yet assigned" value={n(t.breakdown.pending.unassigned)} hint="Part of pending: imported, no installer yet" />
-              <Figure label="Pending after a failed attempt" value={n(t.breakdown.pending.failed)} hint="Part of pending" />
-              <Figure label="Paid JED requests" value={n(t.breakdown.pending.jedPaid + t.breakdown.completed.jed)}
-                hint={`${n(t.breakdown.pending.jedPaid)} awaiting installation · ${n(t.breakdown.completed.jed)} completed`} />
-              <Figure label="Awaiting payment" value={n(t.awaitingPayment)} hint="JED, RRR not yet paid — not pending" />
-              <Figure label="Cancelled" value={n(t.cancelled)} hint="Counted nowhere" />
+              {/* The same list the export writes (overviewInstallationFigures). */}
+              {overviewInstallationFigures(t).map((f) => (
+                <Figure key={f.label} label={f.label} value={n(f.value)} hint={f.hint} />
+              ))}
             </div>
             {t.reconciles === false && (
               <p className="text-xs text-amber-700 dark:text-amber-400">

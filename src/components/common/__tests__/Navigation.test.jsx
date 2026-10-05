@@ -24,7 +24,7 @@ const navFor = (userRole) => {
 
 const ADMIN_TIER = [
   '/dashboard', '/installations', '/imports', '/assignments', '/installer-status', '/schedule',
-  '/users', '/reports', '/payments', '/uploads', '/settings',
+  '/users', '/reports', '/uploads', '/settings',
 ];
 
 describe('Navigation — role matrix', () => {

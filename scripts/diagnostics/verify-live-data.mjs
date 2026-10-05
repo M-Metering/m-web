@@ -25,6 +25,11 @@
 //      reason Meter Schedule now reads the batches too.
 //   6. Revenue: rows vs meta.totals, and the pending/completed split.
 //   7. With --meter N: that meter through every lookup path.
+//  11. Phase reconciliation (2026-10-05, the "418 vs 59 Three Phase" report):
+//      per canonical phase, total / available / held / on the shelf /
+//      installed / faulty / retired from the full inventory scan, next to
+//      /meters/statistics, the exact-match GET /meters?phaseType= totals, and
+//      what each screen should therefore show.
 
 const BASE = (process.env.ME_API_BASE || 'https://api.memetering.com/api/v1').replace(/\/$/, '');
 const PHONE = process.env.ME_PHONE;
@@ -190,6 +195,39 @@ const section = (t) => console.log(`\n=== ${t} ===`);
   });
   console.log(`pending rows: ${pendingRows.length} (Dashboard pending ${kpiPending}) by type:`, byType);
   console.log(`Expected Total collected payments: ${value}; not valued (no type/price): ${unpriced} — compare with the Dashboard, Reports and Installations panels`);
+
+  section('11. Phase reconciliation (inventory scan vs /meters/statistics vs each screen)');
+  {
+    const st = (await api('/meters/statistics')).body?.data || {};
+    const rows = [];
+    for (const phase of ['SINGLE PHASE', 'THREE PHASE']) {
+      const mine = all.rows.filter((r) => canonPhase(r.phaseType) === phase);
+      const by = (status) => mine.filter((r) => upper(r.status) === status).length;
+      const heldHere = mine.filter((r) => held.has(String(r.meterNumber))).length;
+      const exact = await api('/meters', { phaseType: phase, page: 1, limit: 1 });
+      const p = exact.body?.pagination || {};
+      rows.push({
+        phase,
+        'total (scan)': mine.length,
+        'raw spellings': Object.keys(tally(mine, 'phaseType')).join(' '),
+        'exact-match GET total': p.totalCount ?? p.total ?? '?',
+        'statistics card': phase === 'THREE PHASE' ? st.threePhase : st.singlePhase,
+        'status AVAILABLE': by('AVAILABLE'),
+        'held (assigned)': heldHere,
+        'on shelf = picker': by('AVAILABLE') - mine.filter((r) => upper(r.status) === 'AVAILABLE' && held.has(String(r.meterNumber))).length,
+        installed: by('INSTALLED'),
+        faulty: by('FAULTY'),
+        retired: by('RETIRED'),
+      });
+    }
+    console.table(rows);
+    const heldAvailable = all.rows.filter((r) => upper(r.status) === 'AVAILABLE' && held.has(String(r.meterNumber))).length;
+    console.log(`statistics: total ${st.totalMeters}, available ${st.available}, installed ${st.installed}, single ${st.singlePhase}, three ${st.threePhase}`);
+    console.log(`Meter Schedule "Available" should read ${Number(st.available) - held.size} (statistics available − ${held.size} held; ${heldAvailable} of the held are status AVAILABLE in the scan).`);
+    console.log('Assignments picker: "All phases (N)" = sum of "on shelf"; "Three Phase (N)" = the THREE PHASE "on shelf" figure.');
+    console.log('Meter Schedule "Three Phase" = the statistics card (every status). If it differs from "total (scan)", the');
+    console.log('server is counting raw spellings differently from the app — see "raw spellings" and "exact-match GET total".');
+  }
 
   if (meterArg) {
     section(`7. Meter ${meterArg} through every path`);

@@ -111,7 +111,7 @@ None of these are "broken" — they were all read start-to-finish during this au
 ## Testing
 
 - **Framework (added 2026-09-21):** Vitest + React Testing Library + jsdom, dev-only. Run with `npm test`. Tests live in `src/**/__tests__/`.
-- **Existing coverage (2026-10-05):** 48 test files, 693 tests. Every business-rule util has tests beside it in `src/utils/__tests__/`, the permission model has a per-role matrix (item 2 below is covered), and the main screens (Installations, Assignments, Meter Schedule, Installer Job Status, Dashboard, Reports/revenue consistency, User Management, My Jobs, Report Installation, InstallationDetail) render against a mocked `jedApi`. `CLAUDE.md` → Technology → Testing lists them.
+- **Existing coverage (2026-10-05):** 53 test files, 726 tests. Every business-rule util has tests beside it in `src/utils/__tests__/`, the permission model has a per-role matrix (item 2 below is covered), and the main screens (Installations, Assignments, Meter Schedule, Installer Job Status, Dashboard, Reports/revenue consistency, User Management, My Jobs, Report Installation, InstallationDetail) render against a mocked `jedApi`. `CLAUDE.md` → Technology → Testing lists them.
 - **Still missing, prioritized by blast radius:**
   1. `src/components/services/api.js` — response-envelope unwrapping, error-type mapping, retry/timeout behavior. This is the single highest-leverage place to add unit tests, since every page depends on it behaving correctly and it has no UI to "eyeball" when it's wrong.
   2. `src/components/auth/permissions.js` / `usePermissions.jsx` — the entire security-adjacent gating model. A regression here silently over- or under-grants access; worth a focused unit-test pass even before broader UI testing.

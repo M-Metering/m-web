@@ -95,6 +95,27 @@ describe('Meter Schedule — summary cards', () => {
     expect(screen.queryByRole('list', { name: 'Assigned meters' })).toBeNull();
   });
 
+  it('Available is the shelf (server available minus meters with installers), so the status cards partition Total', async () => {
+    // Server: 3 meters, available 2 (one of which is held by Musa Bello), installed 1.
+    await renderPage();
+    await waitFor(() => expect(cardOfTitle('Assigned').textContent).toMatch(/1/));
+    const value = (t) => Number(cardOfTitle(t).querySelector('p:nth-of-type(2)').textContent);
+    await waitFor(() => expect(value('Available')).toBe(1));
+    expect(value('Available') + value('Assigned') + value('Installed')).toBe(value('Total Meters'));
+    // The phase cards are a separate split of the same total, every status.
+    expect(value('Single Phase') + value('Three Phase')).toBe(value('Total Meters'));
+    expect(cardOfTitle('Three Phase').getAttribute('title')).toMatch(/Every Three Phase meter.*whatever its status/);
+    expect(cardOfTitle('Available').getAttribute('title')).toMatch(/not with an installer/);
+  });
+
+  it('says what Available includes when the dispatch batches are not readable to the role', async () => {
+    permissions = { ...permissions, canViewAssignments: false };
+    await renderPage();
+    await waitFor(() => expect(cardOfTitle('Available').textContent).toMatch(/2/));
+    expect(cardOfTitle('Assigned')).toBeUndefined();
+    expect(cardOfTitle('Available').getAttribute('title')).toMatch(/including meters already with an installer/);
+  });
+
   it('a meter card never embeds installation or customer details', async () => {
     permissions = { ...permissions, isSuperAdmin: true, canRevertInstallations: true };
     await renderPage();

@@ -119,8 +119,8 @@ export const PERMISSIONS = Object.freeze({
     FILES: 'uploads:files'
   },
   
-  // Payments permissions — added for the Payments/Remita-reconciliation
-  // page (/payments): view payment records and Remita status, and the
+  // Payments permissions — view payment records and Remita status (now under
+  // Reports → Payments & deals / Payment confirmation, 2026-10-05), and the
   // more consequential ability to manually confirm a missed-webhook
   // payment. Kept admin-only (see PAGE_ACCESS and ROLE_PERMISSIONS below)
   // since manual confirmation is a money-adjacent action.

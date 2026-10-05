@@ -30,8 +30,8 @@ There is no ORM, no server-side rendering, no edge functions — the web server 
   - `/installation-requests` → redirect to `/installations`
   - `/my-jobs` → `MyJobs` (Installer only) — jobs dispatched to them + their meters
   - `/complaints` → `ComplaintForm` (Installer only; no backend endpoint yet — validates and produces a copyable summary, nothing is stored)
-  - `/reports` → `AdminReports` (admin-tier only)
-  - `/payments` → `PaymentsPage` (admin-tier only)
+  - `/reports` → `AdminReports` (admin-tier only) — Overview · Payments & deals (recognised revenue / Remita payments) · Payment confirmation · JED requests, tab in the URL
+  - `/payments` → redirect to `/reports?tab=transactions` (the Payments page was merged into Reports on 2026-10-05)
   - `/settings` → `SettingsPage` (admin-tier only)
   - `*` → redirect to `/dashboard`
 - **Components:** organized by feature under `src/components/{admin,auth,common,complaints,contexts,dashboard,installation,installations,installers,schedule,services,settings,uploads}/` (`PROJECT_CONTEXT.md` §4 lists what each holds). No atomic-design layer, no `pages/` vs `components/` split — a "page" is just a component that happens to be routed to directly.
@@ -57,7 +57,7 @@ UI event (click/submit)
     → every other mounted page whose fetch effect depends on refreshSignal re-fetches
 ```
 
-There is no normalization layer beyond ad hoc "check the most plausible field name" helpers scattered through components (e.g. `getAmount`/`getAccount` in `PaymentsPage.jsx`) — the real API's response shape for several endpoints is only best-effort documented (see `api.js`'s inline comments on which fields are *confirmed* vs. *guessed*).
+There is no normalization layer beyond ad hoc "check the most plausible field name" helpers scattered through components (e.g. `getAmount`/`getAccount` in `RemitaPaymentsList.jsx`) — the real API's response shape for several endpoints is only best-effort documented (see `api.js`'s inline comments on which fields are *confirmed* vs. *guessed*).
 
 ## Authentication Architecture
 
@@ -115,7 +115,8 @@ See `CLAUDE.md`'s "Roles" section for the authoritative summary. Structurally: `
 - **Design tokens:** `tailwind.config.js` → `theme.extend.colors.brand` (primary/hover scale) plus the `dark` gray scale used for dark-mode surfaces. `brand` is the real ME Metering corporate gold (`#f7c51e`-based, from memetering.com — see `PROJECT_CONTEXT.md`'s "Brand identity" note), not blue — every genuinely brand-coloured element throughout the app is expected to reference `brand-*`, not a hardcoded `blue-*`/`yellow-*` class, specifically so a future brand refresh is a `tailwind.config.js`-only change again. Semantic status/feedback colors are standard Tailwind green/red/slate/blue, applied directly (not re-aliased) — see `src/utils/statusBadge.js` for the status→color mapping, the single source of truth for that mapping app-wide. Real logo asset: `public/brand-logo.png` (used directly via `<img>`, not re-exported as a component — it's referenced from Login.jsx, Header.jsx, and Navigation.jsx independently).
 - **Theming:** class-based dark mode (`darkMode: 'class'` in `tailwind.config.js`), toggled by `ThemeContext.jsx` adding/removing a `dark` class on `document.documentElement`, persisted to `localStorage` (`theme`). Every component uses paired `bg-white dark:bg-gray-800`-style utility classes directly — there's no separate light/dark component variant.
 - **Layout:** mobile-first. `Navigation.jsx` is the single sidebar component for every role and breakpoint — an off-canvas drawer below `lg`, a persistent (optionally icon-only-collapsed) column at `lg`+. There is no separate desktop top-tab-bar or mobile bottom-tab-bar.
-- **Reusable UI:** `ConfirmationModal` (Cancel/Confirm, for real mutating actions) and `InfoModal` (single OK, for read-only explanations — including the "not yet available" gap-affordances for installer/meter assignment) are the two modal shells reused everywhere. Tab bars follow one visual pattern (see `MeterSchedule.jsx`, `PaymentsPage.jsx`, `AdminInstallations.jsx`).
+- **Reusable UI:** `ConfirmationModal` (Cancel/Confirm, for real mutating actions) and `InfoModal` (single OK, for read-only explanations — including the "not yet available" gap-affordances for installer/meter assignment) are the two modal shells reused everywhere. Tab bars follow one visual pattern (see `AdminReports.jsx`, `MeterSchedule.jsx`, `AdminInstallations.jsx`).
+- **Report export/print:** `components/reports/ReportExportBar.jsx` over `utils/reportExport.js` (one report model → .xlsx via `utils/xlsx.js`, .csv, or a print-only portal styled by `index.css`'s named A4 pages). Reports → Overview / Payments & deals and Dashboard → Generate Report use it.
 - **PWA shell:** `vite-plugin-pwa`, `registerType: 'autoUpdate'`, an explicit `NetworkOnly` Workbox route for `/api/*` (financial/installation data must never be served stale from the service-worker cache).
 
 ## Deployment

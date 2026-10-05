@@ -34,7 +34,7 @@ import {
 } from '../../utils/meterDisplay';
 import {
   isAssignableMeter, meterDeletionBlockReason, partitionDeletableMeters, meterSerial,
-  meterAvailability, withMeterHolders,
+  meterAvailability, withMeterHolders, shelfAvailableCount,
 } from '../../utils/meterInventory';
 import AssignMeterModal from '../installations/AssignMeterModal';
 import { useMeterHolders } from '../../hooks/useMeterHolders';
@@ -537,7 +537,7 @@ const useMeterStatistics = (enabled = true) => {
 // Plain summary tiles, as before the 2026-09-27 drill-down. Only a card given
 // `onClick` (Installed) is interactive — rendered as a button with the SAME
 // classes, plus a pointer and a keyboard focus ring; nothing else changes.
-const StatsCard = ({ title, value, icon: Icon, bgColor, iconColor, loading = false, error = false, onClick = null }) => {
+const StatsCard = ({ title, value, icon: Icon, bgColor, iconColor, loading = false, error = false, onClick = null, description = null }) => {
   const body = (
     <div className="flex items-center justify-between">
       <div className="min-w-0">
@@ -556,11 +556,11 @@ const StatsCard = ({ title, value, icon: Icon, bgColor, iconColor, loading = fal
   );
   const cls = 'card p-4 sm:p-6 hover:shadow-lg transition-shadow duration-200';
   return onClick ? (
-    <button type="button" onClick={onClick} aria-haspopup="dialog" title={`View ${title.toLowerCase()} details`}
+    <button type="button" onClick={onClick} aria-haspopup="dialog" title={description || `View ${title.toLowerCase()} details`}
       className={`${cls} w-full text-left cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500`}>
       {body}
     </button>
-  ) : <div className={cls}>{body}</div>;
+  ) : <div className={cls} title={description || undefined}>{body}</div>;
 };
 
 // Meter Status Badge Component
@@ -1688,24 +1688,44 @@ function MeterSchedule() {
 
   // The summary tiles, in their pre-drill-down form. Only Installed is
   // clickable: it opens InstalledRecordsModal and leaves the inventory below
-  // exactly as it was. "Assigned" (meters out with installers, from the open
-  // dispatch batches) is a plain count like the others.
+  // exactly as it was.
+  //
+  // The status cards are ONE partition of the inventory (2026-10-05):
+  //   Total = Available + Assigned + Installed + Faulty + Retired
+  // "Available" is meters on the shelf (shelfAvailableCount): the server's
+  // `available` counts every meter whose record says AVAILABLE, which by API
+  // design includes the ones out with installers — those are "Assigned". The
+  // phase cards are a second, independent split of the same total: every
+  // meter of that type, whatever its status.
   const statsCards = useMemo(() => {
     const base = { loading: statsLoading, error: !!statsError };
     const cards = [
-      { id: 'total', title: 'Total Meters', value: meterStats.totalMeters, icon: Database, bgColor: 'bg-brand-100 dark:bg-brand-900/30', iconColor: 'text-brand-600 dark:text-brand-400', ...base },
-      { id: 'available', title: 'Available', value: meterStats.available, icon: CheckCircle, bgColor: 'bg-green-100 dark:bg-green-900/30', iconColor: 'text-green-600 dark:text-green-400', ...base },
+      { id: 'total', title: 'Total Meters', value: meterStats.totalMeters, icon: Database, bgColor: 'bg-brand-100 dark:bg-brand-900/30', iconColor: 'text-brand-600 dark:text-brand-400', ...base,
+        description: 'Every meter in inventory, all statuses and types' },
     ];
     if (canViewAssignments) {
-      cards.push({ id: 'assigned', title: 'Assigned', value: holders ? holders.size : null, icon: Send, bgColor: 'bg-purple-100 dark:bg-purple-900/30', iconColor: 'text-purple-600 dark:text-purple-400',
-        loading: holdersLoading && !holders, error: !!holdersError });
+      cards.push(
+        { id: 'available', title: 'Available', value: shelfAvailableCount(meterStats.available, holders), icon: CheckCircle, bgColor: 'bg-green-100 dark:bg-green-900/30', iconColor: 'text-green-600 dark:text-green-400',
+          loading: statsLoading || (holdersLoading && !holders), error: !!statsError || !!holdersError,
+          description: 'In stock and not with an installer — the meters that can be assigned now' },
+        { id: 'assigned', title: 'Assigned', value: holders ? holders.size : null, icon: Send, bgColor: 'bg-purple-100 dark:bg-purple-900/30', iconColor: 'text-purple-600 dark:text-purple-400',
+          loading: holdersLoading && !holders, error: !!holdersError, description: 'With an installer, not yet installed' },
+      );
+    } else {
+      // Without the dispatch batches the held meters can't be separated out,
+      // so the server's figure is shown and says what it includes.
+      cards.push({ id: 'available', title: 'Available', value: meterStats.available, icon: CheckCircle, bgColor: 'bg-green-100 dark:bg-green-900/30', iconColor: 'text-green-600 dark:text-green-400', ...base,
+        description: 'Status Available, including meters already with an installer' });
     }
     cards.push(
-      { id: 'installed', title: 'Installed', value: meterStats.installed, icon: Wrench, bgColor: 'bg-purple-100 dark:bg-purple-900/30', iconColor: 'text-purple-600 dark:text-purple-400', ...base },
+      { id: 'installed', title: 'Installed', value: meterStats.installed, icon: Wrench, bgColor: 'bg-purple-100 dark:bg-purple-900/30', iconColor: 'text-purple-600 dark:text-purple-400', ...base,
+        description: 'Installed meters — click for the installation details' },
       { id: 'faulty', title: 'Faulty', value: meterStats.faulty, icon: AlertTriangle, bgColor: 'bg-red-100 dark:bg-red-900/30', iconColor: 'text-red-600 dark:text-red-400', ...base },
       { id: 'retired', title: 'Retired', value: meterStats.retired, icon: Battery, bgColor: 'bg-gray-100 dark:bg-gray-700', iconColor: 'text-gray-600 dark:text-gray-300', ...base },
-      { id: 'single', title: 'Single Phase', value: meterStats.singlePhase, icon: Zap, bgColor: 'bg-cyan-100 dark:bg-cyan-900/30', iconColor: 'text-cyan-600 dark:text-cyan-400', ...base },
-      { id: 'three', title: 'Three Phase', value: meterStats.threePhase, icon: Cpu, bgColor: 'bg-indigo-100 dark:bg-indigo-900/30', iconColor: 'text-indigo-600 dark:text-indigo-400', ...base },
+      { id: 'single', title: 'Single Phase', value: meterStats.singlePhase, icon: Zap, bgColor: 'bg-cyan-100 dark:bg-cyan-900/30', iconColor: 'text-cyan-600 dark:text-cyan-400', ...base,
+        description: 'Every Single Phase meter in inventory, whatever its status' },
+      { id: 'three', title: 'Three Phase', value: meterStats.threePhase, icon: Cpu, bgColor: 'bg-indigo-100 dark:bg-indigo-900/30', iconColor: 'text-indigo-600 dark:text-indigo-400', ...base,
+        description: 'Every Three Phase meter in inventory, whatever its status' },
     );
     return cards;
   }, [meterStats, statsLoading, statsError, holders, holdersLoading, holdersError, canViewAssignments]);
