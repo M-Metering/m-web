@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { normalizeMultiRow, normalizeJedRow, JED_BUCKET } from '../installationScope';
 import {
   isCompletedRow, completionDateOf, filterByCompletionDate, buildMeterIndex, buildCompletedInstallationsReport,
+  completionRecognisedAt,
 } from '../completedInstallationsReport';
 
 const multi = (over) => normalizeMultiRow({
@@ -36,6 +37,22 @@ describe('completed rows', () => {
     const rows = [multi(), jed()];
     expect(filterByCompletionDate(rows, '2026-09-06', '')).toHaveLength(1);
     expect(filterByCompletionDate(rows, '', '')).toHaveLength(2);
+  });
+});
+
+describe("completionRecognisedAt — the finance API's revenueAt, for the Supervisor trend", () => {
+  it('dates an imported job by when it was reported, not its typed installation date', () => {
+    expect(completionRecognisedAt(multi({ installationDate: '2026-09-01', reportedAt: '2026-10-05T09:30:00Z' })))
+      .toBe('2026-10-05T09:30:00Z');
+  });
+  it('falls back to the installation date only when the report time is missing', () => {
+    const d = completionRecognisedAt(multi({ installationDate: '2026-09-07', reportedAt: null }));
+    expect([d.getFullYear(), d.getMonth() + 1, d.getDate()]).toEqual([2026, 9, 7]);
+  });
+  it('dates a JED request as the API does: paid, else completed, else requested', () => {
+    expect(completionRecognisedAt(jed())).toBe('2026-08-02T00:00:00Z');
+    expect(completionRecognisedAt(jed({ datePaid: null }))).toBe('2026-09-05T10:00:00Z');
+    expect(completionRecognisedAt(jed({ datePaid: null, dateCompleted: null }))).toBe('2026-08-01T00:00:00Z');
   });
 });
 

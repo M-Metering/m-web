@@ -63,6 +63,27 @@ export function completionDayOf(row) {
   return new Date(y, m - 1, day);
 }
 
+/**
+ * The moment the finance API dates this completed installation — its
+ * `revenueAt` on GET /finance/revenue/transactions, which is what the Admin
+ * Dashboard's Installations Completed chart buckets by. A role without
+ * /finance/* (Supervisor) charts the installation records through this so
+ * both charts put the same installation on the same day:
+ *   imported job → `reportedAt` (dateBasis `reported_at`: when the installer
+ *                  submitted the report — NOT the typed installationDate);
+ *   JED request  → datePaid, else dateCompleted, else dateRequested (the API's
+ *                  documented fallback order for JED rows).
+ * Only when that field is missing does it fall back to completionDayOf.
+ * @returns {string|Date|null} an ISO instant as the API sent it, or a local-midnight Date
+ */
+export function completionRecognisedAt(row) {
+  const r = row?.raw || {};
+  const instant = row?.source === ROW_SOURCE.JED
+    ? (r.datePaid || r.dateCompleted || r.dateRequested)
+    : r.reportedAt;
+  return instant || completionDayOf(row);
+}
+
 /** Keep rows whose completion date is within [from, to] (either may be ''). */
 export function filterByCompletionDate(rows, from, to) {
   if (!from && !to) return rows;
