@@ -42,6 +42,14 @@ Customer request → RRR (Remita payment reference) generated → customer pays 
 - `npm run build` — build for production
 - `npm run preview` — preview the production build locally
 - `npm run lint` — run ESLint
+- `npm test` — run the Vitest suite
+
+## Documentation
+
+Start with `PROJECT_CONTEXT.md` (section 0 is the handover snapshot), then `CLAUDE.md` (the working
+rules and business definitions). `API_GAP_REPORT.md` records what the API can't do yet;
+`Architecture.md`, `Security.md`, `CodeBaseAudit.md` and `DEPLOYMENT.md` cover the rest. The only
+authoritative API documentation is https://api.memetering.com/api-docs.
 
 ## License
 

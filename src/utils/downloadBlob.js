@@ -13,7 +13,9 @@ export function downloadBlob(blob, filename) {
     a.click();
     a.remove();
   } finally {
-    URL.revokeObjectURL(url);
+    // Revoked on the next tick, not synchronously: some browsers (Safari,
+    // some mobile ones) start reading the URL only after click() returns.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 }
 

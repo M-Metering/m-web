@@ -1,5 +1,78 @@
 # API Gap Report
 
+## 2026-10-04 (tenth pass): Frontend Integration Update — per-disco prices, Supervisor, revert, previews
+
+Source: *Pharez API — Frontend Integration Update* (2026-10-04), checked against the live spec (96
+operations; the only new path is `POST /installations/{id}/revert`).
+
+| Guide item | What the app does now |
+|---|---|
+| **Meter prices per disco (breaking)** | Settings → Meter Types: disco filter (`?discoCode=`), Disco column, required disco on create; bodies exactly `{ discoCode, name, amount }` / `{ name, amount }` (the old form also sent an undocumented `description`). It now reads every page — it used to read only the first 10 rows, with no pager. **Valuation:** `utils/meterPricing.js` keys prices by (disco, type). Before this, two discos' identical "Single Phase" rows read as ONE price only because today's amounts happen to match — the first time one disco's price changed, every installation of that type would have been "conflicting prices" and dropped out of Total collected payments. |
+| **SUPERVISOR: imports + meter upload/export/statistics** | `ROLE_PERMISSIONS[SUPERVISOR]` gained `IMPORTS.VIEW/RUN`, `SCHEDULE.MANAGE` (gates exactly meter statistics + export) and `UPLOADS.EXCEL` (the `/uploads` page = `POST /meters/upload` only). Meter delete stays SUPERADMIN-only; the JED customer-requests export is only in the admin dashboard's dialog. |
+| **Undo a completed installation (SUPERADMIN)** | `revertInstallation` → `POST /installations/{id}/revert`; "Unassign meter" (was "Undo completion") on INSTALLED rows only (never EXPORTED — the API 409s), behind a confirmation naming what is cleared, with an optional reason. `permissions.canRevertInstallations` = Super Admin. |
+| **Unassign an installed meter (SUPERADMIN, 2026-10-04 follow-up)** | The same `POST /installations/{id}/revert`, now one shared confirmation (`RevertInstallationModal`, eligibility `utils/installationRevert.js`) offered from Installations ("Unassign meter"), Installer Job Status (an installed meter's record) and Meter Schedule → Installed. It names customer, account, meter, installer and installation date before sending; success bumps `refreshSignal` so every screen re-reads. See gap AS for what it cannot do. |
+| **Image previews** | Plain `<img>`. The `UploadedPhoto` CORS-mode workaround was removed: the guide says `crossorigin="anonymous"` fails (no CORS on the bucket). |
+| **Meter make/model/date/SGC** | Already displayed as written, "Not recorded" for null; `manufacturedDate` is free text and never parsed. |
+
+### CLOSED (per the guide) — Gap AQ: uploaded photos couldn't be displayed in the app
+
+The guide says the file link's header now allows embedding on any site. **Partly re-checked:** a
+`GET /files/{token}` for an unknown token still answers `404` with `Cross-Origin-Resource-Policy:
+same-origin`; the fix may apply only to the real file's `302`, which needs a real upload to confirm.
+If a preview still fails, the photo field keeps "Photo attached" and shows a neutral tile — the upload
+and the stored link are unaffected. **Still open for exports:** `fetch(url)` is blocked (no CORS on the
+bucket), so the Completed Installations workbook keeps each picture's link but cannot embed the image.
+
+### New — Gap AR: SUPERVISOR's access to JED Remita requests is undocumented
+
+The 2026-10-04 role table lists no `/external/jed/*` access for SUPERVISOR. A Supervisor reported the
+pending total missing and the Completed Installations export unavailable — exactly what a 403 on
+`GET /external/jed/requests` produces, because both read the JED requests. Not verified live (no
+Supervisor login here). **Frontend fix:** a 403 on those reads now means "outside this role", not
+"failed": totals cover imported installations only and say so; the Installations page lists imported
+requests, explains the omission once, and its export works. **Backend question:** should a Supervisor
+see JED's PAID/COMPLETED requests? If yes, grant read access (without amounts) and the figures will
+include them automatically.
+
+### Open question (2026-10-05): do the server's phase counts match the inventory's phase values?
+
+`GET /meters/statistics` returns `singlePhase`/`threePhase` and `GET /meters?phaseType=` filters by an
+exact value, but the meter import keeps raw cells, so a meter stored as "3 Phase" may be invisible to
+both while the app (which canonicalises with `normalizePhase`) counts it as Three Phase. Not confirmed
+live. `scripts/diagnostics/verify-live-data.mjs` section 11 shows the raw spellings, the scan total and
+the server totals side by side. If they differ, the backend should canonicalise `phaseType` on import
+(and backfill) so its filters and statistics agree with the inventory.
+
+### New — Gap AS: undoing an installation is destructive and leaves no readable audit trail
+
+`POST /installations/{id}/revert` is the only way to separate an installed meter from a customer. Per
+its own description it puts the job back to PENDING/unassigned, returns the meter to stock and clears its
+revenue — and the server also clears the seal, installation date, GPS and photo rather than archiving
+them. The optional `reason` goes to the server log only: there is no endpoint that lists who reverted
+what and when, so the app cannot show an audit history. It is refused for EXPORTED jobs (409), and a
+**JED Remita request has no revert at all** (`/external/jed/*` has no undo), so an installed meter on a
+JED request cannot be unassigned from this app. **Backend asks:** keep the cleared installation facts as a
+history record, expose a revert/audit log read, and decide whether JED completions need an undo.
+
+### New — Gap AT: a meter in an installer's hands is not tied to a job
+
+Meters and jobs are dispatched separately (rule 7 in CLAUDE.md); `assignment_batch_items` carry no
+installation id. So "which job does this held meter belong to?" has no server answer until the installer
+reports an installation naming it. Installer Job Status therefore shows a held meter's *candidate* jobs —
+that installer's open jobs of the same meter type (`openJobsForMeter`) — and says so, never a single job.
+
+### Completed Installations export stuck on "Preparing…" (frontend, fixed 2026-10-04)
+
+There is no server endpoint for this workbook: `GET /installations/export/{discoCode}` is the disco's own
+response-sheet layout (one disco, no JED, can mark rows EXPORTED) and stays the "Response sheet" export.
+The completed workbook is built in the browser from rows the page already holds, plus two enrichment
+reads. Both were unbounded: every picture was fetched with no timeout (up to 300 × 5 MB, then embedded),
+and the INSTALLED-meter scan for SIM/make/model had no overall deadline. One stalled request held the
+button on "Preparing…" with nothing downloaded. Now: 15 s per picture, a 60 s budget for the step, 40 MB
+of embedded pictures at most (`utils/photoEmbed.js`), a 45 s deadline on the meter scan
+(`withDeadline`), a re-entry guard, and Preparing → Downloading → "Download complete" states. Rows over
+budget keep their picture link. Not reproduced live (no Supervisor login here); fixed from the code path.
+
 ## 2026-10-01 (ninth pass): production re-audit — uploads, 1 MB photos, API docs
 
 ### Which API document is authoritative
@@ -36,7 +109,18 @@ no `POST /uploads` code at all: installers were still asked to paste a link. Hos
 standard platform (see `DEPLOYMENT.md`). The upload exists in production only once a build of a
 branch containing `c140d0a` and the 2026-10-01 work is deployed.
 
-### New — Gap AP: the API's proxy rejects any upload over 1 MiB — the real reason photos failed
+### CLOSED 2026-10-02 — Gap AP: the API's proxy rejected any upload over 1 MiB — the real reason photos failed
+
+**Fixed on the server.** Re-measured 2026-10-02 (unauthenticated, so the API answers 401 after
+reading the whole body): bodies of 1.2 MB, 3 MB, 3.5 MiB, 5 MiB, 6.5 MB and **10 MiB** all reached the
+API. The proxy limit is now at least 10 MB. From Chrome, the real `PhotoUploadField` sent a 3.5 MiB
+photo and a 6.9 MB camera photo (compressed to 3.4 MB) to the live API through it, with no retry.
+Upload time is now the constraint: from this workstation 3 MB took ~14 s, 5 MiB ~30 s and 6.5 MB ~55 s.
+On a weak mobile uplink a raw 4–5 MB photo can run past the app's 120 s upload timeout. That is why
+photos are capped at 3.5 MiB, and why a large upload that gets no answer (dropped OR timed out) is
+retried once at ~1 MB (`shouldRetrySmaller`, `RETRY_PHOTO_SIZE_BYTES`).
+
+#### Original entry (2026-10-01)
 
 The nginx in front of `api.memetering.com` refuses any request **body** over 1,048,576 bytes with
 `413 Request Entity Too Large` (measured 2026-10-01: a 1,048,000-byte file reached the API, a
@@ -49,8 +133,8 @@ therefore failed with "The file couldn't be uploaded. Please try again.", and re
 the whole request fit under the proxy, verified in Chrome (a photo at that cap reached the API, a 1.1 MB
 one failed exactly as installers saw). On 2026-10-02 the photo limit was set to the API's documented
 5 MB at the product owner's request. **So this gap now blocks photo uploads again: every photo between
-~1 MB and 5 MB is refused by the proxy** until the backend change below is made. Re-measuring on
-2026-10-02 was not possible from this workstation (its connection to the API stalled).
+~1 MB and 5 MB is refused by the proxy** until the backend change below is made. *(Superseded the
+same day: the proxy limit was raised and the photo limit set to 3.5 MiB. See the closing note above.)*
 
 **Still affected:** spreadsheet uploads go through the same proxy: `POST /meters/upload` and the disco
 imports (`POST /imports/{discoCode}/…`). Any workbook over ~1 MB fails the same opaque way.
@@ -83,11 +167,10 @@ origin when building.
 
 ### CLOSED 2026-10-02 — Gap AO: the 1 MB photo limit is client-side only
 
-**Closed by aligning the app with the API.** The installation-photo limit is now the API's own 5 MB
-(`MAX_PHOTO_SIZE_BYTES` = `MAX_FILE_SIZE_BYTES`), so client and server enforce the same rule and no
-server change is needed. The 2026-10-01 entry below is kept for history. **Gap AP (the 1 MiB proxy) now
-matters for photos again:** a photo between ~1 MB and 5 MB passes the app's check and is refused by
-the proxy until `client_max_body_size` is raised.
+**Closed: there is no tighter-than-API photo limit any more.** The installation-photo limit is
+**3.5 MiB** (`MAX_PHOTO_SIZE_BYTES` = 3,670,016 bytes), deliberately under the API's 5 MB with 1.5 MB of
+headroom; the server's own 5 MB rule is the enforcement and needs no change. The 2026-10-01 entry below
+is kept for history.
 
 #### Original entry (2026-10-01)
 

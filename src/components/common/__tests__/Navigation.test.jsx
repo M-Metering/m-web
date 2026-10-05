@@ -24,7 +24,7 @@ const navFor = (userRole) => {
 
 const ADMIN_TIER = [
   '/dashboard', '/installations', '/imports', '/assignments', '/installer-status', '/schedule',
-  '/users', '/reports', '/payments', '/uploads', '/settings',
+  '/users', '/reports', '/uploads', '/settings',
 ];
 
 describe('Navigation — role matrix', () => {
@@ -45,15 +45,15 @@ describe('Navigation — role matrix', () => {
   // Per the backend's own scope for the role: installations and assignments in
   // full, meters and the installer roster read-only, plus the operational
   // Installer Job Status overview (built only from those same reads).
-  it('gives Supervisor its six items and no more', () => {
+  it('gives Supervisor its eight items and no more (API role table, 2026-10-04)', () => {
     expect(navFor(ROLES.SUPERVISOR).sort()).toEqual(
-      ['/assignments', '/dashboard', '/installations', '/installer-status', '/schedule', '/users']
+      ['/assignments', '/dashboard', '/imports', '/installations', '/installer-status', '/schedule', '/uploads', '/users']
     );
   });
 
   it('never shows a Supervisor a module the API would 403', () => {
     const supervisor = navFor(ROLES.SUPERVISOR);
-    ['/uploads', '/payments', '/reports', '/settings', '/imports', '/my-jobs', '/complaints']
+    ['/payments', '/reports', '/settings', '/my-jobs', '/complaints']
       .forEach((path) => expect(supervisor).not.toContain(path));
   });
 

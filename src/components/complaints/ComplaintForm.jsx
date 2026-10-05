@@ -233,9 +233,9 @@ function ComplaintForm() {
       >
         <Info className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
         <p className="text-sm text-amber-800 dark:text-amber-300">
-          <span className="font-semibold">Not connected to the system yet.</span> The backend has no complaints
-          service, so nothing entered here is saved or sent. When you finish the form you'll get a summary to copy and
-          pass to your supervisor or administrator directly.
+          <span className="font-semibold">Please note:</span> complaints are not yet submitted automatically. When
+          you complete this form, you will receive a summary of your complaint. Please copy it and share it with your
+          supervisor or administrator.
         </p>
       </div>
 

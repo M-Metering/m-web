@@ -36,6 +36,7 @@ vi.mock('../../services/api', () => ({
     assignInstallations: vi.fn(),
     unassignInstallations: vi.fn(),
     cancelInstallation: vi.fn(),
+    revertInstallation: vi.fn(),
     exportInstallations: vi.fn(),
   },
 }));
@@ -321,7 +322,7 @@ describe('InstallationRequests — Export Completed Installations', () => {
     expect(downloadXlsx.mock.calls[0][0]).toMatch(/^completed-installations-all-discos-\d{4}-\d{2}-\d{2}\.xlsx$/);
     expect(exportedAccounts()).toEqual(['477015', '555']);
     expect(exportedSheets().map((s) => s.name)).toEqual(['Completed Installations', 'Summary']);
-    expect(await screen.findByText('Installation report exported successfully (2 completed installations).')).toBeTruthy();
+    expect(await screen.findByText('Download complete: 2 completed installations exported.')).toBeTruthy();
   });
 
   it('JED scope exports no Aba records; Aba scope exports no JED records', async () => {
@@ -382,6 +383,25 @@ describe('InstallationRequests — Export Completed Installations', () => {
     expect(keys).toContain('photoUrl');
   });
 
+  it('runs one export at a time: Preparing → Downloading → done, and the button comes back', async () => {
+    let finish;
+    downloadXlsx.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    renderPage();
+    await screen.findByText('JED DONE');
+    await waitFor(() => expect(screen.getByText('2 completed installations in scope')).toBeTruthy());
+    const button = exportButton();
+    fireEvent.click(button);
+    fireEvent.click(button); // a second click before React re-renders
+    await waitFor(() => expect(button.textContent).toMatch(/Downloading…/));
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    finish();
+    expect(await screen.findByText(/Download complete: 2 completed installations exported/)).toBeTruthy();
+    expect(downloadXlsx).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(button.textContent).toMatch(/Export Completed Installations/);
+  });
+
   it('offers no export to a role without INSTALLATIONS.EXPORT', async () => {
     permissions = { ...ADMIN_PERMISSIONS, canExportInstallations: false };
     renderPage();
@@ -395,7 +415,9 @@ describe('InstallationRequests — Export Completed Installations', () => {
     await screen.findByText('JED DONE');
     await waitFor(() => expect(screen.getByText('2 completed installations in scope')).toBeTruthy());
     fireEvent.click(exportButton());
-    expect(await screen.findByText('Unable to export installation report.')).toBeTruthy();
+    expect(await screen.findByText('Unable to export completed installations. Please try again.')).toBeTruthy();
+    // The button is usable again after a failure.
+    await waitFor(() => expect(exportButton().disabled).toBe(false));
     expect(screen.queryByText(/tmp|ExcelJS/)).toBeNull();
   });
 
@@ -415,6 +437,87 @@ describe('InstallationRequests — Export Completed Installations', () => {
     renderPage();
     await screen.findByText('Not every record loaded, so the export is unavailable.');
     expect(exportButton().disabled).toBe(true);
+  });
+});
+
+describe('InstallationRequests — a Supervisor, to whom JED requests are forbidden (403)', () => {
+  const INSTALLED = { id: 9, accountNumber: '1009', customerName: 'DONE JOB', discoCode: 'ABA_POWER', status: 'INSTALLED', meterType: 'SINGLE PHASE', installationDate: '2026-09-20', meterNumber: '0239110006909', createdAt: '2026-09-09T09:00:00Z' };
+
+  beforeEach(() => {
+    permissions = {
+      canViewInstallationRequests: true, canManageAssignments: true, canManageInstallations: true,
+      canViewPayments: false, canExportInstallations: true, isAdmin: false, isSupervisor: true, enforcesMeterCapacity: true,
+    };
+    jedApi.getAllCustomerRequests.mockRejectedValue(Object.assign(new Error('PERMISSION_ERROR:Insufficient permissions'), {}));
+    jedApi.getInstallations.mockImplementation(async (params) => page(params.status ? [...ABA_JOBS, INSTALLED].filter((r) => r.status === params.status) : [...ABA_JOBS, INSTALLED]));
+    jedApi.getInstallationStatistics.mockResolvedValue({
+      success: true, data: { total: 4, pending: 2, assigned: 1, inProgress: 0, installed: 1, exported: 0, failed: 0, cancelled: 0 },
+    });
+    jedApi.getMeters = vi.fn().mockResolvedValue(page([]));
+  });
+
+  it('shows the pending total and no load error — the JED source is explained, not reported as broken', async () => {
+    renderPage();
+    await screen.findByText('ADA OBI');
+    await waitFor(() => expect(tileValue('Pending installations')).toBe(3));
+    expect(screen.getByText(/JED Remita requests aren.t available to your role/)).toBeTruthy();
+    expect(screen.queryByText(/Unable to load JED requests/)).toBeNull();
+    expect(screen.queryByText(/Unable to load the pending installation total/)).toBeNull();
+  });
+
+  it('can export Completed Installations', async () => {
+    renderPage();
+    await screen.findByText('DONE JOB');
+    const exportButton = await screen.findByRole('button', { name: /Export Completed Installations/ });
+    await waitFor(() => expect(exportButton.disabled).toBe(false));
+    expect(screen.queryByText(/Not every record loaded/)).toBeNull();
+    fireEvent.click(exportButton);
+    await waitFor(() => expect(downloadXlsx).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('InstallationRequests — undo a completed installation (Super Admin)', () => {
+  const INSTALLED = { id: 9, accountNumber: '1009', customerName: 'DONE JOB', discoCode: 'ABA_POWER', status: 'INSTALLED', meterType: 'SINGLE PHASE', meterNumber: '0014534526919', installationDate: '2026-09-20', createdAt: '2026-09-09T09:00:00Z' };
+  const EXPORTED = { ...INSTALLED, id: 10, accountNumber: '1010', customerName: 'SENT JOB', status: 'EXPORTED' };
+  const undoButtonFor = (name) => within(screen.getByText(name).closest('.p-4')).queryByRole('button', { name: /Unassign meter/ });
+
+  beforeEach(() => {
+    jedApi.getInstallations.mockImplementation(async (params) => {
+      const rows = [...ABA_JOBS, INSTALLED, EXPORTED];
+      return page(params.status ? rows.filter((r) => r.status === params.status) : rows);
+    });
+    jedApi.revertInstallation.mockResolvedValue({ success: true, data: { ...INSTALLED, status: 'PENDING' } });
+  });
+
+  it('is offered to a Super Admin on INSTALLED jobs only — never EXPORTED, never other statuses', async () => {
+    permissions = { ...ADMIN_PERMISSIONS, isSuperAdmin: true, canRevertInstallations: true };
+    renderPage();
+    await screen.findByText('DONE JOB');
+    expect(undoButtonFor('DONE JOB')).toBeTruthy();
+    expect(undoButtonFor('SENT JOB')).toBeNull();
+    expect(undoButtonFor('ADA OBI')).toBeNull();
+  });
+
+  it('is never offered to an Admin (the API refuses with 403)', async () => {
+    permissions = { ...ADMIN_PERMISSIONS, canRevertInstallations: false };
+    renderPage();
+    await screen.findByText('DONE JOB');
+    expect(undoButtonFor('DONE JOB')).toBeNull();
+  });
+
+  it('asks first, then reverts with the optional reason and re-reads', async () => {
+    permissions = { ...ADMIN_PERMISSIONS, isSuperAdmin: true, canRevertInstallations: true };
+    renderPage();
+    await screen.findByText('DONE JOB');
+    fireEvent.click(undoButtonFor('DONE JOB'));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toMatch(/Unassign installed meter?/);
+    expect(within(dialog).getByLabelText('Installation to be changed').textContent).toMatch(/DONE JOB.*1009.*0014534526919.*20 Sep 2026|DONE JOB.*1009.*0014534526919/);
+    expect(jedApi.revertInstallation).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText(/Reason/), { target: { value: 'Installed at the wrong address' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm unassign' }));
+    await waitFor(() => expect(jedApi.revertInstallation).toHaveBeenCalledWith(9, 'Installed at the wrong address'));
+    expect(await screen.findByText(/unassigned from account 1009/)).toBeTruthy();
   });
 });
 

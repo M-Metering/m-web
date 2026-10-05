@@ -22,6 +22,15 @@ import { getErrorMessage } from './errorMessage';
  * @param {string} fallback - what to say when the body gives no usable reason
  * @returns {any} the same response
  */
+/**
+ * Whether a request was refused for the caller's ROLE (HTTP 403). jedApi turns
+ * a 403 into an Error whose message starts with "PERMISSION_ERROR:"; a raw
+ * error may carry `status` instead. A forbidden source is outside the role's
+ * scope — the caller should leave it out and say so, not report a failure.
+ */
+export const isPermissionError = (err) =>
+  err?.status === 403 || /^PERMISSION_ERROR:/.test(String(err?.message || ''));
+
 export function assertApiSuccess(response, fallback = 'The server did not confirm that action.') {
   if (response && typeof response === 'object' && response.success === false) {
     throw new Error(response.message || fallback);

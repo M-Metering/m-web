@@ -111,16 +111,22 @@ export function jedTotalCount(response) {
 /**
  * @param {object} input
  * @param {object} input.importedStats - GET /installations/statistics (all discos)
- * @param {{ PAID: number|null, COMPLETED: number|null, INITIATED: number|null }} input.jedCounts
- * @returns {{ pending: number, completed: number, awaitingPayment: number,
- *   cancelled: number, breakdown: object, reconciles: boolean|null }}
+ * @param {{ PAID: number|null, COMPLETED: number|null, INITIATED: number|null }|null} input.jedCounts
+ *   null = JED's Remita requests are outside the caller's role (a 403, e.g.
+ *   SUPERVISOR): the totals then cover imported installations only and say so
+ *   with `jedExcluded: true`. Never null for "failed to load" — that throws.
+ * @returns {{ pending: number, completed: number, awaitingPayment: number|null,
+ *   cancelled: number, breakdown: object, reconciles: boolean|null, jedExcluded: boolean }}
  * @throws {Error} when any count needed for pending/completed is missing — an
  *   unknown count must surface as an error, not as 0.
  */
 export function summarizeInstallationTotals({ importedStats, jedCounts }) {
   const imported = {};
   Object.values(INSTALLATION_STATUS).forEach((s) => { imported[s] = importedStatusCount(importedStats, s); });
-  const jed = { PAID: countOf(jedCounts?.PAID), COMPLETED: countOf(jedCounts?.COMPLETED), INITIATED: countOf(jedCounts?.INITIATED) };
+  const jedExcluded = jedCounts === null;
+  const jed = jedExcluded
+    ? { PAID: 0, COMPLETED: 0, INITIATED: null }
+    : { PAID: countOf(jedCounts?.PAID), COMPLETED: countOf(jedCounts?.COMPLETED), INITIATED: countOf(jedCounts?.INITIATED) };
 
   const needed = [
     ...PENDING_INSTALLATION_STATUSES.imported.map((s) => imported[s]),
@@ -140,11 +146,12 @@ export function summarizeInstallationTotals({ importedStats, jedCounts }) {
   return {
     pending: pendingImported + jed.PAID,
     completed: completedImported + jed.COMPLETED,
-    awaitingPayment: jed.INITIATED ?? 0,
+    awaitingPayment: jedExcluded ? null : (jed.INITIATED ?? 0),
     cancelled,
+    jedExcluded,
     breakdown: {
-      pending: { jedPaid: jed.PAID, imported: pendingImported, unassigned: imported.PENDING, withInstaller: imported.ASSIGNED + imported.IN_PROGRESS, failed: imported.FAILED },
-      completed: { jed: jed.COMPLETED, imported: completedImported },
+      pending: { jedPaid: jedExcluded ? null : jed.PAID, imported: pendingImported, unassigned: imported.PENDING, withInstaller: imported.ASSIGNED + imported.IN_PROGRESS, failed: imported.FAILED },
+      completed: { jed: jedExcluded ? null : jed.COMPLETED, imported: completedImported },
     },
     // Every imported status is accounted for exactly once, if the server
     // reported a total to check against.

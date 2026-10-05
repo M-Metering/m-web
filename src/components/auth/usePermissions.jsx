@@ -58,6 +58,10 @@ export function usePermissions() {
     canViewInstallations: hasPermission(userRole, PERMISSIONS.INSTALLATIONS.VIEW),
     canViewAllInstallations: isAdmin || hasPermission(userRole, PERMISSIONS.INSTALLATIONS.VIEW_ALL),
     canManageInstallations: isAdmin || hasPermission(userRole, PERMISSIONS.INSTALLATIONS.MANAGE),
+    // Undo a completed installation (POST /installations/:id/revert): Super
+    // Admin ONLY on the API (Admin and Supervisor get 403). Irreversible — it
+    // clears the seal, date, GPS, photo and recognised revenue.
+    canRevertInstallations: isSuperAdmin,
     canCompleteInstallations: hasPermission(userRole, PERMISSIONS.INSTALLATIONS.COMPLETE),
     
     // User management permissions

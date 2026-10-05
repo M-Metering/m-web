@@ -12,9 +12,13 @@
 //   - `meterMake` is the ONLY make/manufacturer field. The API does not model
 //     "manufacturer" and "make" separately, so this app shows one field,
 //     labelled Make, and never copies it into a second "Manufacturer" field.
-//   - `manufacturedDate` is a DATE (when the unit was built), not a
-//     manufacturer. It used to be labelled just "Manufactured", which reads as
+//   - `manufacturedDate` is WHEN the unit was built, not a manufacturer. It is
+//     free text exactly as written in the import sheet — usually just a year
+//     ("2025") — not an ISO date (API, 2026-10-04), so it is shown as is and
+//     never parsed. It used to be labelled just "Manufactured", which reads as
 //     a manufacturer name when the cell is empty — hence MANUFACTURED_LABEL.
+//   - Since 2026-10-04 meter imports keep make, model, manufactured date and
+//     SGC number; older meters may still have null for them.
 //   - `model` is separate from `meterMake` and is never derived from it.
 //
 // Blank values are shown as "Not recorded", never as an empty label and never

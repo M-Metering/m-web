@@ -81,7 +81,7 @@ export const installationStatusLabel = (status) =>
  *
  * @param {string} status
  * @returns {{assign:boolean, unassign:boolean, start:boolean, report:boolean,
- *            fail:boolean, cancel:boolean, export:boolean}}
+ *            fail:boolean, cancel:boolean, export:boolean, revert:boolean}}
  */
 export function getAvailableActions(status) {
   const s = normalizeStatus(status);
@@ -100,6 +100,11 @@ export function getAvailableActions(status) {
     cancel: s === INSTALLATION_STATUS.PENDING || s === INSTALLATION_STATUS.ASSIGNED,
     // GET /installations/export/:discoCode?markExported=true
     export: s === INSTALLATION_STATUS.INSTALLED,
+    // POST /installations/:id/revert (2026-10-04, SUPERADMIN only — the role
+    // is checked at the call site via permissions.canRevertInstallations).
+    // INSTALLED only: an EXPORTED job has been reported to the disco and the
+    // API refuses it (409), so it is never offered.
+    revert: s === INSTALLATION_STATUS.INSTALLED,
   };
 }
 

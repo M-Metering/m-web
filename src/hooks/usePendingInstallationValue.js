@@ -64,7 +64,7 @@ export async function loadPendingInstallationValue() {
     // The live prices, so a caller valuing a filtered subset (the
     // Installations page) uses exactly the prices this total used.
     priceIndex: index,
-    prices: Array.from(index.prices.entries()).map(([type, p]) => ({ type, price: p.price, name: p.name })),
+    prices: Array.from(index.prices.entries()).map(([key, p]) => ({ type: key.split('|')[1], disco: p.disco, price: p.price, name: p.name })),
   };
 }
 

@@ -18,16 +18,17 @@ const PAGES = [
   'users', 'reports', 'payments', 'uploads', 'settings', 'complaints', 'my-jobs',
 ];
 
-// The scope is the backend's, from the Frontend Integration Guide (2026-09-24):
-// installations and assignments in full, meters and the installer roster
-// read-only, nothing else.
+// The scope is the backend's own role table (Frontend Integration Update,
+// 2026-10-04): installations, assignments and imports in full; meters
+// including upload, export and statistics (not delete); the installer roster
+// read-only; no money, prices, settings or users management.
 describe('SUPERVISOR — module access', () => {
-  it('reaches installations, assignments, meters and users — and the dashboard', () => {
+  it('reaches installations, assignments, imports, meters, meter upload and users — and the dashboard', () => {
     const reachable = PAGES.filter((page) => canAccessPage(ROLES.SUPERVISOR, page));
-    expect(reachable.sort()).toEqual(['assignments', 'dashboard', 'installations', 'schedule', 'users']);
+    expect(reachable.sort()).toEqual(['assignments', 'dashboard', 'imports', 'installations', 'schedule', 'uploads', 'users']);
   });
 
-  it.each(['uploads', 'payments', 'reports', 'settings', 'imports', 'complaints', 'my-jobs'])(
+  it.each(['payments', 'reports', 'settings', 'complaints', 'my-jobs'])(
     'cannot reach %s',
     (page) => {
       expect(canAccessPage(ROLES.SUPERVISOR, page)).toBe(false);
@@ -45,6 +46,10 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
       PERMISSIONS.INSTALLATIONS.VIEW_ALL,
       PERMISSIONS.INSTALLATIONS.MANAGE,
       PERMISSIONS.SCHEDULE.VIEW,
+      PERMISSIONS.SCHEDULE.MANAGE,
+      PERMISSIONS.UPLOADS.EXCEL,
+      PERMISSIONS.IMPORTS.VIEW,
+      PERMISSIONS.IMPORTS.RUN,
       PERMISSIONS.USERS.VIEW,
       PERMISSIONS.INSTALLERS.VIEW_STATUS,
       PERMISSIONS.INSTALLATIONS.EXPORT,
@@ -53,8 +58,7 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
 
   it('can export installations without gaining any admin-only module', () => {
     expect(hasPermission(ROLES.SUPERVISOR, PERMISSIONS.INSTALLATIONS.EXPORT)).toBe(true);
-    [PERMISSIONS.USERS.CREATE, PERMISSIONS.SETTINGS.VIEW, PERMISSIONS.PAYMENTS.VIEW, PERMISSIONS.REPORTS.VIEW,
-      PERMISSIONS.IMPORTS.RUN, PERMISSIONS.UPLOADS.EXCEL]
+    [PERMISSIONS.USERS.CREATE, PERMISSIONS.SETTINGS.VIEW, PERMISSIONS.PAYMENTS.VIEW, PERMISSIONS.REPORTS.VIEW]
       .forEach((p) => expect(hasPermission(ROLES.SUPERVISOR, p)).toBe(false));
     expect(hasPermission(ROLES.INSTALLER, PERMISSIONS.INSTALLATIONS.EXPORT)).toBe(false);
   });
@@ -67,6 +71,10 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
     ['dispatch meters', PERMISSIONS.ASSIGNMENTS.MANAGE],
     ['assign and cancel installation jobs', PERMISSIONS.INSTALLATIONS.MANAGE],
     ['see the meter inventory', PERMISSIONS.SCHEDULE.VIEW],
+    ['export meters and read meter statistics', PERMISSIONS.SCHEDULE.MANAGE],
+    ['upload the meter workbook', PERMISSIONS.UPLOADS.EXCEL],
+    ['run imports', PERMISSIONS.IMPORTS.RUN],
+    ['view imports', PERMISSIONS.IMPORTS.VIEW],
     ['see the installer roster', PERMISSIONS.USERS.VIEW],
   ])('can %s', (_label, permission) => {
     expect(hasPermission(ROLES.SUPERVISOR, permission)).toBe(true);
@@ -75,17 +83,12 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
   it.each([
     // Installer-only on the API: start / report / fail a job.
     ['complete an installation', PERMISSIONS.INSTALLATIONS.COMPLETE],
-    // Read-only on meters: no upload, export, statistics or delete.
-    ['manage the meter inventory', PERMISSIONS.SCHEDULE.MANAGE],
-    ['upload spreadsheets', PERMISSIONS.UPLOADS.EXCEL],
     // Read-only on users: no create, edit, delete or restore.
     ['create users', PERMISSIONS.USERS.CREATE],
     ['edit users', PERMISSIONS.USERS.UPDATE],
     ['delete users', PERMISSIONS.USERS.DELETE],
     ['manage users', PERMISSIONS.USERS.MANAGE],
     // No access at all.
-    ['run imports', PERMISSIONS.IMPORTS.RUN],
-    ['view imports', PERMISSIONS.IMPORTS.VIEW],
     ['view finance', PERMISSIONS.PAYMENTS.VIEW],
     ['view reports', PERMISSIONS.REPORTS.VIEW],
     ['change settings', PERMISSIONS.SETTINGS.VIEW],
