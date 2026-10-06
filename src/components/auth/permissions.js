@@ -261,19 +261,18 @@ const ROLE_PERMISSIONS = Object.freeze({
     PERMISSIONS.ASSIGNMENTS.MANAGE,
 
     // Meter inventory. SCHEDULE.MANAGE gates exactly the statistics call and
-    // the server-side export on Meter Schedule; UPLOADS.EXCEL gates the
-    // /uploads page, whose one job is POST /meters/upload. All three opened to
-    // SUPERVISOR by the API on 2026-10-04. Deleting a meter stays
-    // SUPERADMIN-only at the point of use.
+    // the server-side export on Meter Schedule. Deleting a meter stays
+    // SUPERADMIN-only at the point of use. UPLOADS.EXCEL (the /uploads page,
+    // POST /meters/upload) was withdrawn on 2026-10-05: the API now answers a
+    // SUPERVISOR's upload with 403 (Per-Disco Access update, §6).
     PERMISSIONS.SCHEDULE.VIEW,
     PERMISSIONS.SCHEDULE.MANAGE,
-    PERMISSIONS.UPLOADS.EXCEL,
 
-    // Imports (2026-10-04): disco pending-installation and meter sheets,
-    // history, row errors, undo, templates. Disco configuration (mappings,
-    // export templates) is SUPERADMIN-only at the point of use.
+    // Imports: VIEW only since 2026-10-05 — import history, row errors and
+    // blank templates. IMPORTS.RUN (uploading a sheet, undoing an import) was
+    // withdrawn: POST /imports/:discoCode/*, POST /meters/upload and
+    // POST /imports/:id/undo are 403 for this role (§6). Exports stay.
     PERMISSIONS.IMPORTS.VIEW,
-    PERMISSIONS.IMPORTS.RUN,
 
     // The installer roster, read-only — this is also what makes the "assign
     // installer" picker work for a Supervisor (GET /users?role=INSTALLER is

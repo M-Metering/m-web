@@ -164,3 +164,41 @@ describe('ReportInstallationModal — a failed photo upload', () => {
     expect(onReported).toHaveBeenCalled();
   });
 });
+
+describe('ReportInstallationModal — per-disco rules (2026-10-05)', () => {
+  const submit = () => fireEvent.click(screen.getByRole('button', { name: /Submit installation/ }));
+  const seal = () => fireEvent.change(screen.getByLabelText(/Seal number/), { target: { value: 'APLE0099123' } });
+
+  it('a meter from another disco’s stock is refused on the meter field, and nothing is closed', async () => {
+    const onReported = await open();
+    jedApi.reportInstallation.mockRejectedValue(new Error(
+      "VALIDATION_ERROR:That meter belongs to a different disco's stock than this installation"
+    ));
+    seal();
+    await fillRequired();
+    submit();
+    expect((await screen.findAllByText(/belongs to a different disco's stock/)).length).toBeGreaterThan(0);
+    expect(onReported).not.toHaveBeenCalled();
+  });
+
+  it('a PHEDC job with no meter type (and no phone) is not blocked: any held meter can be reported', async () => {
+    jedApi.getMyMeters.mockResolvedValue({
+      success: true,
+      data: [
+        { id: 1, meterNumber: '0239110006909', phaseType: 'SINGLE PHASE', assignmentStatus: 'ASSIGNED' },
+        { id: 2, meterNumber: '0239110006917', phaseType: 'THREE PHASE', assignmentStatus: 'ASSIGNED' },
+      ],
+      pagination: { hasNext: false },
+    });
+    const untyped = { id: 9, accountNumber: '877253168101D', customerName: 'OKORO N', discoCode: 'PHEDC', meterType: null, customerPhone: null };
+    render(<ReportInstallationModal job={untyped} isOpen onClose={vi.fn()} onReported={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('option', { name: /0239110006917/ })).toBeTruthy());
+    expect(screen.getByRole('option', { name: /0239110006909/ })).toBeTruthy();
+    expect(screen.getByText(/no meter type set — fit either type/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText(/Meter installed/), { target: { value: '0239110006917' } });
+    seal();
+    await fillRequired();
+    submit();
+    await waitFor(() => expect(jedApi.reportInstallation).toHaveBeenCalledWith(9, expect.objectContaining({ meterNumber: '0239110006917' })));
+  });
+});

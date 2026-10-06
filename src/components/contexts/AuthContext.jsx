@@ -294,6 +294,10 @@ export const AuthProvider = ({ children }) => {
   );
 };
 
+// For shared hooks that also run outside the provider (isolated component
+// tests, error screens): the session if there is one, else null.
+export const useOptionalAuth = () => useContext(AuthContext);
+
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {

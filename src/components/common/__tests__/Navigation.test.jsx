@@ -45,9 +45,11 @@ describe('Navigation — role matrix', () => {
   // Per the backend's own scope for the role: installations and assignments in
   // full, meters and the installer roster read-only, plus the operational
   // Installer Job Status overview (built only from those same reads).
-  it('gives Supervisor its eight items and no more (API role table, 2026-10-04)', () => {
+  it('gives Supervisor its seven items and no more (Per-Disco Access update, 2026-10-05)', () => {
+    // Uploads went with POST /meters/upload becoming 403 for this role;
+    // Imports stays for history and templates.
     expect(navFor(ROLES.SUPERVISOR).sort()).toEqual(
-      ['/assignments', '/dashboard', '/imports', '/installations', '/installer-status', '/schedule', '/uploads', '/users']
+      ['/assignments', '/dashboard', '/imports', '/installations', '/installer-status', '/schedule', '/users']
     );
   });
 

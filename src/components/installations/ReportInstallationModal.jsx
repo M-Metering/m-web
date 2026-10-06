@@ -36,6 +36,7 @@ import { METER_NUMBER_HINT } from '../../utils/meterNumber';
 import { isDuplicateSealError, DUPLICATE_SEAL_MESSAGE } from '../../utils/sealNumber';
 import {
   validateInstallationReport, buildReportPayload, REPORT_FIELD_ORDER, MAX_NOTES,
+  isWrongDiscoMeterError, WRONG_DISCO_METER_MESSAGE,
 } from '../../utils/installationReport';
 
 const newForm = () => ({
@@ -207,7 +208,10 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
       // A seal the backend already holds comes back as a duplicate/unique
       // rejection; say so on the field rather than showing the raw database
       // text (which getErrorMessage would drop entirely).
-      if (isDuplicateSealError(err)) {
+      if (isWrongDiscoMeterError(err)) {
+        setErrors((prev) => ({ ...prev, meterNumber: WRONG_DISCO_METER_MESSAGE }));
+        setSubmitError(WRONG_DISCO_METER_MESSAGE);
+      } else if (isDuplicateSealError(err)) {
         setErrors((prev) => ({ ...prev, sealNumber: DUPLICATE_SEAL_MESSAGE }));
         setSubmitError(DUPLICATE_SEAL_MESSAGE);
       } else {
@@ -270,7 +274,9 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
                 ? METER_NUMBER_HINT
                 : job.meterType
                   ? `Only the ${job.meterType.toLowerCase()} meters assigned to you are listed.`
-                  : undefined
+                  // No meter type on the job (e.g. PHEDC): either type may be
+                  // fitted, and the job takes the type of the meter reported.
+                  : 'This job has no meter type set — fit either type; it is recorded from the meter you report.'
             }
           >
             {manualEntry ? (

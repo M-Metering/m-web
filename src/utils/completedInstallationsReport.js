@@ -22,6 +22,7 @@ import { isCompletedStatus } from './statusBadge';
 import { parseAmount } from './paymentSummary';
 import { COLUMN_TYPES } from './xlsx';
 import { meterMakeOf, meterModelOf, manufacturedDateOf } from './meterDisplay';
+import { importExtrasOf } from './discoImportMapping';
 
 const { TEXT, COORDINATE, CURRENCY, DATE, DATETIME, LINK, IMAGE } = COLUMN_TYPES;
 
@@ -60,6 +61,27 @@ export function completionDayOf(row) {
   if (!d) return null;
   const [y, m, day] = d.split('-').map(Number);
   return new Date(y, m - 1, day);
+}
+
+/**
+ * The moment the finance API dates this completed installation — its
+ * `revenueAt` on GET /finance/revenue/transactions, which is what the Admin
+ * Dashboard's Installations Completed chart buckets by. A role without
+ * /finance/* (Supervisor) charts the installation records through this so
+ * both charts put the same installation on the same day:
+ *   imported job → `reportedAt` (dateBasis `reported_at`: when the installer
+ *                  submitted the report — NOT the typed installationDate);
+ *   JED request  → datePaid, else dateCompleted, else dateRequested (the API's
+ *                  documented fallback order for JED rows).
+ * Only when that field is missing does it fall back to completionDayOf.
+ * @returns {string|Date|null} an ISO instant as the API sent it, or a local-midnight Date
+ */
+export function completionRecognisedAt(row) {
+  const r = row?.raw || {};
+  const instant = row?.source === ROW_SOURCE.JED
+    ? (r.datePaid || r.dateCompleted || r.dateRequested)
+    : r.reportedAt;
+  return instant || completionDayOf(row);
 }
 
 /** Keep rows whose completion date is within [from, to] (either may be ''). */
@@ -278,7 +300,7 @@ export function buildCompletedInstallationsReport({
 // ---------------------------------------------------------------------------
 const DETAIL_KEYS = [
   'source', 'disco', 'installationId', 'status', 'accountNumber', 'customerName', 'customerPhone',
-  'customerAddress', 'region', 'area', 'feederName', 'transformerName', 'installationPosition',
+  'customerAddress', 'region', 'area', 'feederName', 'transformerName', 'transformerCode', 'installationPosition',
   'requestDate', 'datePaid', 'meterNumber', 'meterType', 'installationDate', 'completedAt',
   'installerName', 'installerId', 'assignedAt', 'sealNumber', 'latitude', 'longitude', 'photoUrl',
   'discoSupervisor', 'notes',
@@ -298,6 +320,9 @@ export function installationDetailsOf(row) {
     const value = COLUMN_BY_KEY.get(key)[3](row, null);
     out[key] = value === undefined || value === '' ? null : value;
   });
+  // Columns the import kept without a field of their own (captureExtras),
+  // e.g. a customer status or a second feeder column.
+  out.extras = importExtrasOf(row.raw);
   out.row = row;
   return out;
 }

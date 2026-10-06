@@ -5,17 +5,27 @@ import { AlertCircle, Loader2 } from 'lucide-react';
 // callers pass none and are unchanged.
 const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, loading, confirmText = 'Confirm', children }) => {
   const cancelRef = useRef(null);
+  // The latest onClose/loading, read by the Escape handler without being an
+  // effect dependency (callers pass a new onClose on every render).
+  const latest = useRef({ onClose, loading });
+  useEffect(() => { latest.current = { onClose, loading }; });
 
-  // Accessibility: Escape cancels (never while the action is in flight), and
-  // focus starts on Cancel — the safe choice for a destructive/confirming
-  // dialog — instead of staying on the page behind the overlay.
+  // Accessibility: focus starts on Cancel — the safe choice for a destructive
+  // dialog — ONCE, when the dialog opens. It must not depend on onClose: a
+  // caller's inline onClose is new on every render, so typing in a field inside
+  // the dialog (e.g. the unassign reason) re-ran this and pulled focus to
+  // Cancel after each character, closing the phone keyboard.
+  useEffect(() => {
+    if (isOpen) cancelRef.current?.focus();
+  }, [isOpen]);
+
+  // Escape cancels (never while the action is in flight).
   useEffect(() => {
     if (!isOpen) return undefined;
-    cancelRef.current?.focus();
-    const onKeyDown = (e) => { if (e.key === 'Escape' && !loading) onClose?.(); };
+    const onKeyDown = (e) => { if (e.key === 'Escape' && !latest.current.loading) latest.current.onClose?.(); };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose, loading]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

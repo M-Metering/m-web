@@ -1153,6 +1153,23 @@ class JEDApiService {
   }
 
   /**
+   * Replace a user's whole disco set (SUPERADMIN only, 2026-10-05). Send every
+   * disco the user should keep; [] removes all access. 400 for a SUPERADMIN
+   * target, 404 for an unknown user or disco, 403 for anyone but SUPERADMIN.
+   * @param {string} userId - UUID
+   * @param {string[]} discoCodes
+   */
+  async updateUserDiscos(userId, discoCodes) {
+    const url = this.utils.buildUrl(this.endpoints.USERS.DISCOS(userId), 'USERS');
+    const response = await this.makeRequest(url, {
+      method: 'PUT',
+      body: JSON.stringify({ discoCodes }),
+    });
+    this.clearCache();
+    return response;
+  }
+
+  /**
    * Server-side user search (added 2026-09-24). Matches `q` against first
    * name, last name, email and phone, and is still bound by the caller's own
    * visibility rules — an ADMIN or SUPERVISOR only ever gets Installers (and

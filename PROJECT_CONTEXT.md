@@ -8,7 +8,7 @@ owner, never by an assistant). As of 2026-10-05 a large set of changes is **unco
 cap + compression + one smaller retry), Supervisor fixes, and everything listed under 2026-10-04/05 in
 section 5. The owner commits, pushes and deploys; don't do any of those unless asked.
 
-**How to verify the tree.** `npm run lint` (clean), `npm test` (53 test files, 726 tests, all passing on
+**How to verify the tree.** `npm run lint` (clean), `npm test` (55 test files, 753 tests, all passing on
 2026-10-05), `npm run build` (succeeds). There is no type checker; lint + tests + build are the gate.
 Live-API checks need real credentials (`scripts/diagnostics/verify-live-data.mjs`, read-only) — none
 are stored in this repo.
@@ -19,7 +19,22 @@ are stored in this repo.
 documentation is <https://api.memetering.com/api-docs> (the spec is embedded in
 `/api-docs/swagger-ui-init.js`; 96 operations on 2026-10-04).
 
+**Per-Disco Access (2026-10-05, the backend's integration update).** Every staff account is profiled for
+discos (`user.discos`); pickers list the user's own (`useDiscoOptions` + `utils/userDiscos.js`), a user
+with none sees `NoDiscoAccessNotice`, meter upload sends `discoCode`, dispatch is scoped to the batch's
+disco (meters and installers), User Management grants discos (`PUT /users/:id/discos` for a Super Admin),
+Supervisor imports are view-only and its meter upload is gone, PHEDC's untyped jobs take either meter type,
+and a meter's state no longer reads `installedAt` (fixes "reverted meter shows Installed but is
+assignable"). The unassign reason field no longer loses focus per keystroke. See CLAUDE.md rule 10 and
+API_GAP_REPORT.md (AY, AZ; AX closed).
+
 **Open decisions waiting on the owner:**
+- **PHEDC (Bayelsa) onboarding — 2026-10-05.** The app side is done (Settings → Discos, see section 5);
+  PHEDC itself is registered by a Super Admin on the live API, not in code. Still to decide: PHEDC's
+  **response-sheet layout** (`exportTemplate` — none is sent at registration, so the server default
+  applies until one is set) and its **meter-type prices** (Settings → Meter Types; without them PHEDC
+  pending work is counted but unpriced). Whether PHEDC already exists on the server could not be checked
+  from here (no credentials).
 - **Photo-upload pipeline.** The uncommitted local pipeline compresses photos over 3.5 MiB and retries
   once at ~1 MB on a dropped upload. The backend accepts 5 MB since 2026-10-02, so this never rejects
   anything the API accepts, but it does compress 3.5–5 MB photos the committed version would send as-is.
@@ -108,7 +123,7 @@ jedc-meter-management/
 │       │                       #   AssignMeterModal, MeterSerialPicker, MeterCapacitySummary, InstallerSelect,
 │       │                       #   BatchResultSummary, JedAssignmentNotice, RevertInstallationModal, UnassignMeterAction
 │       ├── installers/         # InstallerJobStatus (/installer-status)
-│       ├── schedule/           # MeterSchedule (inventory/query/cards), InstalledRecordsModal, MeterDrillDown (InstallationRecord)
+│       ├── schedule/           # MeterSchedule (inventory/query/cards), InstalledRecordsModal, InstallationDetails (+ single-meter modal), MeterDrillDown (InstallationRecord)
 │       ├── reports/            # ReportExportBar (+ PrintableReport) — Excel / CSV / Print for any report
 │       ├── services/           # api.js (the only network client), api.config.js (endpoint map/config)
 │       ├── settings/           # SettingsPage, MeterTypeSettings, ApiKeySettings
@@ -590,9 +605,11 @@ jedc-meter-management/
   - **Meter Schedule cards restored to plain tiles (2026-10-05).** The drill-down behaviour (card
     filters, "Showing …" bar, Assigned list, installation details inside meter cards) is gone. Only the
     **Installed** card is clickable: it opens `InstalledRecordsModal` — the meters behind that count
-    (`GET /meters?status=INSTALLED`) with their installation details grouped by Customer, Installer,
-    Installation, Meter, Seal, Location, Disco and picture; searchable; full-screen on phones. A JED 403
-    no longer empties it for a Supervisor.
+    (`GET /meters?status=INSTALLED`) with their installation details (`InstallationDetails`: Meter,
+    Customer, Installation Information and picture); searchable; full-screen on phones. A JED 403
+    no longer empties it for a Supervisor. Clicking an **installed meter card** in the inventory opens
+    `InstallationDetailsModal` for that meter (same renderer, same shared lookup, one read — not per
+    card); the card's own Unassign/Delete/Assign/checkbox never open it.
   - **Photo previews** are a plain `<img>`; the CORS-mode `UploadedPhoto` workaround was removed.
   - **Installer Job Status** drill-down: Jobs and Meters. Every meter assigned to the installer (in hand
     + installed); an installed meter opens the customer/installation record; any job opens its details.
@@ -630,6 +647,54 @@ jedc-meter-management/
     `vite.config.js` from `VITE_API_BASE_URL` (+ optional `VITE_FILE_STORAGE_ORIGIN`); `DEPLOYMENT.md`
     lists the SPA fallback and the headers the host must set. `envDir: 'src'`: `src/.env` used to be
     silently ignored. All references to the old Render API were removed.
+
+- **Discos are registered in Settings; PHEDC/Bayelsa onboarding (2026-10-05).**
+  - *Architecture finding.* A disco is **server data** (`GET /discos`), and every disco selector —
+    Installations, Assignments, Imports, Reports (Payments & deals), Settings → Meter Types, Meter
+    Schedule's Assign — already reads that list through `useDiscoOptions`. Imports are parsed **by the
+    server** using the disco's own `importMapping`. Nothing in the app branches on a disco code (the only
+    code rule is `isJedDiscoCode`, the `JED` prefix). So a new disco needs no per-page code: it needs to
+    be registered with the right column mapping. `createDisco`/`replaceDiscoImportMapping` existed in
+    `api.js` but had no UI — that was the gap.
+  - *Settings → Discos* (`settings/DiscoSettings.jsx`, Super Admin only, like API Keys): lists every
+    disco (inactive too), **Register Disco** (`POST /discos` — code, name, integration mode, contact email,
+    `importMapping`), and **Import columns** per disco (`PUT /discos/{code}/import-mapping`, behind a
+    confirmation). A sample sheet can be picked to suggest the columns and check the file — nothing is
+    uploaded. Logic: `utils/discoImportMapping.js` (tested). The PUT replaces the whole object, so an edit
+    always starts from `GET /discos/{code}` and only `pendingInstallations` changes; `meterInventory` and
+    every stored per-field option (`transform`, `keepRaw`, `padStart`) pass through. A new disco copies
+    `meterInventory` from a chosen existing disco **minus `padStart`** (meter numbers are never padded).
+    Codes starting `JED` are refused (they would be attributed to JED's Remita flow).
+  - *Imports → pre-upload check* (`admin/ImportFileCheck.jsx`): a pending-installations file is read in the
+    browser and checked against the chosen disco's mapping — header → field, missing required columns,
+    blank keys, repeated accounts, columns kept as extras. Never blocks the upload (the server validates);
+    absent when the mapping can't be read (disco config is SUPERADMIN-only on the API, so a Supervisor
+    doesn't see it).
+  - *Extra columns.* With `captureExtras` the server keeps unmapped columns on the record's `extras`.
+    `importExtrasOf` shows them (flat scalar values only, placeholders like `-----` hidden) on the
+    Installations row, My Jobs, Meter Schedule's Installed records and Installer Job Status. The DT ID
+    (`transformerCode`) and region are now shown beside feeder/transformer too.
+  - *Bayelsa sheet → system fields* (BAYELSA CUSTOMER DATA.xlsx, 1 sheet, 1,288 rows, verified with the
+    app's own reader):
+
+    | Sheet column | Field | Notes |
+    |---|---|---|
+    | `ACCOUNT_NO` | `accountNumber` (key, required, `text`) | 1,288 distinct; 1,281 stored as numbers (12 digits, all safe), 7 as text with a letter suffix (e.g. `877906308801C`) — all kept as exact strings |
+    | `NAME` | `customerName` (required) | |
+    | `ADDRESS` | `customerAddress` | none blank; tick *Required* if the business wants it enforced |
+    | `REGION` | `region` | always `Bayelsa` — a region, **not** a disco |
+    | `FEEDER33NAME` | `feederName` | the only populated feeder column (2 values) |
+    | `FEEDER11NAME` | `extras` | `--------------------` in every row; kept, hidden as a placeholder |
+    | `DTRNAME` | `transformerName` | |
+    | `DTRID` | `transformerCode` (`text`) | |
+    | `STATUS` | `extras` | the customer's account status (`Active`), never the request status |
+    | *(none)* | `meterType` | the sheet has no meter type; none is assumed. Mapped optionally (`METERTYPE` etc.) so a later sheet that has one is read |
+
+  - *Onboarding steps (Super Admin):* Settings → Discos → Register Disco → code `PHEDC`, name, pick the
+    Bayelsa sheet under "Fill from a sample sheet" (the columns above are suggested) → Register. Then
+    Settings → Meter Types for PHEDC prices; Imports → PHEDC → Pending installations → the sheet. A
+    re-upload skips accounts already imported for PHEDC. PHEDC installers are ordinary `INSTALLER`
+    accounts: the API's `User` has no disco field, and the disco is chosen per assignment.
 
 ## 6. Pending / Incomplete Features
 

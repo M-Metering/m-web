@@ -14,6 +14,12 @@
 // yet, keeping anything already installed, exported, in progress or dispatched
 // and reporting them as skipped. See utils/importUndo.js; a non-zero
 // skippedCount is the safety rule working and is never shown as a failure.
+//
+// Before upload, a pending-installations file is checked against the chosen
+// disco's own import mapping (ImportFileCheck): which header fills which
+// field, missing required columns, blank keys, repeated accounts. A preview
+// only — it never blocks the upload, and it is simply absent when the mapping
+// can't be read (disco configuration is SUPERADMIN-only on the API).
 import { useState, useEffect, useCallback } from 'react';
 import {
   Upload, FileDown, AlertCircle, Loader2, RefreshCw, FileSpreadsheet, ChevronRight, X, Undo2,
@@ -24,7 +30,10 @@ import { usePermissions } from '../auth/usePermissions';
 import StatusTabs from '../common/StatusTabs';
 import ConfirmationModal from '../common/ConfirmationModal';
 import BatchResultSummary from '../installations/BatchResultSummary';
+import ImportFileCheck from './ImportFileCheck';
 import { useDiscoOptions } from '../../hooks/useDiscoOptions';
+import { readSpreadsheetRows } from '../../utils/xlsx';
+import { checkSheetAgainstMapping } from '../../utils/discoImportMapping';
 import { fetchAllPages } from '../../utils/fetchAllPages';
 import { getErrorMessage } from '../../utils/errorMessage';
 import { validateUploadFile } from '../../utils/fileValidation';
@@ -32,6 +41,7 @@ import { downloadBlob } from '../../utils/downloadBlob';
 import { summarizeUndoResult, undoConfirmationMessage } from '../../utils/importUndo';
 import { assertApiSuccess } from '../../utils/apiResult';
 import { formatDateTime } from '../../utils/date';
+import { NO_DISCO_ACCESS_MESSAGE } from '../../utils/userDiscos';
 
 const IMPORT_TYPES = {
   PENDING_INSTALLATIONS: {
@@ -55,9 +65,13 @@ const IMPORT_TYPES = {
 function ImportsPage() {
   const permissions = usePermissions();
   const { notifyDataChanged } = useDataRefresh();
-  const { discos, loading: discosLoading, error: discosError } = useDiscoOptions();
+  const { discos, loading: discosLoading, error: discosError, noAccess } = useDiscoOptions();
+  // Importing and undoing need IMPORTS.RUN. A Supervisor (IMPORTS.VIEW only,
+  // 2026-10-05) gets history, row errors and blank templates — never the file
+  // picker, Import or Undo, which the API answers with 403 for that role.
+  const canRun = permissions.canRunImports === true;
 
-  const [activeTab, setActiveTab] = useState('upload');
+  const [activeTab, setActiveTab] = useState(canRun ? 'upload' : 'history');
   const [discoCode, setDiscoCode] = useState('');
   const [importType, setImportType] = useState(IMPORT_TYPES.PENDING_INSTALLATIONS.id);
   const [file, setFile] = useState(null);
@@ -66,6 +80,7 @@ function ImportsPage() {
   const [uploadError, setUploadError] = useState(null);
   const [result, setResult] = useState(null);
   const [templateLoading, setTemplateLoading] = useState(false);
+  const [fileCheck, setFileCheck] = useState(null);
 
   const [batches, setBatches] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -86,6 +101,25 @@ function ImportsPage() {
   useEffect(() => {
     if (!discoCode && discos.length > 0) setDiscoCode(discos[0].code);
   }, [discos, discoCode]);
+
+  // Pre-upload column check (pending installations only). Every failure is
+  // swallowed on purpose: the check is optional and the server validates.
+  useEffect(() => {
+    setFileCheck(null);
+    if (!file || !discoCode || importType !== IMPORT_TYPES.PENDING_INSTALLATIONS.id) return undefined;
+    if (/\.xls$/i.test(file.name)) return undefined; // ExcelJS can't read legacy .xls
+    let cancelled = false;
+    (async () => {
+      try {
+        const [{ rows }, disco] = await Promise.all([readSpreadsheetRows(file), jedApi.getDisco(discoCode)]);
+        const pending = (disco?.data ?? disco)?.importMapping?.pendingInstallations;
+        if (!cancelled && pending) setFileCheck(checkSheetAgainstMapping(rows, pending));
+      } catch (err) {
+        console.warn('[Imports] Pre-upload check unavailable:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [file, discoCode, importType]);
 
   useEffect(() => {
     if (activeTab !== 'history') return undefined;
@@ -206,12 +240,12 @@ function ImportsPage() {
     }
   }, [undoTarget, undoing, notifyDataChanged]);
 
-  if (!permissions.canRunImports) {
+  if (!permissions.canViewImports) {
     return (
       <div className="p-8 text-center">
         <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
         <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Access Denied</h2>
-        <p className="text-gray-600 dark:text-gray-400">You don't have permission to run imports.</p>
+        <p className="text-gray-600 dark:text-gray-400">You don't have permission to view imports.</p>
       </div>
     );
   }
@@ -227,10 +261,17 @@ function ImportsPage() {
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white truncate">Imports</h1>
           <p className="text-gray-600 dark:text-gray-400 text-xs sm:text-sm truncate">
-            Bring a disco's customer and meter spreadsheets into the system
+            {canRun ? "Bring a disco's customer and meter spreadsheets into the system" : 'Import history and blank templates for your discos'}
           </p>
         </div>
       </div>
+
+      {noAccess && (
+        <div role="alert" className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-sm text-amber-800 dark:text-amber-300">{NO_DISCO_ACCESS_MESSAGE}</p>
+        </div>
+      )}
 
       {discosError && (
         <div role="alert" className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 flex items-start gap-3">
@@ -242,7 +283,7 @@ function ImportsPage() {
       <div className="card overflow-hidden">
         <StatusTabs
           tabs={[
-            { id: 'upload', label: 'New import', icon: Upload },
+            { id: 'upload', label: canRun ? 'New import' : 'Templates', icon: canRun ? Upload : FileDown },
             { id: 'history', label: 'History', icon: FileSpreadsheet, count: batches.length || undefined },
           ]}
           activeTab={activeTab}
@@ -290,6 +331,14 @@ function ImportsPage() {
 
             <p className="text-xs text-gray-500 dark:text-gray-400">{selectedType.description}</p>
 
+            {!canRun && (
+              <p className="text-xs text-gray-600 dark:text-gray-400">
+                Importing and undoing imports are done by an Admin. You can download a blank template here and
+                review every import under History.
+              </p>
+            )}
+
+            {canRun && (<>
             <div>
               <label htmlFor="import-file" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                 Spreadsheet<span className="text-red-600 dark:text-red-400" aria-hidden="true"> *</span>
@@ -308,6 +357,8 @@ function ImportsPage() {
               {fileError && <p role="alert" className="text-xs text-red-600 dark:text-red-400 mt-1">{fileError}</p>}
             </div>
 
+            {fileCheck && <ImportFileCheck check={fileCheck} />}
+
             {uploadError && (
               <div role="alert" className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
@@ -316,6 +367,7 @@ function ImportsPage() {
             )}
 
             {result && <BatchResultSummary data={result} acceptedLabel={selectedType.accepted} />}
+            </>)}
 
             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 pt-1">
               <button
@@ -327,7 +379,7 @@ function ImportsPage() {
                 {templateLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
                 Blank template
               </button>
-              <button
+              {canRun && <button
                 type="button"
                 onClick={handleUpload}
                 disabled={!file || !discoCode || uploading}
@@ -335,7 +387,7 @@ function ImportsPage() {
               >
                 {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                 {uploading ? 'Importing…' : 'Import file'}
-              </button>
+              </button>}
             </div>
           </div>
         ) : (
@@ -447,8 +499,8 @@ function ImportsPage() {
             </div>
 
             {/* Undo — only rows nothing depends on are removed; the
-                confirmation says so before anything happens. */}
-            <div className="p-4 sm:p-6 border-t border-gray-200 dark:border-gray-700 flex justify-end">
+                confirmation says so before anything happens. IMPORTS.RUN only. */}
+            {canRun && <div className="p-4 sm:p-6 border-t border-gray-200 dark:border-gray-700 flex justify-end">
               <button
                 type="button"
                 onClick={() => { setUndoError(null); setUndoResult(null); setUndoTarget(detail); }}
@@ -458,7 +510,7 @@ function ImportsPage() {
                 {undoing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />}
                 {undoing ? 'Undoing…' : 'Undo this import'}
               </button>
-            </div>
+            </div>}
           </div>
         </div>
       )}

@@ -9,11 +9,16 @@
 // RRR, Remita status lookups) independent of any one user's session, so
 // creating/rotating/deleting them is treated as a privileged action, same
 // tier as managing Admin accounts in User Management.
+//
+// Discos is Super Admin-only for the same reason, and because the API keeps
+// disco configuration (register, import mapping) SUPERADMIN-only. Registering
+// a disco there is all it takes for it to appear in every disco selector.
 import { useEffect, useState } from 'react';
-import { Settings as SettingsIcon, Zap, KeyRound } from 'lucide-react';
+import { Settings as SettingsIcon, Zap, KeyRound, Building2 } from 'lucide-react';
 import { usePermissions } from '../auth/usePermissions';
 import MeterTypeSettings from './MeterTypeSettings';
 import ApiKeySettings from './ApiKeySettings';
+import DiscoSettings from './DiscoSettings';
 
 function SettingsPage() {
   const { isSuperAdmin } = usePermissions();
@@ -21,14 +26,17 @@ function SettingsPage() {
 
   const tabs = [
     { id: 'meterTypes', label: 'Meter Types', icon: Zap },
-    ...(isSuperAdmin ? [{ id: 'apiKeys', label: 'API Keys', icon: KeyRound }] : []),
+    ...(isSuperAdmin ? [
+      { id: 'discos', label: 'Discos', icon: Building2 },
+      { id: 'apiKeys', label: 'API Keys', icon: KeyRound },
+    ] : []),
   ];
 
   // If role changes (or an Admin lands here with a stale apiKeys tab
   // selected) and API Keys is no longer in scope, fall back rather than
   // rendering a blank pane.
   useEffect(() => {
-    if (!isSuperAdmin && activeTab === 'apiKeys') {
+    if (!isSuperAdmin && (activeTab === 'apiKeys' || activeTab === 'discos')) {
       setActiveTab('meterTypes');
     }
   }, [isSuperAdmin, activeTab]);
@@ -42,7 +50,7 @@ function SettingsPage() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Settings</h1>
           <p className="text-gray-600 dark:text-gray-400 text-sm sm:text-base">
-            {isSuperAdmin ? 'Manage meter types, pricing, and API access' : 'Manage meter types and pricing'}
+            {isSuperAdmin ? 'Manage meter types, pricing, discos and API access' : 'Manage meter types and pricing'}
           </p>
         </div>
       </div>
@@ -72,6 +80,7 @@ function SettingsPage() {
       )}
 
       {activeTab === 'meterTypes' && <MeterTypeSettings />}
+      {activeTab === 'discos' && isSuperAdmin && <DiscoSettings />}
       {activeTab === 'apiKeys' && isSuperAdmin && <ApiKeySettings />}
     </div>
   );

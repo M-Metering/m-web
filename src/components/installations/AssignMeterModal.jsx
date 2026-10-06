@@ -144,6 +144,7 @@ function AssignMeterModal({ meters = [], isOpen, onClose, onAssigned }) {
                   Installer<span className="text-red-600 dark:text-red-400" aria-hidden="true"> *</span>
                 </label>
                 <InstallerSelect
+                  discoCode={discoCode || null}
                   id="assign-meter-installer"
                   value={installerId}
                   onChange={(v) => { setInstallerId(v); setFieldError(null); }}

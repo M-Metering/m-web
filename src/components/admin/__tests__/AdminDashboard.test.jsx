@@ -228,6 +228,42 @@ describe('Supervisor dashboard', () => {
     expect(jedApi.getInstallations).toHaveBeenCalledWith(expect.objectContaining({ status: 'EXPORTED' }));
   });
 
+  it("dates a completion by when it was reported (the Admin chart's revenueAt), not the typed installation date", async () => {
+    // Reported today, typed as installed weeks ago: the Admin chart counts it
+    // today (dateBasis reported_at), so the Supervisor chart must too.
+    const reportedToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12).toISOString();
+    COMPLETED_IMPORTED.splice(0, COMPLETED_IMPORTED.length,
+      { id: 1, status: 'INSTALLED', installationDate: '2026-01-02', reportedAt: reportedToday },
+      { id: 2, status: 'INSTALLED', installationDate: '2026-01-03', reportedAt: reportedToday },
+      { id: 3, status: 'INSTALLED', installationDate: today, reportedAt: '2020-01-01T10:00:00Z' });
+    try {
+      renderDashboard();
+      const chart = await screen.findByRole('img', { name: /Installations Completed chart/ });
+      // 2 reported today + 1 EXPORTED (no reportedAt → its installationDate, today) + 1 JED today.
+      expect(within(chart.closest('.card')).getByText('latest: 4')).toBeTruthy();
+    } finally {
+      COMPLETED_IMPORTED.splice(0, COMPLETED_IMPORTED.length,
+        { id: 1, status: 'INSTALLED', installationDate: today },
+        { id: 2, status: 'INSTALLED', installationDate: today },
+        { id: 3, status: 'INSTALLED', installationDate: '2020-01-01' });
+    }
+  });
+
+  it('reads past the old 20-page cap, so recent completions are not cut off', async () => {
+    const many = Array.from({ length: 2150 }, (_, i) => ({ id: 1000 + i, status: 'INSTALLED', installationDate: '2020-01-01' }));
+    many.push({ id: 9999, status: 'INSTALLED', reportedAt: new Date().toISOString() });
+    jedApi.getInstallations.mockImplementation(async ({ status, page = 1, limit = 10 }) => {
+      if (status === 'INSTALLED') return pageOf(many, page, limit);
+      if (status === 'EXPORTED') return pageOf([], page, limit);
+      return pageOf(IMPORTED, page, limit);
+    });
+    renderDashboard();
+    const chart = await screen.findByRole('img', { name: /Installations Completed chart/ });
+    // The newest record sits on page 22: 1 imported today + 1 JED today.
+    expect(within(chart.closest('.card')).getByText('latest: 2')).toBeTruthy();
+    expect(screen.queryByText(/may be incomplete/)).toBeNull();
+  });
+
   it('still shows Pending and Completed when JED requests are forbidden to the role (403)', async () => {
     jedApi.getAllCustomerRequests.mockRejectedValue(Object.assign(new Error('PERMISSION_ERROR:Insufficient permissions'), {}));
     renderDashboard();

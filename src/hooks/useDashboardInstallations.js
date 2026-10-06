@@ -33,7 +33,7 @@ import { getErrorMessage } from '../utils/errorMessage';
 import { unwrapListResponse } from '../utils/unwrapListResponse';
 import { normalizeMultiRow, normalizeJedRow, JED_BUCKET } from '../utils/installationScope';
 import { fetchAllPagesDetailed } from '../utils/fetchAllPages';
-import { completionDayOf } from '../utils/completedInstallationsReport';
+import { completionRecognisedAt } from '../utils/completedInstallationsReport';
 import { isPermissionError } from '../utils/apiResult';
 
 // JED's Remita requests are outside some roles' API scope (SUPERVISOR gets a
@@ -105,19 +105,26 @@ export async function loadRecentInstallations(limit = 5) {
   };
 }
 
+// The completed reads have no date filter on the API, so the whole history is
+// read; the default 20-page cap (2,000 rows per status) cut off real recent
+// completions once volume grew. Same cap as useInstallationRecordsByMeter.
+const COMPLETED_MAX_PAGES = 100;
+
 /**
- * Every completed installation across both domains, each reduced to the day it
- * was installed — the Installations Completed trend for a role that can't read
- * the finance endpoints (Supervisor: GET /finance/* is 403 for it). Completed
- * is the same definition as the Completed KPI (imported INSTALLED/EXPORTED +
- * JED COMPLETED) and the day is the same one the Installations page's
- * "Installed from / to" filter uses (completionDateOf).
+ * Every completed installation across both domains, each reduced to the moment
+ * the Admin chart dates it — the Installations Completed trend for a role that
+ * can't read the finance endpoints (Supervisor: GET /finance/* is 403 for it).
+ * Completed is the same definition as the Completed KPI (imported
+ * INSTALLED/EXPORTED + JED COMPLETED), and the date is the finance API's
+ * `revenueAt` (completionRecognisedAt) — an imported job's report time, not
+ * its typed installationDate — so the Supervisor and Admin charts agree.
  */
 export async function loadCompletedInstallationDays() {
+  const all = { maxPages: COMPLETED_MAX_PAGES };
   const [installed, exported, jedRead] = await Promise.all([
-    fetchAllPagesDetailed((p) => jedApi.getInstallations(p), { status: 'INSTALLED' }),
-    fetchAllPagesDetailed((p) => jedApi.getInstallations(p), { status: 'EXPORTED' }),
-    unlessForbidden(fetchAllPagesDetailed((p) => jedApi.getAllCustomerRequests(p), { status: 'COMPLETED' })),
+    fetchAllPagesDetailed((p) => jedApi.getInstallations(p), { status: 'INSTALLED' }, all),
+    fetchAllPagesDetailed((p) => jedApi.getInstallations(p), { status: 'EXPORTED' }, all),
+    unlessForbidden(fetchAllPagesDetailed((p) => jedApi.getAllCustomerRequests(p), { status: 'COMPLETED' }, all)),
   ]);
   const jed = jedRead || { items: [], truncated: false };
   const rows = [
@@ -126,7 +133,7 @@ export async function loadCompletedInstallationDays() {
     ...jed.items.map((r) => normalizeJedRow(r, JED_BUCKET)),
   ];
   return {
-    rows: rows.map((row) => ({ completedOn: completionDayOf(row) })),
+    rows: rows.map((row) => ({ completedOn: completionRecognisedAt(row) })),
     truncated: installed.truncated || exported.truncated || jed.truncated,
   };
 }

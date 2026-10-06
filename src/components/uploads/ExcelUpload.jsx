@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { PERMISSIONS, hasPermission } from '../auth/permissions';
 import jedApi from '../services/api';
 import { downloadXlsx, COLUMN_TYPES } from '../../utils/xlsx';
 import { validateUploadFile } from '../../utils/fileValidation';
 import { getErrorMessage } from '../../utils/errorMessage';
+import { useDiscoOptions } from '../../hooks/useDiscoOptions';
+import { NO_DISCO_ACCESS_MESSAGE } from '../../utils/userDiscos';
 import { AlertCircle, Upload, Download, FileCheck2, FileX2, Percent, List, FileDown } from 'lucide-react';
 
 // This page has one job: POST /meters/upload, the meter workbook.
@@ -15,6 +17,12 @@ import { AlertCircle, Upload, Download, FileCheck2, FileX2, Percent, List, FileD
 // were removed from the API entirely (the /uploads prefix is now general file
 // storage, nothing to do with spreadsheets). The modes, the mode picker and
 // the download-a-processed-file branch went with them. Don't reintroduce them.
+//
+// Since 2026-10-05 every meter belongs to a disco: the upload REQUIRES a
+// `discoCode` form field next to `file` (400 "discoCode is required"
+// without it) and the meters join that disco's stock. The picker lists the
+// user's own discos (useDiscoOptions). SUPERVISOR may no longer upload (403),
+// so the page is ADMIN/SUPERADMIN only via UPLOADS.EXCEL.
 
 function ExcelUpload() {
   const { user } = useAuth();
@@ -23,6 +31,13 @@ function ExcelUpload() {
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
   const [uploadResult, setUploadResult] = useState(null);
+  const { discos, loading: discosLoading, error: discosError, noAccess } = useDiscoOptions();
+  const [discoCode, setDiscoCode] = useState('');
+
+  // One disco: pre-selected. Several: the first, until the user picks.
+  useEffect(() => {
+    if (!discoCode && discos.length > 0) setDiscoCode(discos[0].code);
+  }, [discos, discoCode]);
 
   if (!hasPermission(user?.role, PERMISSIONS.UPLOADS.EXCEL)) {
     return (
@@ -75,6 +90,10 @@ function ExcelUpload() {
   };
 
   const handleUpload = async () => {
+    if (!discoCode) {
+      setError("Select the disco these meters belong to.");
+      return;
+    }
     if (!file) {
       setError('Please select a file to upload.');
       return;
@@ -88,10 +107,10 @@ function ExcelUpload() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      // Only `file` is documented for POST /meters/upload — an `installerId`
-      // field used to be appended here from the stored (client-editable) user
-      // record; it is undocumented, and uploads are no longer an Installer
-      // feature, so it is gone.
+      // Required since 2026-10-05: the disco whose stock these meters join.
+      // (An `installerId` field used to be appended here from the stored,
+      // client-editable user record; it was never documented and is gone.)
+      formData.append('discoCode', discoCode);
       const response = await jedApi.uploadMeters(formData);
 
       if (response.success && response.data) {
@@ -154,6 +173,28 @@ function ExcelUpload() {
 
       <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-300 dark:border-gray-700 p-6">
         <div className="space-y-4">
+          {noAccess && (
+            <p role="alert" className="text-sm p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300">
+              {NO_DISCO_ACCESS_MESSAGE}
+            </p>
+          )}
+          <div>
+            <label htmlFor="meter-upload-disco" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Disco<span className="text-red-600 dark:text-red-400" aria-hidden="true"> *</span>
+            </label>
+            <select
+              id="meter-upload-disco"
+              value={discoCode}
+              onChange={(e) => setDiscoCode(e.target.value)}
+              disabled={discosLoading || uploading || discos.length <= 1}
+              className="form-input w-full sm:max-w-sm px-3 py-2 text-sm"
+            >
+              <option value="">{discosLoading ? 'Loading discos…' : 'Select a disco…'}</option>
+              {discos.map((d) => <option key={d.code} value={d.code}>{d.name ? `${d.name} (${d.code})` : d.code}</option>)}
+            </select>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">The meters join this disco&apos;s stock and can only be dispatched for its jobs.</p>
+            {discosError && <p className="text-xs text-red-600 dark:text-red-400 mt-1">{discosError}</p>}
+          </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Select Excel file</label>
             <input 
@@ -183,7 +224,7 @@ function ExcelUpload() {
           <div className="flex items-center gap-3">
             <button
               onClick={handleUpload}
-              disabled={!file || uploading}
+              disabled={!file || !discoCode || uploading}
               className="inline-flex items-center gap-2 bg-brand-500 text-gray-900 px-4 py-2 rounded-lg disabled:opacity-50 hover:bg-brand-600 transition-colors"
             >
               <Upload className="w-4 h-4" />

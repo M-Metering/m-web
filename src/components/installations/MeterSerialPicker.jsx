@@ -57,6 +57,11 @@ const recordsOf = (response) => {
  * @param {Map<string, object>|null} [props.holders] - the open-dispatch index
  *   (hooks/useMeterHolders.js), so a meter found by search is judged by the
  *   same rule the options were.
+ * @param {string|null} [props.discoCode] - the batch's disco: the server
+ *   search is limited to its stock (a meter can only be dispatched for its own
+ *   disco, 2026-10-05). The exact-number fallback can't be scoped; a meter it
+ *   finds in another disco's stock is refused by the API per row with that
+ *   reason ("Meter belongs to another disco's stock").
  * @param {(meters: object[]) => void} [props.onDiscover] - receives dispatchable
  *   meter records found server-side that the options didn't contain; the
  *   parent merges them into its records so they become ordinary options (with
@@ -64,7 +69,7 @@ const recordsOf = (response) => {
  */
 function MeterSerialPicker({
   id, options, loading, error, onRetry, value, onChange, disabled, invalid,
-  capacity = null, enforced = true, holders = null, onDiscover,
+  capacity = null, enforced = true, holders = null, onDiscover, discoCode = null,
 }) {
   const [query, setQuery] = useState('');
   const [phase, setPhase] = useState('');
@@ -91,7 +96,7 @@ function MeterSerialPicker({
     if (!enforced || !capacity) return null;
     const bucket = phaseCapacity(capacity, phaseType);
     if (bucket.remaining > 0) return null;
-    return bucket.required === 0
+    return bucket.required + (bucket.eitherTypeRequired || 0) === 0
       ? `No pending ${formatPhaseLabel(phaseType)} installation is assigned to this installer.`
       : `No remaining ${formatPhaseLabel(phaseType)} installation capacity for this installer.`;
   }, [enforced, capacity]);
@@ -122,7 +127,7 @@ function MeterSerialPicker({
     const timer = setTimeout(async () => {
       setLookup({ state: 'loading', serial: term });
       try {
-        const response = await jedApi.searchMeters({ q: term, limit: SEARCH_LIMIT });
+        const response = await jedApi.searchMeters(discoCode ? { q: term, limit: SEARCH_LIMIT, discoCode } : { q: term, limit: SEARCH_LIMIT });
         let found = recordsOf(response);
         // A complete number the substring search missed (or a search that
         // isn't deployed): fall back to the exact lookup.
@@ -155,7 +160,7 @@ function MeterSerialPicker({
     // `options`/`onDiscover` are read, not watched: a discovery changes the
     // options, and re-searching the same term because of it would loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, holderOf]);
+  }, [query, holderOf, discoCode]);
 
   const toggle = (serial) => {
     onChange(selected.has(serial) ? value.filter((s) => s !== serial) : [...value, serial]);
