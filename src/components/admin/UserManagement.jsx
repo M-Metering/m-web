@@ -12,6 +12,10 @@ import {
   canDeleteUserAccount, isSameUserAccount, userIdOf, MISSING_USER_ID_MESSAGE,
 } from '../../utils/userAccount';
 import { assertApiSuccess } from '../../utils/apiResult';
+import { useDiscoOptions } from '../../hooks/useDiscoOptions';
+import {
+  userDiscoCodes, userDiscoFieldMode, createDiscoCodes, sameDiscoSet, discoListLabel,
+} from '../../utils/userDiscos';
 import {
   Users,
   UserPlus,
@@ -28,6 +32,50 @@ import {
   EyeOff,
   RefreshCw
 } from 'lucide-react';
+
+// The discos a user works in (Per-Disco Access, 2026-10-05). A SUPERADMIN is
+// never profiled and sees every disco.
+const DiscoChips = ({ user }) => {
+  if (user?.role === ROLES.SUPERADMIN) return <span className="text-xs text-gray-500 dark:text-gray-400">All discos</span>;
+  if (discoListLabel(user) === null) {
+    return Array.isArray(user?.discos)
+      ? <span className="text-xs text-amber-700 dark:text-amber-400">No disco yet</span>
+      : <span className="text-xs text-gray-400">—</span>;
+  }
+  return (
+    <span className="flex flex-wrap gap-1">
+      {userDiscoCodes(user).map((code) => (
+        <span key={code} className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200">{code}</span>
+      ))}
+    </span>
+  );
+};
+
+// Tick the discos a user works in. `options` is what this actor may grant:
+// every disco for a SUPERADMIN, the ADMIN's own otherwise (useDiscoOptions).
+const DiscoCheckboxes = ({ options, value, onChange, error, hint }) => (
+  <fieldset className="sm:col-span-2">
+    <legend className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Discos</legend>
+    <div className="flex flex-wrap gap-2">
+      {options.map((d) => {
+        const checked = value.includes(d.code);
+        return (
+          <label key={d.code} className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm cursor-pointer ${
+            checked ? 'border-brand-400 bg-brand-50 dark:bg-brand-900/20 dark:border-brand-700' : 'border-gray-300 dark:border-gray-600'
+          }`}>
+            <input type="checkbox" checked={checked}
+              onChange={() => onChange(checked ? value.filter((c) => c !== d.code) : [...value, d.code])}
+              className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500" />
+            <span className="text-gray-900 dark:text-white">{d.name ? `${d.name} (${d.code})` : d.code}</span>
+          </label>
+        );
+      })}
+      {options.length === 0 && <p className="text-xs text-gray-500 dark:text-gray-400">No discos to choose from.</p>}
+    </div>
+    {hint && <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{hint}</p>}
+    {error && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>}
+  </fieldset>
+);
 
 const roleBadgeClass = (role) => {
   if (role === ROLES.SUPERADMIN) return 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300';
@@ -115,7 +163,7 @@ const UserRowActions = ({ user, permissions, actionLoading, onView, onEdit, onRe
 // selectable — per the real API's documented rule that only a SUPERADMIN
 // may create/edit an Admin (or Super Admin) account. An ADMIN using this
 // form can still manage INSTALLER accounts freely.
-const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles }) => {
+const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles, actor = null, discoOptions = [] }) => {
   const isEditingPrivilegedUser = !!user && isPrivilegedRole(user.role);
   const formLocked = isEditingPrivilegedUser && !canAssignPrivilegedRoles;
 
@@ -127,8 +175,14 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
     role: user?.role || ROLES.INSTALLER,
     nin: user?.nin || '',
     password: '',
-    confirmPassword: ''
+    confirmPassword: '',
+    // Editing: the user's current discos. Creating: an ADMIN's own discos all
+    // pre-ticked (§4); a SUPERADMIN starts from none and chooses.
+    discoCodes: user ? userDiscoCodes(user) : (actor?.role === ROLES.SUPERADMIN ? [] : userDiscoCodes(actor)),
   });
+  // Which disco control applies depends on the role being given — a
+  // SUPERADMIN account is never profiled.
+  const discoMode = userDiscoFieldMode({ actor, targetRole: formData.role, editing: !!user });
 
   const [errors, setErrors] = useState({});
   const [showPassword, setShowPassword] = useState(false);
@@ -182,6 +236,12 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
       }
     }
 
+    // An ADMIN choosing among several discos must leave at least one: an
+    // account with none can see and do nothing.
+    if (discoMode === 'own' && formData.discoCodes.length === 0) {
+      newErrors.discoCodes = 'Choose at least one disco.';
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -189,7 +249,7 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (validateForm()) {
-      onSubmit(formData);
+      onSubmit({ ...formData, discoMode });
     }
   };
 
@@ -348,6 +408,25 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
           )}
         </div>
 
+        {discoMode !== 'none' && (
+          <DiscoCheckboxes
+            options={discoOptions}
+            value={formData.discoCodes}
+            onChange={(next) => setFormData({ ...formData, discoCodes: next })}
+            error={errors.discoCodes}
+            hint={discoMode === 'all' && formData.discoCodes.length === 0
+              ? 'Without a disco this person can see and do nothing until one is granted.'
+              : 'They will only see and act on data in these discos.'}
+          />
+        )}
+        {user && discoMode === 'none' && formData.role !== ROLES.SUPERADMIN && (
+          <div className="sm:col-span-2 text-sm">
+            <span className="block font-medium text-gray-700 dark:text-gray-300 mb-1">Discos</span>
+            <DiscoChips user={user} />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Only a Super Administrator can change which discos a user works in.</p>
+          </div>
+        )}
+
         {/* Password fields — required by the real UserCreate schema
             (minLength 6), only collected when creating a new user. There
             is no password field on UserUpdate, so editing never touches it. */}
@@ -452,6 +531,9 @@ const UserForm = ({ user, onSubmit, onCancel, loading, canAssignPrivilegedRoles 
 // Main Component
 function UserManagement() {
   const permissions = usePermissions();
+  // The discos this actor may grant: every disco for a SUPERADMIN, an ADMIN's
+  // own otherwise. Only the create/edit form uses it.
+  const { discos: discoOptions } = useDiscoOptions();
   
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -554,6 +636,11 @@ function UserManagement() {
         nin: userData.nin,
         role,
       };
+      // POST /users `discoCodes` (2026-10-05): sent from a SUPERADMIN screen
+      // always, from an ADMIN with several discos as the ticked subset, and
+      // omitted otherwise (the ADMIN's own discos are then applied server-side).
+      const discoCodes = createDiscoCodes({ mode: userData.discoMode, selected: userData.discoCodes || [] });
+      if (discoCodes !== undefined) payload.discoCodes = discoCodes;
       if (import.meta.env.DEV) {
         console.log('[UserManagement] Creating user:', payload.email);
       }
@@ -611,7 +698,12 @@ function UserManagement() {
       changed('email', userData.email);
       if (role !== String(editingUser.role ?? '').toUpperCase()) payload.role = role;
 
-      if (Object.keys(payload).length === 0) {
+      // Discos are changed through their own endpoint (PUT /users/:id/discos,
+      // SUPERADMIN only), which replaces the whole set.
+      const nextDiscos = userData.discoMode === 'all' ? (userData.discoCodes || []) : null;
+      const discosChanged = nextDiscos !== null && !sameDiscoSet(nextDiscos, userDiscoCodes(editingUser));
+
+      if (Object.keys(payload).length === 0 && !discosChanged) {
         setShowForm(false);
         setEditingUser(null);
         setNotice('No changes to save.');
@@ -626,10 +718,18 @@ function UserManagement() {
       const targetId = userIdOf(editingUser);
       if (!targetId) throw new Error(MISSING_USER_ID_MESSAGE);
 
-      assertApiSuccess(
-        await jedApi.updateUser(targetId, payload),
-        'The server did not confirm the update.'
-      );
+      if (Object.keys(payload).length > 0) {
+        assertApiSuccess(
+          await jedApi.updateUser(targetId, payload),
+          'The server did not confirm the update.'
+        );
+      }
+      if (discosChanged) {
+        assertApiSuccess(
+          await jedApi.updateUserDiscos(targetId, nextDiscos),
+          "The server did not confirm the change to this user's discos."
+        );
+      }
 
       setShowForm(false);
       setEditingUser(null);
@@ -944,6 +1044,8 @@ function UserManagement() {
                 }}
                 loading={!!actionLoading}
                 canAssignPrivilegedRoles={permissions.isSuperAdmin}
+                actor={permissions.user}
+                discoOptions={discoOptions}
               />
             </div>
           </div>
@@ -1088,6 +1190,7 @@ function UserManagement() {
                     {user?.isActive !== false ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
                     {user?.isActive !== false ? 'Active' : 'Inactive'}
                   </span>
+                  <DiscoChips user={user} />
                 </div>
                 <UserRowActions
                   user={user}
@@ -1111,6 +1214,9 @@ function UserManagement() {
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                     Role
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                    Discos
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                     Status
@@ -1148,6 +1254,9 @@ function UserManagement() {
                         <Shield className="w-3 h-3" />
                         {getRoleMetadata(user?.role).displayName || user?.role || 'Unknown'}
                       </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <DiscoChips user={user} />
                     </td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${

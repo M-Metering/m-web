@@ -51,7 +51,7 @@ describe('phaseCapacity / canDispatchPhase', () => {
   });
 
   it('reads a meter type the installer has no jobs for as all zeroes', () => {
-    expect(phaseCapacity(capacity, 'SOMETHING ELSE')).toEqual({ required: 0, assigned: 0, remaining: 0 });
+    expect(phaseCapacity(capacity, 'SOMETHING ELSE')).toMatchObject({ required: 0, assigned: 0, remaining: 0 });
   });
 
   it('closes a meter type whose installations are all covered, and leaves the other open', () => {
@@ -298,5 +298,40 @@ describe('Super Admin assignment privileges (enforce: false)', () => {
     expect(result.alreadyHeld).toHaveLength(2);
     expect(result.requested).toBe(0);
     expect(result.allowed).toBe(false);
+  });
+});
+
+describe('jobs with no meter type (PHEDC) take either type', () => {
+  const job = (meterType) => ({ status: 'ASSIGNED', meterType });
+  const held = (phaseType) => ({ assignmentStatus: 'ASSIGNED', phaseType, meterNumber: String(Math.random()) });
+
+  it('opens both types for an installer holding only untyped jobs', () => {
+    const cap = computeMeterCapacity({ openJobs: [job(null), job(null)] });
+    expect(canDispatchPhase(cap, 'SINGLE PHASE')).toBe(true);
+    expect(canDispatchPhase(cap, 'THREE PHASE')).toBe(true);
+    expect(phaseCapacity(cap, 'THREE PHASE').remaining).toBe(2);
+  });
+
+  it('never fills one untyped job twice: the total is still the cap', () => {
+    const cap = computeMeterCapacity({ openJobs: [job(null)] });
+    const phaseBySerial = new Map([['A', 'SINGLE PHASE'], ['B', 'THREE PHASE']]);
+    expect(evaluateMeterDispatch(cap, ['A'], { phaseBySerial }).allowed).toBe(true);
+    expect(evaluateMeterDispatch(cap, ['A', 'B'], { phaseBySerial }).allowed).toBe(false);
+  });
+
+  it('typed meters held beyond their own jobs use up the shared capacity first', () => {
+    const cap = computeMeterCapacity({
+      openJobs: [job('THREE PHASE'), job(null)],
+      heldMeters: [held('THREE PHASE'), held('THREE PHASE')],
+    });
+    expect(cap.flexible.free).toBe(0);
+    expect(canDispatchPhase(cap, 'SINGLE PHASE')).toBe(false);
+  });
+
+  it('keeps typed capacity independent when there are no untyped jobs', () => {
+    const cap = computeMeterCapacity({ openJobs: [job('THREE PHASE')] });
+    expect(canDispatchPhase(cap, 'SINGLE PHASE')).toBe(false);
+    expect(evaluateMeterDispatch(cap, ['A'], { phaseBySerial: new Map([['A', 'SINGLE PHASE']]) }).message)
+      .toBe('No pending Single Phase installation is assigned to this installer.');
   });
 });

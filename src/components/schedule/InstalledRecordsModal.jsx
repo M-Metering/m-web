@@ -9,107 +9,24 @@
 // through the export's own field definitions). Every field shown is a real
 // API field; a field the records don't carry is left out, never filled in.
 //
-// A row opens its details grouped as Customer, Installer, Installation, Meter,
-// Seal, Location, Disco and Installation picture. Full-screen below `sm`, a
+// A row opens its details through InstallationDetails — the same rendering as
+// an installed meter card's modal: Meter, Customer, Installation, picture. Full-screen below `sm`, a
 // large dialog above; no table, so nothing scrolls sideways on a phone.
 // A Super Admin can unassign an installed meter from a record
 // (RevertInstallationModal); saving re-reads everything via refreshSignal.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Search, ChevronDown, ChevronUp, Undo2, Wrench, MapPin, Image as ImageIcon } from 'lucide-react';
+import { X, Search, ChevronDown, ChevronUp, Undo2, Wrench } from 'lucide-react';
 import { useInstalledMeters } from '../../hooks/useInstalledMeters';
 import RevertInstallationModal from '../installations/RevertInstallationModal';
 import { revertTargetOf, revertBlockReason } from '../../utils/installationRevert';
-import { formatDateTime, formatPlainDate } from '../../utils/date';
+import { formatPlainDate } from '../../utils/date';
 import { formatPhaseLabel } from '../../utils/installationScope';
 import { filterInstallationDetails } from '../../utils/completedInstallationsReport';
-import { meterSerial, meterAvailability } from '../../utils/meterInventory';
-import { meterMakeOf, meterModelOf } from '../../utils/meterDisplay';
+import { meterSerial } from '../../utils/meterInventory';
+import { InstallationDetails, MissingRecordNote } from './InstallationDetails';
 
 const PAGE = 25;
 const n = (v) => Number(v).toLocaleString();
-const present = (v) => v !== null && v !== undefined && v !== false && String(v).trim() !== '';
-
-function Section({ title, rows }) {
-  const shown = rows.filter(([, value]) => present(value));
-  if (shown.length === 0) return null;
-  return (
-    <section className="min-w-0">
-      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">{title}</h4>
-      <dl className="grid grid-cols-1 gap-0.5 text-xs">
-        {shown.map(([label, value]) => (
-          <div key={label} className="flex gap-2 min-w-0">
-            <dt className="text-gray-500 dark:text-gray-400 shrink-0 w-24">{label}</dt>
-            <dd className="text-gray-900 dark:text-white min-w-0 break-words">{value}</dd>
-          </div>
-        ))}
-      </dl>
-    </section>
-  );
-}
-
-function InstalledDetails({ meter, record, showPhone, showPayment }) {
-  const r = record || {};
-  const hasGps = present(r.latitude) && present(r.longitude);
-  const phase = meter?.phaseType || r.meterType;
-  const mono = (v) => (present(v) ? <span className="font-mono break-all">{v}</span> : null);
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
-      <Section title="Customer" rows={[
-        ['Name', r.customerName],
-        ['Account', mono(r.accountNumber)],
-        ['Address', r.customerAddress],
-        ['Area / region', [r.area, r.region].filter(Boolean).join(', ')],
-        ['Feeder', [r.feederName, r.transformerName && `Transformer ${r.transformerName}`].filter(Boolean).join(' · ')],
-        ['Phone', showPhone ? r.customerPhone : null],
-      ]} />
-      <Section title="Installer" rows={[
-        ['Name', r.installerName],
-        ['Installer ID', mono(r.installerId)],
-      ]} />
-      <Section title="Installation" rows={[
-        ['Status', r.status],
-        ['Requested', r.requestDate ? formatDateTime(r.requestDate) : null],
-        ['Paid', showPayment && r.datePaid ? formatDateTime(r.datePaid) : null],
-        ['Assigned', r.assignedAt ? formatDateTime(r.assignedAt) : null],
-        ['Installed', r.installationDate ? formatPlainDate(r.installationDate) : null],
-        ['Completed', r.completedAt ? formatDateTime(r.completedAt) : null],
-        ['Position', r.installationPosition],
-        ['Notes', r.notes],
-      ]} />
-      <Section title="Meter" rows={[
-        ['Number', mono(meterSerial(meter))],
-        ['Type', phase ? formatPhaseLabel(phase) : null],
-        ['Status', meterAvailability(meter).label],
-        ['Make', meterMakeOf(meter)],
-        ['Model', meterModelOf(meter)],
-      ]} />
-      <Section title="Seal" rows={[['Seal number', mono(r.sealNumber)]]} />
-      <Section title="Location" rows={[
-        ['GPS', hasGps ? (
-          <a href={`https://www.google.com/maps?q=${r.latitude},${r.longitude}`} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-brand-700 dark:text-brand-400 hover:underline">
-            <MapPin className="w-3 h-3" /> {Number(r.latitude).toFixed(6)}, {Number(r.longitude).toFixed(6)}
-          </a>
-        ) : null],
-      ]} />
-      <Section title="Disco" rows={[['Disco', r.disco], ['Supervisor', r.discoSupervisor]]} />
-      {present(r.photoUrl) && (
-        <section className="sm:col-span-2">
-          <h4 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Installation picture</h4>
-          {/* A plain <img> of the public link — never crossOrigin (CLAUDE.md, uploads). */}
-          <a href={r.photoUrl} target="_blank" rel="noopener noreferrer" className="inline-block">
-            <img src={r.photoUrl} alt={`Installation of meter ${meterSerial(meter)}`} loading="lazy"
-              className="max-h-48 max-w-full rounded-lg border border-gray-200 dark:border-gray-700 object-contain bg-gray-100 dark:bg-gray-700" />
-          </a>
-          <a href={r.photoUrl} target="_blank" rel="noopener noreferrer"
-            className="mt-1 flex items-center gap-1 text-xs text-brand-700 dark:text-brand-400 hover:underline">
-            <ImageIcon className="w-3 h-3" /> View picture
-          </a>
-        </section>
-      )}
-    </div>
-  );
-}
 
 /**
  * @param {{ isOpen: boolean, onClose: () => void,
@@ -247,14 +164,8 @@ export default function InstalledRecordsModal({ isOpen, onClose, lookup, cardCou
                       {open && (
                         <div className="px-3 sm:px-4 pb-4 space-y-3">
                           <div className="p-3 rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700">
-                            <InstalledDetails meter={meter} record={record} showPhone={showPhone} showPayment={showPayment} />
-                            {!record && (
-                              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                                {records?.complete === false
-                                  ? 'Not every installation record could be loaded, so this meter’s may be among those missing.'
-                                  : 'No completed installation reports this meter number, so there are no customer or installation details to show.'}
-                              </p>
-                            )}
+                            <InstallationDetails meter={meter} record={record} showPhone={showPhone} showPayment={showPayment} />
+                            {!record && <MissingRecordNote complete={records?.complete} className="mt-2" />}
                           </div>
                           {target && (
                             <button type="button" onClick={() => setRevertTarget(target)}

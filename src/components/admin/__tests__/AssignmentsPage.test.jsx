@@ -149,7 +149,9 @@ describe('AssignmentsPage — meter serial picker', () => {
     const row = await within(meterList()).findByText('0239110007001');
     // No status filter on the search: the rule is applied client-side, so a
     // meter isn't lost to an exact-match filter on the server.
-    expect(jedApi.searchMeters).toHaveBeenCalledWith({ q: '0239110007001', limit: 50 });
+    // Scoped to the batch's disco: a meter can only be dispatched for its own.
+    expect(jedApi.searchMeters).toHaveBeenCalledWith(expect.objectContaining({ q: '0239110007001', limit: 50 }));
+    expect(jedApi.searchMeters.mock.calls[0][0].status).toBeUndefined();
     // "Three Phase" is the same type as "THREE PHASE" everywhere downstream.
     expect(row.closest('label').textContent).toContain('THREE PHASE');
   });

@@ -21,7 +21,9 @@ import { formatPhaseLabel } from '../../utils/installationScope';
 import { METER_PHASE_TYPES } from '../../utils/installationStatus';
 import { phaseCapacity } from '../../utils/meterCapacity';
 
-const phaseLabel = (key) => (key === 'UNSPECIFIED' ? 'Phase not recorded' : formatPhaseLabel(key));
+// A job with no meter type (e.g. PHEDC) may take either type; its free
+// capacity is already included in each type's Available figure.
+const phaseLabel = (key) => (key === 'UNSPECIFIED' ? 'Either type (not set on the job)' : formatPhaseLabel(key));
 
 function Figure({ label, value }) {
   return (

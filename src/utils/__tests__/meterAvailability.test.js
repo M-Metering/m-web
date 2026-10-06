@@ -30,6 +30,16 @@ describe('meterAvailability', () => {
     expect(meterAvailability(available({ status: 'faulty' })).key).toBe('FAULTY');
   });
 
+  it('decides Installed from status, never from installedAt (a reverted meter is back in stock)', () => {
+    const reverted = available({ installedAt: '2026-10-01T10:00:00Z', installationRequestId: 70, assignmentStatus: 'UNASSIGNED' });
+    expect(meterAvailability(reverted).key).toBe('AVAILABLE');
+    expect(isAssignableMeter(reverted)).toBe(true);
+    // The PDF's table: a returned meter is in stock; FAULTY/RETIRED win over assignment.
+    expect(meterAvailability(available({ assignmentStatus: 'RETURNED' })).key).toBe('AVAILABLE');
+    expect(meterAvailability(available({ status: 'RETIRED', assignmentStatus: 'LOST' })).key).toBe('RETIRED');
+    expect(meterAvailability(available({ status: 'INSTALLED', assignmentStatus: 'UNASSIGNED' })).key).toBe('INSTALLED');
+  });
+
   it('is case-insensitive about the stock status', () => {
     expect(meterAvailability(available({ status: 'Available' })).key).toBe('AVAILABLE');
     expect(isAssignableMeter(available({ status: 'available' }))).toBe(true);

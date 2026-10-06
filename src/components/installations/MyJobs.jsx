@@ -40,6 +40,7 @@ import {
 } from '../../utils/installerJobFilters';
 import { collectSealKeys } from '../../utils/sealNumber';
 import { meterSummaryLine } from '../../utils/meterDisplay';
+import { importExtrasOf } from '../../utils/discoImportMapping';
 import {
   splitAssignedJobs, matchesInstallerSearch, assignedJobKey,
 } from '../../utils/installerQueue';
@@ -147,7 +148,8 @@ function JobCard({ job, onStart, onReport, onFail, busy }) {
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
             Acct {job.accountNumber}
-            {job.meterType ? ` · ${job.meterType}` : ''}
+            {/* PHEDC jobs carry no meter type until reported: "—", never a guess. */}
+            {` · ${job.meterType || 'Meter type —'}`}
             {job.discoCode ? ` · ${job.discoCode}` : ''}
           </p>
         </div>
@@ -168,9 +170,11 @@ function JobCard({ job, onStart, onReport, onFail, busy }) {
       <div className="pt-1">
         <DetailRow label="Area" value={[job.area, job.region].filter(Boolean).join(' · ') || null} />
         <DetailRow label="Feeder" value={job.feederName} />
-        <DetailRow label="Transformer" value={job.transformerName || job.transformerCode} />
+        <DetailRow label="Transformer" value={[job.transformerName, job.transformerCode && `ID ${job.transformerCode}`].filter(Boolean).join(' · ') || null} />
         <DetailRow label="Position" value={job.installationPosition} />
-        <DetailRow label="Phone" value={job.customerPhone} />
+        {/* PHEDC jobs have no customer phone: shown as "—", never required. */}
+        <DetailRow label="Phone" value={job.customerPhone || '—'} />
+        {importExtrasOf(job).map((e) => <DetailRow key={e.label} label={e.label} value={e.value} />)}
       </div>
 
       {/* Once reported, show what was recorded rather than the action buttons */}

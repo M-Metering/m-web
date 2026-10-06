@@ -23,6 +23,12 @@
 // evaluateMeterDispatch reports which meter type blocked it and how many of
 // that type are still needed, so the message can say so exactly.
 //
+// A JOB WITH NO METER TYPE (PHEDC, 2026-10-05: its sheet has no phase column —
+// the type is filled in from the meter at report time) can take EITHER type.
+// Its capacity is shared: it counts toward Single Phase and Three Phase alike
+// (`flexible`), after covering any meters held beyond the typed jobs. The
+// overall total stays the backstop, so one such job is never filled twice.
+//
 // WHO IS CAPPED. This whole requirement — an installation must exist first,
 // and of the matching meter type — is an ADMIN rule. A Super Admin assigns
 // installations and meters independently, so its dispatches pass `enforce:
@@ -58,6 +64,18 @@ export function computeMeterCapacity({ openJobs = [], heldMeters = [] } = {}) {
   meters.forEach((m) => { bucket(m.phaseType).assigned += 1; });
   Object.values(byPhase).forEach((b) => { b.remaining = Math.max(b.required - b.assigned, 0); });
 
+  // Untyped jobs: whatever typed meters already overflow their own jobs, and
+  // any held meter of unknown type, fill these first; the rest is free for
+  // either type.
+  const untyped = byPhase[UNSPECIFIED] || { required: 0, assigned: 0 };
+  const typedOverflow = Object.entries(byPhase)
+    .filter(([key]) => key !== UNSPECIFIED)
+    .reduce((sum, [, b]) => sum + Math.max(b.assigned - b.required, 0), 0);
+  const flexible = {
+    required: untyped.required,
+    free: Math.max(untyped.required - untyped.assigned - typedOverflow, 0),
+  };
+
   const required = jobs.length;
   const assigned = meters.length;
   return {
@@ -66,16 +84,30 @@ export function computeMeterCapacity({ openJobs = [], heldMeters = [] } = {}) {
     remaining: Math.max(required - assigned, 0),
     surplus: Math.max(assigned - required, 0),
     byPhase,
+    flexible,
     heldSerials: meters.map((m) => String(m.meterNumber ?? '')).filter(Boolean),
   };
 }
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** The per-meter-type figures, with a zeroed default for a type with no jobs. */
+/**
+ * The per-meter-type figures, with a zeroed default for a type with no jobs.
+ * For a named type, `remaining` includes the free capacity of jobs with no
+ * meter type (`eitherType`), which either type may fill; `required` stays
+ * the jobs of exactly this type, so a summary table never counts a job twice.
+ */
 export function phaseCapacity(capacity, phase) {
   const key = normalizePhase(phase) || UNSPECIFIED;
-  return capacity?.byPhase?.[key] || { required: 0, assigned: 0, remaining: 0 };
+  const own = capacity?.byPhase?.[key] || { required: 0, assigned: 0, remaining: 0 };
+  if (key === UNSPECIFIED) return own;
+  const eitherType = capacity?.flexible?.free || 0;
+  return {
+    ...own,
+    remaining: own.remaining + eitherType,
+    eitherType,
+    eitherTypeRequired: capacity?.flexible?.required || 0,
+  };
 }
 
 /**
@@ -192,7 +224,7 @@ export function evaluateMeterDispatch(capacity, serials = [], { phaseBySerial, e
       if (count > bucket.remaining) {
         phase = key;
         phaseRemaining = bucket.remaining;
-        phaseRequired = bucket.required;
+        phaseRequired = bucket.required + (bucket.eitherTypeRequired || 0);
         break;
       }
     }

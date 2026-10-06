@@ -125,4 +125,15 @@ export function buildReportPayload(form) {
   return payload;
 }
 
+/**
+ * The backend refuses a report whose meter is from another disco's stock
+ * (400, METER_WRONG_DISCO, 2026-10-05). Matched on the raw error text, the
+ * way isDuplicateSealError is, so the form can put it on the meter field.
+ */
+export const WRONG_DISCO_METER_MESSAGE =
+  "That meter belongs to a different disco's stock than this installation. Choose a meter issued for this job's disco.";
+export function isWrongDiscoMeterError(err) {
+  return /METER_WRONG_DISCO|different disco'?s stock/i.test(String(err?.message ?? err ?? ''));
+}
+
 export { MAX_NOTES };

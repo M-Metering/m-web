@@ -5,6 +5,12 @@
 //
 // The id is a UUID as of the 2026-09-21 migration — it is passed through as an
 // opaque string and must never be coerced to a number.
+//
+// `discoCode` (2026-10-05): only installers profiled for that disco are
+// listed (GET /users?role=INSTALLER&discoCode=X — the server filters). The API
+// refuses a dispatch to anyone else ("Ada Obi isn't profiled for PHEDC"), so
+// offering them would only produce that refusal. A selection that is not in
+// the new list is cleared.
 import { useState, useEffect } from 'react';
 import jedApi from '../services/api';
 import { ROLES } from '../auth/permissions';
@@ -14,7 +20,7 @@ import { getErrorMessage } from '../../utils/errorMessage';
 const displayName = (u) =>
   [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || u.name || u.phone || u.email || u.id;
 
-function InstallerSelect({ id = 'installer-select', value, onChange, disabled, error, required }) {
+function InstallerSelect({ id = 'installer-select', value, onChange, disabled, error, required, discoCode = null }) {
   const [installers, setInstallers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -25,7 +31,10 @@ function InstallerSelect({ id = 'installer-select', value, onChange, disabled, e
       setLoading(true);
       setLoadError(null);
       try {
-        const list = await fetchAllPages((params) => jedApi.getUsers(params), { role: ROLES.INSTALLER });
+        const list = await fetchAllPages(
+          (params) => jedApi.getUsers(params),
+          discoCode ? { role: ROLES.INSTALLER, discoCode } : { role: ROLES.INSTALLER }
+        );
         if (!cancelled) setInstallers(list);
       } catch (err) {
         console.error('[InstallerSelect] Failed to load installers:', err);
@@ -35,7 +44,12 @@ function InstallerSelect({ id = 'installer-select', value, onChange, disabled, e
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [discoCode]);
+
+  // The chosen installer isn't profiled for the newly selected disco.
+  useEffect(() => {
+    if (!loading && value && !installers.some((u) => u.id === value)) onChange('');
+  }, [loading, installers, value, onChange]);
 
   return (
     <div>
@@ -58,7 +72,9 @@ function InstallerSelect({ id = 'installer-select', value, onChange, disabled, e
       {loadError && <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">{loadError}</p>}
       {!loading && !loadError && installers.length === 0 && (
         <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-          No installer accounts exist yet — create one under Users first.
+          {discoCode
+            ? `No installer is profiled for ${discoCode} yet. A Super Admin can add the disco to an installer under Users.`
+            : 'No installer accounts exist yet — create one under Users first.'}
         </p>
       )}
       {error && <p role="alert" className="text-xs text-red-600 dark:text-red-400 mt-1">{error}</p>}

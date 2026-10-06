@@ -323,8 +323,9 @@ function AdminDashboard() {
       if (!showMoney) {
         // A role without finance access (Supervisor) can't read the revenue
         // records, so its Installations Completed chart counts the completed
-        // installation records themselves, by installation date. Without
-        // this branch the chart sat on "Loading" forever for a Supervisor.
+        // installation records themselves — dated exactly as the finance
+        // API's `revenueAt` (an imported job's report time, not its typed
+        // installationDate), so it matches the Admin chart day for day.
         const { rows, truncated } = await loadCompletedInstallationDays();
         setTrendTruncated(truncated ? { shown: rows.length, total: null } : null);
         setInstallationsSeries(buildDailySeries(rows, { dateField: 'completedOn', aggregate: 'count', days }));
