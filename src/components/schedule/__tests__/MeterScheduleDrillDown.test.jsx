@@ -25,6 +25,7 @@ vi.mock('../../services/api', () => ({
     getMeterByNumber: vi.fn(),
     searchMeters: vi.fn(),
     getInstallations: vi.fn(),
+    getDiscos: vi.fn(),
     getAllCustomerRequests: vi.fn(),
     getAssignmentBatches: vi.fn(),
     getAssignmentBatch: vi.fn(),
@@ -48,6 +49,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   permissions = { canManageSchedule: true, canViewAssignments: true, canManageAssignments: false, isSuperAdmin: false, isAdmin: true };
   jedApi.getMeterStatistics.mockResolvedValue({ success: true, data: { totalMeters: 3, available: 2, installed: 1, faulty: 0, singlePhase: 1, threePhase: 2 } });
+  jedApi.getDiscos.mockResolvedValue(page([]));
   jedApi.getMeters.mockImplementation(async ({ status, phaseType }) => page(METERS.filter((m) =>
     (!status || m.status === status) && (!phaseType || m.phaseType === phaseType))));
   jedApi.getInstallations.mockImplementation(async ({ status }) => page(status === 'INSTALLED' ? [{

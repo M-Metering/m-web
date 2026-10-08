@@ -44,6 +44,7 @@ import InstalledRecordsModal from './InstalledRecordsModal';
 import InstallationDetailsModal from './InstallationDetails';
 import UnassignMeterAction from '../installations/UnassignMeterAction';
 import { unassignActionFor } from '../../utils/meterUnassign';
+import { useDiscoOptions } from '../../hooks/useDiscoOptions';
 
 // Constants for better maintainability
 const METER_STATUS_OPTIONS = [
@@ -65,27 +66,26 @@ const TABS = [
   { id: 'query', label: 'Meter Query' }
 ];
 
-// The real GET /meters (and GET /meters/export) endpoints only document
-// page/limit/status/phaseType as query parameters — confirmed against the
-// live OpenAPI spec, no search/query parameter exists. Sending a `search`
-// param (as this file previously did) is silently ignored server-side, so
-// the "search" box was really just re-displaying whatever page 1 of the
-// unfiltered/status-filtered list happened to contain — not a real search.
+// The Per-Disco API integration uses page/limit/status/phaseType/discoCode
+// on GET /meters and GET /meters/search. GET /meters/export supports
+// status/phaseType only. Sending a `search` param (as this file previously
+// did) is silently ignored, so the "search" box was really just re-displaying
+// whatever page 1 of the list happened to contain — not a real search.
 //
 // Fix: when a search term is active, fetch every page matching the current
-// status/phaseType filters (server-side, since those ARE supported) via
+// status/phaseType/discoCode filters (server-side, since those ARE supported) via
 // fetchAllMeters below, filter client-side against the fields the real
 // Meter schema actually has, then paginate the filtered result ourselves.
 // Same safety-capped full-fetch pattern already used by AdminReports.jsx's
 // fetchAllRequests, for the same reason: an accurate search needs the
 // complete matching dataset, not just one page of it.
 //
-// The real Meter schema is exactly `id, meterNumber, simNumber,
-// manufacturedDate, meterMake, model, phaseType, sgcNumber, status,
-// uploadedAt, installedAt` — there is no accountNumber or customer-name
-// field on a meter record (a meter isn't linked back to a customer/account
-// until installation, via a separate JedCustomerRequest — see
-// API_GAP_REPORT.md), so "Account Number"/"Customer Name" search is not
+// Per-Disco meter records carry `discoCode`; the other Meter fields are
+// `id, meterNumber, simNumber, manufacturedDate, meterMake, model, phaseType,
+// sgcNumber, status, uploadedAt, installedAt`. There is no accountNumber or
+// customer-name field on a meter record (a meter isn't linked back to a
+// customer/account until installation, via a separate JedCustomerRequest —
+// see API_GAP_REPORT.md), so "Account Number"/"Customer Name" search is not
 // possible here without fabricating a relationship the API doesn't have.
 const MATCHABLE_METER_FIELDS = ['meterNumber', 'simNumber', 'meterMake', 'model', 'sgcNumber'];
 
@@ -102,10 +102,11 @@ const FULL_METER_FETCH_MAX_PAGES = 100;
 // so the operator narrows the term instead of scrolling.
 const METER_SEARCH_LIMIT = 100;
 
-const matchesActiveFilters = (meter, { status, phaseType } = {}) => {
+const matchesActiveFilters = (meter, { status, phaseType, discoCode } = {}) => {
   if (status && status !== 'ALL' && normalizeStatus(meter?.status) !== normalizeStatus(status)) return false;
   // Canonical phase, so a meter stored as '3 Phase' still matches THREE PHASE.
   if (phaseType && phaseType !== 'ALL' && normalizePhase(meter?.phaseType) !== normalizePhase(phaseType)) return false;
+  if (discoCode && discoCode !== 'ALL' && meter?.discoCode !== discoCode) return false;
   return true;
 };
 
@@ -115,10 +116,11 @@ const isNotFoundError = (err) => String(err?.message || '').startsWith('NOT_FOUN
  * Every meter matching the current server-side filters, paged. This is the
  * FALLBACK path — see searchMeters. Reports whether the cap cut it short.
  */
-async function fetchAllMeters({ status, phaseType } = {}) {
+async function fetchAllMeters({ status, phaseType, discoCode } = {}) {
   const params = {};
   if (status && status !== 'ALL') params.status = status;
   if (phaseType && phaseType !== 'ALL') params.phaseType = phaseType;
+  if (discoCode && discoCode !== 'ALL') params.discoCode = discoCode;
   // GET /meters omits `hasNext`, so a full page means "there may be more".
   return fetchAllPagesDetailed(
     (p) => JEDApiService.getMeters(p),
@@ -176,6 +178,7 @@ async function searchMeters(term, filters) {
       const params = { q: term, limit: METER_SEARCH_LIMIT };
       if (filters?.status && filters.status !== 'ALL') params.status = filters.status;
       if (filters?.phaseType && filters.phaseType !== 'ALL') params.phaseType = filters.phaseType;
+      if (filters?.discoCode && filters.discoCode !== 'ALL') params.discoCode = filters.discoCode;
       const response = await JEDApiService.searchMeters(params);
       // A search that legitimately matches nothing returns an envelope with an
       // empty list — that is a real "no matches" and must NOT trigger a
@@ -241,6 +244,7 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
   const [filters, setFilters] = useState({
     status: 'ALL',
     phaseType: 'ALL',
+    discoCode: 'ALL',
     searchTerm: '',
     ...initialFilters
   });
@@ -256,7 +260,7 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
   // pagination) so clicking Next/Prev while a search is active re-slices
   // already-fetched data instead of re-running the full multi-page fetch
   // on every page click. Invalidated automatically whenever the search
-  // term or status/phaseType filters change (the cache key changes too).
+  // term or status/phaseType/discoCode filters change (the cache key changes too).
   const searchCacheRef = useRef({ key: null, matches: [], truncated: false });
 
   const fetchMeters = useCallback(async (page = 1, currentFilters = filters, pageLimit = null) => {
@@ -266,7 +270,7 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
 
     // Search mode: the real API has no search parameter (see the comment
     // above fetchAllMeters), so an active search fetches every
-    // status/phaseType-matching page, filters client-side, and paginates
+    // status/phaseType/discoCode-matching page, filters client-side, and paginates
     // the filtered result itself — entirely separate from the normal
     // single-page server-side path below.
     if (searchTerm) {
@@ -277,7 +281,13 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
         // refreshSignal is part of the key so a mutation elsewhere in the
         // app (e.g. a meter's status changing) invalidates the cache too,
         // not just a changed search term/filter.
-        const cacheKey = JSON.stringify({ searchTerm, status: currentFilters.status, phaseType: currentFilters.phaseType, refreshSignal });
+        const cacheKey = JSON.stringify({
+          searchTerm,
+          status: currentFilters.status,
+          phaseType: currentFilters.phaseType,
+          discoCode: currentFilters.discoCode,
+          refreshSignal,
+        });
         let matches;
         let truncated;
         if (searchCacheRef.current.key === cacheKey) {
@@ -325,6 +335,9 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
 
       if (currentFilters.phaseType !== 'ALL') {
         params.phaseType = currentFilters.phaseType;
+      }
+      if (currentFilters.discoCode !== 'ALL') {
+        params.discoCode = currentFilters.discoCode;
       }
 
       const response = await JEDApiService.getMeters(params);
@@ -398,7 +411,7 @@ const useMeterData = (initialFilters = {}, enabled = true) => {
         params.phaseType = filters.phaseType;
       }
       // No `search` param here — GET /meters/export only documents
-      // status/phaseType (confirmed against the live OpenAPI spec, same as
+      // status/phaseType only (confirmed against the live OpenAPI spec, same as
       // GET /meters above). This export is generated entirely server-side,
       // so an active on-screen search term can't be reflected in it without
       // fetching+filtering client-side and generating the file ourselves —
@@ -918,7 +931,35 @@ const EmptyState = ({ hasFilters, searchTerm, type = 'meters' }) => (
 );
 
 // Filter Controls Component for Meter Inventory
-const MeterFilterControls = ({ filters, onFilterChange, loading, onRefresh, onExport }) => {
+const DiscoFilter = ({ filters, discos, discosLoading, loading, onFilterChange, id }) => {
+  const handleDiscoChange = useCallback((discoCode) => {
+    onFilterChange({ ...filters, discoCode });
+  }, [filters, onFilterChange]);
+
+  return (
+    <div className="flex-1">
+      <label htmlFor={id} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Disco</label>
+      <select
+        id={id}
+        value={filters.discoCode}
+        onChange={(e) => handleDiscoChange(e.target.value)}
+        className="form-input w-full px-3 py-2 text-sm"
+        disabled={loading || discosLoading}
+      >
+        <option value="ALL">All Discos</option>
+        {discos.map((disco) => (
+          <option key={disco.code} value={disco.code}>
+            {disco.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+};
+
+const MeterFilterControls = ({
+  filters, discos, discosLoading, onFilterChange, loading, onRefresh, onExport,
+}) => {
   const [localSearchTerm, setLocalSearchTerm] = useState(filters.searchTerm);
 
   useEffect(() => {
@@ -984,6 +1025,15 @@ const MeterFilterControls = ({ filters, onFilterChange, loading, onRefresh, onEx
               </select>
             </div>
 
+            <DiscoFilter
+              id="meter-disco-1"
+              filters={filters}
+              discos={discos}
+              discosLoading={discosLoading}
+              loading={loading}
+              onFilterChange={onFilterChange}
+            />
+
             <div className="flex-1">
               <label htmlFor="meter-phase-1" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phase Type</label>
               <select
@@ -1031,7 +1081,9 @@ const MeterFilterControls = ({ filters, onFilterChange, loading, onRefresh, onEx
 };
 
 // Advanced Query Controls Component
-const QueryFilterControls = ({ filters, onFilterChange, loading, onRefresh, onExport }) => {
+const QueryFilterControls = ({
+  filters, discos, discosLoading, onFilterChange, loading, onRefresh, onExport,
+}) => {
   const [localSearchTerm, setLocalSearchTerm] = useState(filters.searchTerm);
 
   useEffect(() => {
@@ -1097,6 +1149,15 @@ const QueryFilterControls = ({ filters, onFilterChange, loading, onRefresh, onEx
                 ))}
               </select>
             </div>
+
+            <DiscoFilter
+              id="meter-disco-2"
+              filters={filters}
+              discos={discos}
+              discosLoading={discosLoading}
+              loading={loading}
+              onFilterChange={onFilterChange}
+            />
 
             <div className="flex-1">
               <label htmlFor="meter-phase-2" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phase Type</label>
@@ -1304,7 +1365,10 @@ function deleteConfirmationMessage(meters) {
   return lines.join('\n\n');
 }
 
-const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canExportMeters, onDataChanged, unassignFor = null, onOpenDetails = null }) => {
+const MeterInventory = ({
+  meterInventory, discos, discosLoading, discosError, canDeleteMeters, canAssignMeters,
+  canExportMeters, onDataChanged, unassignFor = null, onOpenDetails = null,
+}) => {
   const { meters, loading, error, pagination, filters, fetchMeters, updateFilters, changePage, exportMeters } = meterInventory;
 
   // Deletion is scoped to what a Super Admin selected, one meter at a time
@@ -1421,17 +1485,19 @@ const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canE
     <div className="space-y-4 sm:space-y-6">
       <MeterFilterControls
         filters={filters}
+        discos={discos}
+        discosLoading={discosLoading}
         onFilterChange={updateFilters}
         loading={loading}
         onRefresh={fetchMeters}
         onExport={canExportMeters ? exportMeters : null}
       />
 
-      {(error || deleteError) && (
+      {(error || deleteError || discosError) && (
         <div role="alert" className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
           <div className="flex items-start gap-2 text-red-800 dark:text-red-300">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span className="text-sm break-words">{error || deleteError}</span>
+            <span className="text-sm break-words">{[error, deleteError, discosError].filter(Boolean).join(' ')}</span>
           </div>
         </div>
       )}
@@ -1578,7 +1644,7 @@ const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canE
 
       {!loading && meters.length === 0 && (
         <EmptyState
-          hasFilters={filters.status !== 'ALL' || filters.phaseType !== 'ALL' || !!filters.searchTerm}
+          hasFilters={filters.status !== 'ALL' || filters.phaseType !== 'ALL' || filters.discoCode !== 'ALL' || !!filters.searchTerm}
           searchTerm={filters.searchTerm}
           type="meters"
         />
@@ -1590,22 +1656,25 @@ const MeterInventory = ({ meterInventory, canDeleteMeters, canAssignMeters, canE
 // Meter Query Component
 const MeterQuery = ({ meterQuery, canExportMeters, unassignFor = null }) => {
   const { meters, loading, error, pagination, filters, fetchMeters, updateFilters, changePage, exportMeters } = meterQuery;
+  const { discos, discosLoading, discosError } = meterQuery;
 
   return (
     <div className="space-y-4 sm:space-y-6">
       <QueryFilterControls
         filters={filters}
+        discos={discos}
+        discosLoading={discosLoading}
         onFilterChange={updateFilters}
         loading={loading}
         onRefresh={fetchMeters}
         onExport={canExportMeters ? exportMeters : null}
       />
 
-      {error && (
+      {(error || discosError) && (
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
           <div className="flex items-center gap-2 text-red-800 dark:text-red-300">
             <AlertCircle className="w-4 h-4" />
-            <span className="text-sm">{error}</span>
+            <span className="text-sm">{[error, discosError].filter(Boolean).join(' ')}</span>
           </div>
         </div>
       )}
@@ -1643,7 +1712,7 @@ const MeterQuery = ({ meterQuery, canExportMeters, unassignFor = null }) => {
         </>
       ) : !loading ? (
         <EmptyState 
-          hasFilters={filters.status !== 'ALL' || filters.phaseType !== 'ALL' || filters.searchTerm} 
+          hasFilters={filters.status !== 'ALL' || filters.phaseType !== 'ALL' || filters.discoCode !== 'ALL' || filters.searchTerm}
           searchTerm={filters.searchTerm}
           type="meters"
         />
@@ -1671,6 +1740,7 @@ function MeterSchedule() {
     canManageAssignments, canViewAssignments, isSuperAdmin, canManageSchedule, isAdmin, canViewPayments, canRevertInstallations,
   } = usePermissions();
   const { notifyDataChanged } = useDataRefresh();
+  const discoOptions = useDiscoOptions();
   const {
     meterStats, loading: statsLoading, error: statsError, refetch: refetchStats,
   } = useMeterStatistics(canManageSchedule);
@@ -1836,6 +1906,9 @@ function MeterSchedule() {
       {activeTab === 'inventory' && (
         <MeterInventory
           meterInventory={{ ...meterInventory, meters: inventoryMeters }}
+          discos={discoOptions.discos}
+          discosLoading={discoOptions.loading}
+          discosError={discoOptions.error}
           canDeleteMeters={isSuperAdmin}
           canAssignMeters={canManageAssignments}
           canExportMeters={canManageSchedule}
@@ -1846,7 +1919,17 @@ function MeterSchedule() {
       )}
 
       {activeTab === 'query' && (
-        <MeterQuery meterQuery={{ ...meterQuery, meters: queryMeters }} canExportMeters={canManageSchedule} unassignFor={unassignFor} />
+        <MeterQuery
+          meterQuery={{
+            ...meterQuery,
+            meters: queryMeters,
+            discos: discoOptions.discos,
+            discosLoading: discoOptions.loading,
+            discosError: discoOptions.error,
+          }}
+          canExportMeters={canManageSchedule}
+          unassignFor={unassignFor}
+        />
       )}
 
       <InstalledRecordsModal

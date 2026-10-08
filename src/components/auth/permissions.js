@@ -180,7 +180,7 @@ const ADMIN_TIER_PERMISSIONS = [
   PERMISSIONS.SETTINGS.VIEW,
   PERMISSIONS.SETTINGS.MANAGE,
 
-  // Uploads - Full access
+  // File upload capabilities - the meter workbook workflow is inside Imports.
   PERMISSIONS.UPLOADS.EXCEL,
   PERMISSIONS.UPLOADS.FILES,
 
@@ -262,16 +262,15 @@ const ROLE_PERMISSIONS = Object.freeze({
 
     // Meter inventory. SCHEDULE.MANAGE gates exactly the statistics call and
     // the server-side export on Meter Schedule. Deleting a meter stays
-    // SUPERADMIN-only at the point of use. UPLOADS.EXCEL (the /uploads page,
-    // POST /meters/upload) was withdrawn on 2026-10-05: the API now answers a
-    // SUPERVISOR's upload with 403 (Per-Disco Access update, §6).
+    // SUPERADMIN-only at the point of use. Direct meter workbook upload remains
+    // unavailable to Supervisors (POST /meters/upload returns 403).
     PERMISSIONS.SCHEDULE.VIEW,
     PERMISSIONS.SCHEDULE.MANAGE,
 
     // Imports: VIEW only since 2026-10-05 — import history, row errors and
-    // blank templates. IMPORTS.RUN (uploading a sheet, undoing an import) was
-    // withdrawn: POST /imports/:discoCode/*, POST /meters/upload and
-    // POST /imports/:id/undo are 403 for this role (§6). Exports stay.
+    // blank templates. IMPORTS.RUN (importing/undoing an import batch) and the
+    // direct meter workbook upload are unavailable; the API returns 403 for
+    // POST /imports/:discoCode/*, POST /meters/upload and POST /imports/:id/undo.
     PERMISSIONS.IMPORTS.VIEW,
 
     // The installer roster, read-only — this is also what makes the "assign
@@ -304,14 +303,9 @@ const ROLE_PERMISSIONS = Object.freeze({
     // canViewSchedule permission, so removing it here blocks direct-URL
     // access too.)
 
-    // Uploads (bulk Excel meter registration) is deliberately NOT granted to
-    // Installer either (removed 2026-09-20 — it used to hold
-    // UPLOADS.EXCEL). Same mechanism as Meter Schedule above: the sidebar
-    // item, the /uploads route guard (App.jsx) and ExcelUpload's own
-    // component-level check all read this one permission, so omitting it
-    // here removes the tab, blocks direct-URL access and blocks rendering
-    // the page in one place. Client-side only — see Security.md for the
-    // backend-enforcement caveat on POST /meters/upload and /uploads/*.
+    // Direct meter workbook upload is deliberately not granted to Installer
+    // either. Its Imports sub-workflow checks UPLOADS.EXCEL, so omitting this
+    // permission also blocks the action for this role.
 
     // Complaint form (report a problem that blocks/delays an installation).
     // Installer-only by design: a complaint must be attributable to the
@@ -333,7 +327,6 @@ const PAGE_ACCESS = Object.freeze({
   schedule: [PERMISSIONS.SCHEDULE.VIEW],
   users: [PERMISSIONS.USERS.VIEW],
   reports: [PERMISSIONS.REPORTS.VIEW],
-  uploads: [PERMISSIONS.UPLOADS.EXCEL],
   settings: [PERMISSIONS.SETTINGS.VIEW],
   // Admin-only by omission from the installer Set above — same pattern
   // already used for users/reports/settings, no special-casing needed.

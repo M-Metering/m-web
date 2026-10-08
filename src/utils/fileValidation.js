@@ -1,5 +1,5 @@
 // src/utils/fileValidation.js
-// Client-side pre-checks for a user-selected upload file (ExcelUpload.jsx,
+// Client-side pre-checks for a user-selected upload file (MeterWorkbookUpload.jsx,
 // BulkConfirmPaymentsTab.jsx). These are a UX convenience only — failing
 // fast in the browser instead of after a slow upload — never the actual
 // security boundary. A modified/scripted request can always skip the

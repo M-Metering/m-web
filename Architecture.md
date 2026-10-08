@@ -23,8 +23,8 @@ There is no ORM, no server-side rendering, no edge functions — the web server 
   - `/installations/:accountNumber` → `InstallationDetail` (any role with view access) — the JED request detail/completion view
   - `/schedule` → `MeterSchedule` (`canViewSchedule`) — plain summary cards (Installed opens `InstalledRecordsModal`; an installed meter card opens `InstallationDetailsModal`), inventory and query tabs, assign/unassign/delete
   - `/users` → `UserManagement` (`canViewUsers`; Supervisor read-only)
-  - `/uploads` → `ExcelUpload` (`canUploadExcel`: admin tier only since 2026-10-05 — Supervisor and Installer get 403 on `POST /meters/upload`); sends `discoCode` with the file
-  - `/imports` → `ImportsPage` (`canViewImports`) — history and templates for every role that reaches it; import and undo need `canRunImports` (Supervisor is view-only since 2026-10-05)
+  - `/uploads` → redirect to `/imports` for legacy bookmarks; the general-purpose `/uploads` API remains file storage, unrelated to spreadsheet ingestion
+  - `/imports` → `ImportsPage` (`canViewImports`) — batch imports (templates, mapping preview, history, partial undo) and a distinct direct meter-workbook upload (`POST /meters/upload`, template and row-level results); both run workflows require Admin/Super Admin, while Supervisor is view-only
   - `/assignments` → `AssignmentsPage` (`canViewAssignments`) — dispatch/return meters, batches
   - `/installer-status` → `InstallerJobStatus` (`canViewInstallerStatus`) — per-installer workload, jobs and meters
   - `/installation-requests` → redirect to `/installations`

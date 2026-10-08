@@ -28,6 +28,11 @@ and a meter's state no longer reads `installedAt` (fixes "reverted meter shows I
 assignable"). The unassign reason field no longer loses focus per keystroke. See CLAUDE.md rule 10 and
 API_GAP_REPORT.md (AY, AZ; AX closed).
 
+**Meter Schedule Disco filters (2026-10-08).** Meter Inventory and Meter Query share one
+`useDiscoOptions` list and send the selected `discoCode` with the existing Status filter on meter-list
+and serial-search requests. “All Discos” omits the parameter; changing either filter follows the
+existing query flow, including a fresh page-1 read.
+
 **Open decisions waiting on the owner:**
 - **PHEDC (Bayelsa) onboarding — 2026-10-05.** The app side is done (Settings → Discos, see section 5);
   PHEDC itself is registered by a Super Admin on the live API, not in code. Still to decide: PHEDC's
@@ -55,8 +60,8 @@ API_GAP_REPORT.md (AY, AZ; AX closed).
 This is **not** a customer self-service portal. There are four roles, matching the real API's `User.role` enum exactly (uppercase); `CLAUDE.md` → "Roles" is the authoritative detail:
 - **SUPERADMIN** — everything ADMIN has, plus the only role that may create/edit ADMIN, SUPERADMIN or SUPERVISOR accounts, delete meters, and undo a completed installation ("Unassign installed meter"). Not capped by the meter-assignment rules.
 - **ADMIN** — manages Installer accounts, confirms payments, runs reports, configures meter types/settings/API keys, manages meter inventory, imports and installations. Meter dispatch is capped per meter type by the installer's open jobs.
-- **SUPERVISOR** (API role since 2026-09-24) — "an ADMIN narrowed to installations and assignments": full on Installations, Assignments and Imports; meters list/search/upload/export/statistics (never delete); read-only Installer roster; Dashboard and Installer Job Status without money; the Completed Installations export. No Payments/Finance, Reports, Settings or API keys. Capped like an Admin.
-- **INSTALLER** — sees the shared JED "Awaiting Installation" (paid) / "Completed" queue and their own assigned jobs (`/my-jobs`), reports installs, and can fill in the Complaint Form (`/complaints`). No access to Uploads, Meter Schedule or any admin page.
+- **SUPERVISOR** (API role since 2026-09-24) — "an ADMIN narrowed to installations and assignments": full on Installations, Assignments and view-only Imports (history, errors and templates; no import, direct meter-workbook upload or undo); meters list/search/export/statistics (never delete or upload); read-only Installer roster; Dashboard and Installer Job Status without money; the Completed Installations export. No Payments/Finance, Reports, Settings or API keys. Capped like an Admin.
+- **INSTALLER** — sees the shared JED "Awaiting Installation" (paid) / "Completed" queue and their own assigned jobs (`/my-jobs`), reports installs, and can fill in the Complaint Form (`/complaints`). No access to Imports, Meter Schedule or any admin page.
 
 There is no backend code in this repository — it is a frontend-only client that talks to an external REST API.
 
@@ -111,7 +116,7 @@ jedc-meter-management/
 │       ├── admin/              # AdminDashboard, DashboardInstallations, AdminReports (+ ReportsOverview, RevenueTab),
 │       │                       #   RevenueSummaryPanel, RemitaPaymentsList, ConfirmPaymentTab, BulkConfirmPaymentsTab, TrendChart,
 │       │                       #   InstallationRequests ("All Requests"), AdminInstallations ("JED Queue"),
-│       │                       #   ImportsPage, AssignmentsPage, UserManagement
+│       │                       #   ImportsPage, MeterWorkbookUpload, AssignmentsPage, UserManagement
 │       ├── auth/               # Login, VerificationModal, permissions.js, usePermissions.jsx
 │       ├── common/             # Header, Navigation, Footer, ConfirmationModal, InfoModal, PhotoUploadField,
 │       │                       #   StatusBadge, StatusTabs, LiveStatusDot, GenerateRRRModal, PaymentTimeline, ErrorBoundary
@@ -126,8 +131,7 @@ jedc-meter-management/
 │       ├── schedule/           # MeterSchedule (inventory/query/cards), InstalledRecordsModal, InstallationDetails (+ single-meter modal), MeterDrillDown (InstallationRecord)
 │       ├── reports/            # ReportExportBar (+ PrintableReport) — Excel / CSV / Print for any report
 │       ├── services/           # api.js (the only network client), api.config.js (endpoint map/config)
-│       ├── settings/           # SettingsPage, MeterTypeSettings, ApiKeySettings
-│       └── uploads/            # ExcelUpload (meter workbook → POST /meters/upload)
+│       └── settings/           # SettingsPage, MeterTypeSettings, ApiKeySettings
 ```
 
 ## 5. Completed Features
@@ -307,8 +311,10 @@ jedc-meter-management/
       succeeded; it works now, with no new dependency. Cells are read as strings so account numbers
       and RRRs keep their leading zeros, and the legacy `.xls` format is refused with an explanation
       rather than a parse error.
-    - **The three extra "upload modes" are gone from the Uploads page**, along with the mode picker
-      and the download-a-processed-file branch. That page now does one thing: `POST /meters/upload`.
+    - **The three extra "upload modes" are gone**, along with the mode picker and the
+      download-a-processed-file branch. The separate `POST /meters/upload` meter-workbook path is
+      now available as Imports → Meter workbook; unlike `/imports/{disco}/meters`, it does not create
+      a history batch or support undo. The standalone Uploads page has been removed.
 
 - **Revenue on the Admin Dashboard, from the existing calculation (2026-09-26):**
   - **Total collected payments** and **Revenue due to us** now appear on the Admin Dashboard, in a
@@ -555,7 +561,8 @@ jedc-meter-management/
     (bodies exactly as documented; the undocumented `description` field is gone; every page is read).
     Valuation is keyed by (disco, meter type) — a JED Remita request uses its own disco code's list,
     else JED's — so two discos' prices are never mistaken for a conflict.
-  - **Supervisor** gains Imports and meter upload/export/statistics, per the API's role table.
+  - **Supervisor** gains view-only Imports (history/templates) and meter export/statistics, per the
+    API's role table; direct meter-workbook upload and import actions remain Admin/Super Admin only.
   - **Supervisor pending total / export:** both read JED's Remita requests; a 403 there (gap AR) used
     to blank the pending figure and block the export. A forbidden source is now left out and labelled.
   - **Unassign an installed meter** (Super Admin, imported INSTALLED only) via
@@ -735,6 +742,7 @@ Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`)
 - **Finance:** `GET /finance/revenue/{summary,breakdown,transactions}` — recognised revenue, Admin/Super Admin only.
 - **Discos:** list/get/create/patch, `PUT /discos/{code}/import-mapping|export-template` (whole-object replace — read first).
 - **Imports:** `POST /imports/{disco}/pending-installations|meters`, templates, history, `POST /imports/{id}/undo` (partial by design).
+- **Direct meter workbook upload:** `POST /meters/upload` is a separate stock-registration workflow surfaced under Imports → Meter workbook. It has its own row-level response and template, but does not create an import-history batch or support undo. Both workflows are Admin/Super Admin actions; Supervisors retain view-only Imports access.
 - **Assignments:** `POST /assignments/meters` (dispatch), `POST /assignments/meters/return` (unassign a held meter), `POST /assignments/installations` and `/unassign`, `GET /assignments[/{id}]` (batches — the source of "who holds which meter").
 - **Installations (multi-disco):** list/search/statistics/by id, `/me/jobs`, `/me/meters`, start/report/fail/cancel, `POST /installations/{id}/revert` (Super Admin undo), disco response-sheet export + mark-sent, export batches.
 - **Settings:** meter-type CRUD, API key management (create/list/deactivate/usage — full secret shown once at creation).
@@ -758,7 +766,7 @@ Base URL: `https://api.memetering.com/api/v1` (override via `VITE_API_BASE_URL`)
 - **Currency:** NGN only (`src/utils/currency.js`, `formatCurrencyNGN`).
 - **Request status enum (real, only these three):** `INITIATED → PAID → COMPLETED`. Payment/status badges are case-insensitively normalized in `src/utils/statusBadge.js`; `isAwaitingInstallationStatus` (`PAID`) and `isCompletedStatus` (`COMPLETED`) drive the installer queue's two tabs. **Badge colours (2026-08-27):** `PAID`/`PENDING` moved from yellow/amber to blue — yellow/gold is now this app's brand colour (see Brand Identity above), so a status badge no longer uses it, to avoid a status looking like an interactive/brand element; blue was the *previous* brand colour and is now free for exactly this purpose. Meter Schedule's "Single Phase" phase-type badge moved from yellow to cyan for the same reason.
 - **User role enum:** `SUPERADMIN / ADMIN / SUPERVISOR / INSTALLER`, uppercase, used as-is throughout (no case translation). `SUPERVISOR` was added by the backend on 2026-09-24. Only `SUPERADMIN` may create/edit `ADMIN`, `SUPERADMIN` or `SUPERVISOR` accounts (`isPrivilegedRole`) — note this app is deliberately stricter than the API, which also lets an `ADMIN` create `ADMIN` accounts.
-- **Supervisor scope** (the backend's own definition — "an ADMIN narrowed to installations and assignments"; widened by the API's role table on 2026-10-04): **full** on Installations (create, cancel, assign, unassign, disco export, mark-sent), Assignments (dispatch and return meters) and Imports; on Meter Schedule list/search/view plus upload (`/uploads`), export and statistics — never delete; **read-only** on Users (the Installer roster only); the Dashboard and Installer Job Status without any financial figure; the Completed Installations export (no payment columns); and **no access** to Payments/Finance, Reports, Settings or API Keys. It does not hold `INSTALLATIONS.COMPLETE` — start/report/fail are Installer-only. It is outside `permissions.isAdmin`, so every existing admin gate denies it. Because it can dispatch meters, it is capped by the meter-assignment rules exactly like an Admin.
+- **Supervisor scope** (the backend's own definition — "an ADMIN narrowed to installations and assignments"; widened by the API's role table on 2026-10-04): **full** on Installations (create, cancel, assign, unassign, disco export, mark-sent) and Assignments (dispatch and return meters); **view-only** on Imports (history, row errors and templates, no import or undo); on Meter Schedule list/search/view, export and statistics — never delete or upload; **read-only** on Users (the Installer roster only); the Dashboard and Installer Job Status without any financial figure; the Completed Installations export (no payment columns); and **no access** to Payments/Finance, Reports, Settings or API Keys. It does not hold `INSTALLATIONS.COMPLETE` — start/report/fail are Installer-only. It is outside `permissions.isAdmin`, so every existing admin gate denies it. Because it can dispatch meters, it is capped by the meter-assignment rules exactly like an Admin.
 - **Meter assignment limits (Admin):** an Admin may dispatch a meter to an installer only when that installer already has an open installation (`ASSIGNED`/`IN_PROGRESS`) **of that meter type**, and only up to `open jobs of that type − meters of that type already held`. Single Phase and Three Phase capacities are independent. A **Super Admin** is capped by none of this and may assign installations and meters independently; meter integrity rules (exists, `AVAILABLE`, not already assigned/used/lost) still apply to both. `permissions.enforcesMeterCapacity` is the single switch. **Client-side only** — `POST /assignments/meters` enforces none of it (`API_GAP_REPORT.md`, gap AC).
 - **Meter inventory status:** `AVAILABLE / INSTALLED / FAULTY / RETIRED`. Phase type: `SINGLE PHASE / THREE PHASE`.
 - **"Unassign meter" (2026-10-04)** — one rule everywhere (`utils/meterUnassign.js`): a meter **with an installer** is returned to stock (`POST /assignments/meters/return`; Admin, Super Admin, Supervisor; the installer's jobs and the meter record are untouched, so only their held-meter count drops); an **installed** meter on an imported INSTALLED job is the Super Admin revert (job back to pending, meter to stock, revenue removed); exported jobs and JED requests can't be undone. Never a delete, always confirmed, never optimistic.

@@ -14,7 +14,7 @@
 // permanently-docked desktop rail.
 import {
   LayoutDashboard, Database, Users, BarChart3,
-  Upload, Settings, X, ChevronsLeft, ChevronsRight,
+  Settings, X, ChevronsLeft, ChevronsRight,
   ClipboardList, MessageSquareWarning, FileSpreadsheet, Send, Wrench, HardHat
 } from 'lucide-react';
 import { useEffect, useCallback, useMemo } from 'react';
@@ -105,8 +105,7 @@ const NAVIGATION_CONFIG = {
       icon: Database,
       description: 'View and query meter inventory',
       // Permission-driven: admin-tier in full, Supervisor read-only (it holds
-      // SCHEDULE.VIEW without SCHEDULE.MANAGE). Installer holds neither and
-      // must not see or reach this page, nor Uploads below.
+      // SCHEDULE.VIEW without SCHEDULE.MANAGE). Installer holds neither.
       accessible: (userRole) => canAccessPage(userRole, 'schedule'),
     },
     {
@@ -127,18 +126,6 @@ const NAVIGATION_CONFIG = {
       // confirmation and bulk import all live under Reports now.
       description: 'Payments, deals, revenue & exports',
       accessible: (userRole) => isAdminTierRole(userRole)
-    },
-    {
-      id: 'uploads',
-      label: 'Uploads',
-      path: '/uploads',
-      icon: Upload,
-      description: 'Upload meter data',
-      // Driven by the permission model (auth/permissions.js), not a
-      // hard-coded role list, so it can't drift from the route guard in
-      // App.jsx and ExcelUpload's own check: Installer no longer holds
-      // UPLOADS.EXCEL, so this is Admin/Super Admin only.
-      accessible: (userRole) => canAccessPage(userRole, 'uploads')
     },
     {
       id: 'complaints',

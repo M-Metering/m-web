@@ -152,15 +152,14 @@ describe('MeterSchedule — assign', () => {
     expect(within(cardFor('0239110006909')).queryByRole('button', { name: 'Assign' })).toBeNull();
   });
 
-  it('loads nothing for the assignment dialog until it is opened', async () => {
+  it('loads Disco options for inventory and the installer list only when assignment opens', async () => {
     await renderPage();
-    // The dialog's disco list and installer list are its own concern — a
-    // visit to Meter Schedule must not pay for a dialog nobody opened.
-    expect(jedApi.getDiscos).not.toHaveBeenCalled();
+    // Inventory and Meter Query share the same disco source.
+    await waitFor(() => expect(jedApi.getDiscos).toHaveBeenCalledTimes(1));
     expect(jedApi.getUsers).not.toHaveBeenCalled();
 
     fireEvent.click(within(cardFor('0239110006909')).getByRole('button', { name: 'Assign' }));
-    await waitFor(() => expect(jedApi.getDiscos).toHaveBeenCalled());
+    await waitFor(() => expect(jedApi.getUsers).toHaveBeenCalled());
   });
 
   it('opens the shared assignment modal, not a page-local one', async () => {
@@ -169,7 +168,7 @@ describe('MeterSchedule — assign', () => {
     await screen.findByRole('dialog', { name: /Assign meter/ });
     // The same installer picker and capacity read the Assignments page uses.
     expect(await screen.findByRole('option', { name: /Musa Bello/ })).toBeTruthy();
-    expect(screen.getByLabelText(/^Disco/)).toBeTruthy();
+    expect(within(screen.getByRole('dialog', { name: /Assign meter/ })).getByLabelText(/^Disco/)).toBeTruthy();
   });
 
   it('never assigns without a disco and installer', async () => {

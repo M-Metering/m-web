@@ -11,12 +11,14 @@ let permissions;
 let currentUser;
 vi.mock('../../auth/usePermissions', () => ({ usePermissions: () => permissions }));
 vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: currentUser }),
   useOptionalAuth: () => ({ user: currentUser, refreshUser: vi.fn() }),
 }));
 vi.mock('../../services/api', () => ({
   default: {
     clearCache: vi.fn(), getDiscos: vi.fn(), getDisco: vi.fn(), getImportBatches: vi.fn(), getImportBatch: vi.fn(),
     undoImportBatch: vi.fn(), importPendingInstallations: vi.fn(), importMeterInventory: vi.fn(),
+    uploadMeters: vi.fn(), downloadMetersTemplate: vi.fn(),
     downloadPendingInstallationsTemplate: vi.fn(), downloadMeterInventoryTemplate: vi.fn(),
   },
 }));
@@ -28,6 +30,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   jedApi.getImportBatches.mockResolvedValue({ success: true, data: [BATCH], pagination: { currentPage: 1, totalPages: 1, hasNext: false } });
   jedApi.getImportBatch.mockResolvedValue({ success: true, data: { ...BATCH, errors: [] } });
+  jedApi.uploadMeters.mockResolvedValue({
+    success: true,
+    message: 'Meters uploaded successfully.',
+    data: { totalRows: 1, created: 1, failed: 0, errors: [] },
+  });
 });
 afterEach(cleanup);
 const renderPage = () => render(<DataRefreshProvider><ImportsPage /></DataRefreshProvider>);
@@ -64,5 +71,31 @@ describe('Imports — Admin keeps everything', () => {
     fireEvent.click(screen.getByRole('button', { name: /History/ }));
     fireEvent.click(await screen.findByRole('button', { name: /IMP-5/ }));
     expect(await screen.findByRole('button', { name: /Undo this import/ })).toBeTruthy();
+  });
+
+  it('keeps the direct meter-workbook workflow inside Imports', async () => {
+    permissions = { canViewImports: true, canRunImports: true };
+    currentUser = { id: 'a', role: 'ADMIN', discos: [ABA] };
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Meter workbook/ }));
+    expect(await screen.findByText(/Format the/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Upload$/ })).toBeTruthy();
+
+    const workbook = new File(['meter'], 'meters.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    fireEvent.change(screen.getByLabelText(/Select Excel file/), { target: { files: [workbook] } });
+    fireEvent.click(screen.getByRole('button', { name: /^Upload$/ }));
+
+    await waitFor(() => expect(jedApi.uploadMeters).toHaveBeenCalledOnce());
+    const form = jedApi.uploadMeters.mock.calls[0][0];
+    expect(form.get('file')).toBeTruthy();
+    expect(form.get('discoCode')).toBe('ABA_POWER');
+    expect(await screen.findByText('Upload Results')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /History/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Meter workbook/ }));
+    expect(screen.getByText('Upload Results')).toBeTruthy();
   });
 });

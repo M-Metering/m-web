@@ -1,12 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useRef, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { PERMISSIONS, hasPermission } from '../auth/permissions';
 import jedApi from '../services/api';
 import { downloadXlsx, COLUMN_TYPES } from '../../utils/xlsx';
 import { validateUploadFile } from '../../utils/fileValidation';
 import { getErrorMessage } from '../../utils/errorMessage';
-import { useDiscoOptions } from '../../hooks/useDiscoOptions';
 import { NO_DISCO_ACCESS_MESSAGE } from '../../utils/userDiscos';
+import { assertApiSuccess } from '../../utils/apiResult';
 import { AlertCircle, Upload, Download, FileCheck2, FileX2, Percent, List, FileDown } from 'lucide-react';
 
 // This page has one job: POST /meters/upload, the meter workbook.
@@ -24,27 +24,20 @@ import { AlertCircle, Upload, Download, FileCheck2, FileX2, Percent, List, FileD
 // user's own discos (useDiscoOptions). SUPERVISOR may no longer upload (403),
 // so the page is ADMIN/SUPERADMIN only via UPLOADS.EXCEL.
 
-function ExcelUpload() {
+function MeterWorkbookUpload({ discos, discosLoading, discosError, noAccess, discoCode, onDiscoChange, onUploaded }) {
   const { user } = useAuth();
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
   const [uploadResult, setUploadResult] = useState(null);
-  const { discos, loading: discosLoading, error: discosError, noAccess } = useDiscoOptions();
-  const [discoCode, setDiscoCode] = useState('');
-
-  // One disco: pre-selected. Several: the first, until the user picks.
-  useEffect(() => {
-    if (!discoCode && discos.length > 0) setDiscoCode(discos[0].code);
-  }, [discos, discoCode]);
-
+  const fileInputRef = useRef(null);
   if (!hasPermission(user?.role, PERMISSIONS.UPLOADS.EXCEL)) {
     return (
       <div className="p-8 text-center">
         <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
         <h2 className="text-2xl font-bold">Access Denied</h2>
-        <p className="text-gray-600 dark:text-gray-400">You don't have permission to upload installations.</p>
+        <p className="text-gray-600 dark:text-gray-400">You don't have permission to upload meter workbooks.</p>
       </div>
     );
   }
@@ -112,16 +105,19 @@ function ExcelUpload() {
       // client-editable user record; it was never documented and is gone.)
       formData.append('discoCode', discoCode);
       const response = await jedApi.uploadMeters(formData);
+      assertApiSuccess(response, 'The server did not confirm the meter upload.');
 
-      if (response.success && response.data) {
+      if (response?.data) {
         setUploadResult(response.data);
-        setMessage(response.message || 'Meters uploaded successfully.');
+        setMessage(response?.message || 'Meters uploaded successfully.');
       } else {
-        setMessage(response.message || 'Upload completed successfully.');
+        setMessage(response?.message || 'Upload completed successfully.');
       }
 
       setFile(null);
-      document.querySelector('input[type="file"]').value = ''; // Reset file input
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      jedApi.clearCache();
+      onUploaded?.();
     } catch (err) {
       console.error('Upload failed', err);
       if (err?.status === 401) {
@@ -149,15 +145,15 @@ function ExcelUpload() {
   };
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-4">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-brand-100 dark:bg-brand-900/30 rounded-lg flex-shrink-0">
             <Upload className="w-6 h-6 text-brand-600 dark:text-brand-400" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Upload Meters (Excel)</h1>
-            <p className="text-gray-600 dark:text-gray-400">Upload meters in bulk using an Excel file.</p>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Upload meter workbook</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400">Register meters directly from a workbook.</p>
           </div>
         </div>
         <div className="flex-shrink-0">
@@ -171,8 +167,12 @@ function ExcelUpload() {
         </div>
       </div>
 
-      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-300 dark:border-gray-700 p-6">
+      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-300 dark:border-gray-700 p-4 sm:p-6">
         <div className="space-y-4">
+          <p className="text-xs text-gray-600 dark:text-gray-400">
+            This direct upload shows its row-level results here and does not create an Import History batch or support Undo.
+            For a tracked, reversible meter import, use New import and select Meter inventory.
+          </p>
           {noAccess && (
             <p role="alert" className="text-sm p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300">
               {NO_DISCO_ACCESS_MESSAGE}
@@ -185,7 +185,7 @@ function ExcelUpload() {
             <select
               id="meter-upload-disco"
               value={discoCode}
-              onChange={(e) => setDiscoCode(e.target.value)}
+              onChange={(e) => onDiscoChange(e.target.value)}
               disabled={discosLoading || uploading || discos.length <= 1}
               className="form-input w-full sm:max-w-sm px-3 py-2 text-sm"
             >
@@ -196,8 +196,10 @@ function ExcelUpload() {
             {discosError && <p className="text-xs text-red-600 dark:text-red-400 mt-1">{discosError}</p>}
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Select Excel file</label>
-            <input 
+            <label htmlFor="meter-upload-file" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Select Excel file</label>
+            <input
+              id="meter-upload-file"
+              ref={fileInputRef}
               type="file" 
               accept=".xlsx,.xls,.csv" 
               onChange={handleFileChange} 
@@ -339,6 +341,6 @@ const exportErrorsToExcel = (errors) => downloadXlsx('upload_errors.xlsx', [{
     { header: 'Error', key: 'error', type: COLUMN_TYPES.TEXT },
   ],
   rows: errors.map((e) => ({ row: e.row + 1, meterNumber: e.meterNumber, error: e.error })),
-}]).catch((err) => console.error('[ExcelUpload] Error export failed:', err));
+}]).catch((err) => console.error('[MeterWorkbookUpload] Error export failed:', err));
 
-export default ExcelUpload;
+export default MeterWorkbookUpload;
