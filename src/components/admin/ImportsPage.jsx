@@ -42,6 +42,7 @@ import { summarizeUndoResult, undoConfirmationMessage } from '../../utils/import
 import { assertApiSuccess } from '../../utils/apiResult';
 import { formatDateTime } from '../../utils/date';
 import { NO_DISCO_ACCESS_MESSAGE } from '../../utils/userDiscos';
+import MeterWorkbookUpload from './MeterWorkbookUpload';
 
 const IMPORT_TYPES = {
   PENDING_INSTALLATIONS: {
@@ -284,6 +285,7 @@ function ImportsPage() {
         <StatusTabs
           tabs={[
             { id: 'upload', label: canRun ? 'New import' : 'Templates', icon: canRun ? Upload : FileDown },
+            ...(canRun ? [{ id: 'meter-upload', label: 'Meter workbook', icon: FileSpreadsheet }] : []),
             { id: 'history', label: 'History', icon: FileSpreadsheet, count: batches.length || undefined },
           ]}
           activeTab={activeTab}
@@ -390,7 +392,7 @@ function ImportsPage() {
               </button>}
             </div>
           </div>
-        ) : (
+        ) : activeTab !== 'meter-upload' ? (
           <>
             <div className="p-3 sm:p-4 border-b border-gray-200 dark:border-gray-700 flex justify-end">
               <button
@@ -446,6 +448,20 @@ function ImportsPage() {
               </ul>
             )}
           </>
+        ) : null}
+
+        {canRun && (
+          <div className={`p-4 sm:p-6 ${activeTab === 'meter-upload' ? '' : 'hidden'}`}>
+            <MeterWorkbookUpload
+              discos={discos}
+              discosLoading={discosLoading}
+              discosError={discosError}
+              noAccess={noAccess}
+              discoCode={discoCode}
+              onDiscoChange={setDiscoCode}
+              onUploaded={notifyDataChanged}
+            />
+          </div>
         )}
       </div>
 

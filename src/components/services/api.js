@@ -808,7 +808,7 @@ class JEDApiService {
    * browser" fallback was standing in for. GET /meters still has no search
    * parameter; this is a separate route. Never widen a page cap to search.
    *
-   * @param {{ q: string, status?: string, phaseType?: string, page?: number, limit?: number }} params
+   * @param {{ q: string, status?: string, phaseType?: string, discoCode?: string, page?: number, limit?: number }} params
    */
   async searchMeters(params = {}) {
     const url = this.utils.buildUrlWithParams(this.endpoints.METERS.SEARCH, params);

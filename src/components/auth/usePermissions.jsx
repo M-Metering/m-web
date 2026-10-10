@@ -84,8 +84,6 @@ export function usePermissions() {
     canViewSettings: isAdmin,
     canManageSettings: isAdmin,
     
-    // Upload permissions
-    canUploadExcel: hasPermission(userRole, PERMISSIONS.UPLOADS.EXCEL),
     canUploadFiles: isAdmin || hasPermission(userRole, PERMISSIONS.UPLOADS.FILES),
 
     // Payments / money. Named explicitly because Supervisor must not see

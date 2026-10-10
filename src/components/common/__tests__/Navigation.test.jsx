@@ -24,7 +24,7 @@ const navFor = (userRole) => {
 
 const ADMIN_TIER = [
   '/dashboard', '/installations', '/imports', '/assignments', '/installer-status', '/schedule',
-  '/users', '/reports', '/uploads', '/settings',
+  '/users', '/reports', '/settings',
 ];
 
 describe('Navigation — role matrix', () => {
@@ -46,8 +46,8 @@ describe('Navigation — role matrix', () => {
   // full, meters and the installer roster read-only, plus the operational
   // Installer Job Status overview (built only from those same reads).
   it('gives Supervisor its seven items and no more (Per-Disco Access update, 2026-10-05)', () => {
-    // Uploads went with POST /meters/upload becoming 403 for this role;
-    // Imports stays for history and templates.
+    // The meter workbook workflow is now inside Imports and remains hidden
+    // from Supervisor because POST /meters/upload returns 403.
     expect(navFor(ROLES.SUPERVISOR).sort()).toEqual(
       ['/assignments', '/dashboard', '/imports', '/installations', '/installer-status', '/schedule', '/users']
     );
@@ -61,7 +61,7 @@ describe('Navigation — role matrix', () => {
 
   it('never shows an Installer an administrative page', () => {
     const installer = navFor(ROLES.INSTALLER);
-    ['/installations', '/imports', '/assignments', '/installer-status', '/schedule', '/users', '/reports', '/payments', '/uploads', '/settings']
+    ['/installations', '/imports', '/assignments', '/installer-status', '/schedule', '/users', '/reports', '/payments', '/settings']
       .forEach((path) => expect(installer).not.toContain(path));
   });
 

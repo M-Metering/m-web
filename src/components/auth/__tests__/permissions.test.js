@@ -15,7 +15,7 @@ import {
 
 const PAGES = [
   'dashboard', 'installations', 'assignments', 'imports', 'schedule',
-  'users', 'reports', 'payments', 'uploads', 'settings', 'complaints', 'my-jobs',
+  'users', 'reports', 'payments', 'settings', 'complaints', 'my-jobs',
 ];
 
 // The scope is the backend's own role table (Frontend Integration Update,
@@ -27,6 +27,7 @@ describe('SUPERVISOR — module access', () => {
     // 2026-10-05: POST /meters/upload is 403 for SUPERVISOR, so /uploads is gone.
     const reachable = PAGES.filter((page) => canAccessPage(ROLES.SUPERVISOR, page));
     expect(reachable.sort()).toEqual(['assignments', 'dashboard', 'imports', 'installations', 'schedule', 'users']);
+    expect(canAccessPage(ROLES.SUPERVISOR, 'uploads')).toBe(false);
   });
 
   it.each(['payments', 'reports', 'settings', 'complaints', 'my-jobs'])(
