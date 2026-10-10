@@ -38,8 +38,9 @@ const INVENTORY = Array.from({ length: 5000 }, (_, i) => ({
   id: i + 1,
   meterNumber: String(2390000000000 + i),
   simNumber: String(8923401000012345678n + BigInt(i)),
+  discoCode: i % 2 ? 'PHEDC' : 'JEDC',
   phaseType: i % 2 ? 'THREE PHASE' : 'SINGLE PHASE',
-  status: 'AVAILABLE',
+  status: i % 5 === 2 || i % 5 === 3 ? 'INSTALLED' : 'AVAILABLE',
   meterMake: 'MASTER ENERGY',
   model: 'ME-1P',
   manufacturedDate: '2026-03-01',
@@ -53,17 +54,18 @@ const ODD_LENGTHS = [
   { id: 90003, meterNumber: '145345123456' },     // 12
   { id: 90004, meterNumber: '0239110006909' },    // 13, leading zero
 ].map((m) => ({
-  ...m, simNumber: '', phaseType: 'SINGLE PHASE', status: 'AVAILABLE',
+  ...m, simNumber: '', discoCode: 'PHEDC', phaseType: 'SINGLE PHASE', status: 'AVAILABLE',
   meterMake: '', model: '', manufacturedDate: '', uploadedAt: '2026-09-01T09:00:00Z', installedAt: null,
 }));
 
 const ALL = [...INVENTORY, ...ODD_LENGTHS];
 
 const serveInventory = (rows) => {
-  jedApi.getMeters.mockImplementation(async ({ page = 1, limit = 25, status, phaseType }) => {
+  jedApi.getMeters.mockImplementation(async ({ page = 1, limit = 25, status, phaseType, discoCode }) => {
     let data = rows;
     if (status) data = data.filter((m) => m.status === status);
     if (phaseType) data = data.filter((m) => m.phaseType === phaseType);
+    if (discoCode) data = data.filter((m) => m.discoCode === discoCode);
     const start = (page - 1) * limit;
     const slice = data.slice(start, start + limit);
     return {
@@ -87,7 +89,14 @@ beforeEach(() => {
   jedApi.getMeterStatistics.mockResolvedValue({
     success: true, data: { totalMeters: ALL.length, available: ALL.length, installed: 0, faulty: 0 },
   });
-  jedApi.getDiscos.mockResolvedValue({ success: true, data: [], pagination: { hasNext: false } });
+  jedApi.getDiscos.mockResolvedValue({
+    success: true,
+    data: [
+      { code: 'JEDC', name: 'JEDC' },
+      { code: 'PHEDC', name: 'PHEDC' },
+    ],
+    pagination: { hasNext: false },
+  });
   jedApi.getUsers.mockResolvedValue({ success: true, data: [], pagination: { hasNext: false } });
 });
 afterEach(cleanup);
@@ -103,6 +112,11 @@ const search = (term) => {
   fireEvent.keyDown(input, { key: 'Enter' });
   return input;
 };
+const openQuery = async () => {
+  await renderPage();
+  fireEvent.click(screen.getByRole('button', { name: 'Meter Query' }));
+  await screen.findByLabelText('Disco');
+};
 
 const exactCalls = () => jedApi.getMeterByNumber.mock.calls.map(([n]) => n);
 const listCalls = () => jedApi.getMeters.mock.calls.filter(([p]) => p.limit === PAGE);
@@ -110,12 +124,13 @@ const searchCalls = () => jedApi.searchMeters.mock.calls.map(([p]) => p);
 
 // GET /meters/search: server-side, over meter_number and sim_number, paginated.
 const serveSearch = (rows) => {
-  jedApi.searchMeters.mockImplementation(async ({ q, limit = 20, status, phaseType }) => {
+  jedApi.searchMeters.mockImplementation(async ({ q, limit = 20, status, phaseType, discoCode }) => {
     let data = rows.filter(
       (m) => String(m.meterNumber).includes(q) || String(m.simNumber).includes(q)
     );
     if (status) data = data.filter((m) => m.status === status);
     if (phaseType) data = data.filter((m) => m.phaseType === phaseType);
+    if (discoCode) data = data.filter((m) => m.discoCode === discoCode);
     const page = data.slice(0, limit);
     return {
       success: true,
@@ -176,6 +191,93 @@ describe('Meter Schedule — a complete meter number is one server-side lookup',
     expect(screen.queryByText(INVENTORY[4499].meterNumber)).toBeNull();
   }, 20000);
 
+  it('combines the Disco and Status query filters and clears each filter with All', async () => {
+    await openQuery();
+    fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'PHEDC' } });
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'AVAILABLE' } });
+
+    await waitFor(() => {
+      expect(jedApi.getMeters.mock.calls.some(([params]) =>
+        params.discoCode === 'PHEDC' && params.status === 'AVAILABLE'
+      )).toBe(true);
+    });
+    expect(screen.getByText(INVENTORY[1].meterNumber)).toBeTruthy();
+    expect(screen.queryByText(INVENTORY[0].meterNumber)).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'ALL' } });
+    await waitFor(() => {
+      expect(jedApi.getMeters.mock.calls.some(([params]) =>
+        params.status === 'AVAILABLE' && !('discoCode' in params)
+      )).toBe(true);
+    });
+    expect(screen.getByText(INVENTORY[0].meterNumber)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'ALL' } });
+    await waitFor(() => {
+      expect(jedApi.getMeters.mock.calls.some(([params]) =>
+        !('status' in params) && !('discoCode' in params)
+      )).toBe(true);
+    });
+  }, 20000);
+
+  it('keeps an exact meter-number search within the selected Disco', async () => {
+    await openQuery();
+    fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'PHEDC' } });
+    await waitFor(() => {
+      expect(jedApi.getMeters.mock.calls.some(([params]) => params.discoCode === 'PHEDC')).toBe(true);
+    });
+
+    search(INVENTORY[0].meterNumber);
+    await waitFor(() => expect(exactCalls()).toContain(INVENTORY[0].meterNumber));
+    expect(screen.queryByText(INVENTORY[0].meterNumber)).toBeNull();
+
+    search(INVENTORY[1].meterNumber);
+    expect(await screen.findByText(INVENTORY[1].meterNumber, {}, { timeout: 5000 })).toBeTruthy();
+  }, 20000);
+
+  it('filters Meter Inventory by Disco and Status using the same parameters', async () => {
+    await renderPage();
+    fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'PHEDC' } });
+
+    await waitFor(() => {
+      expect(jedApi.getMeters.mock.calls.some(([params]) => params.discoCode === 'PHEDC')).toBe(true);
+    });
+    expect(screen.getByText(INVENTORY[1].meterNumber)).toBeTruthy();
+    expect(screen.queryByText(INVENTORY[0].meterNumber)).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'INSTALLED' } });
+    await waitFor(() => {
+      expect(jedApi.getMeters.mock.calls.some(([params]) =>
+        params.discoCode === 'PHEDC' && params.status === 'INSTALLED'
+      )).toBe(true);
+    });
+    expect(screen.getByText(INVENTORY[3].meterNumber)).toBeTruthy();
+    expect(screen.queryByText(INVENTORY[1].meterNumber)).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'ALL' } });
+    await waitFor(() => {
+      expect(jedApi.getMeters.mock.calls.some(([params]) =>
+        params.status === 'INSTALLED' && !('discoCode' in params)
+      )).toBe(true);
+    });
+    expect(screen.getByText(INVENTORY[2].meterNumber)).toBeTruthy();
+  }, 20000);
+
+  it('keeps Meter Inventory exact-number searches inside the selected Disco', async () => {
+    await renderPage();
+    fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'PHEDC' } });
+    await waitFor(() => {
+      expect(jedApi.getMeters.mock.calls.some(([params]) => params.discoCode === 'PHEDC')).toBe(true);
+    });
+
+    search(INVENTORY[0].meterNumber);
+    await waitFor(() => expect(exactCalls()).toContain(INVENTORY[0].meterNumber));
+    expect(screen.queryByText(INVENTORY[0].meterNumber)).toBeNull();
+
+    search(INVENTORY[1].meterNumber);
+    expect(await screen.findByText(INVENTORY[1].meterNumber, {}, { timeout: 5000 })).toBeTruthy();
+  }, 20000);
+
   it('falls back to scanning when the lookup endpoint itself fails', async () => {
     jedApi.getMeterByNumber.mockRejectedValue(new Error('SERVER_ERROR:boom'));
     await renderPage();
@@ -214,14 +316,29 @@ describe('Meter Schedule — a partial serial is a server-side search', () => {
     expect(listCalls().length).toBe(before);
   }, 25000);
 
-  it('passes the active status/phase filters to the search rather than refiltering locally', async () => {
+  it('passes the active disco/status filters to the search rather than refiltering locally', async () => {
     serveSearch(INVENTORY);
-    await renderPage();
+    await openQuery();
+    fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'PHEDC' } });
     fireEvent.change(screen.getByLabelText(/Status/i), { target: { value: 'AVAILABLE' } });
     search('00690');
 
     await waitFor(() => expect(searchCalls().length).toBeGreaterThan(0), { timeout: 8000 });
-    expect(searchCalls().at(-1)).toMatchObject({ q: '00690', status: 'AVAILABLE' });
+    expect(searchCalls().at(-1)).toMatchObject({
+      q: '00690',
+      discoCode: 'PHEDC',
+      status: 'AVAILABLE',
+    });
+  }, 25000);
+
+  it('passes the same Disco filter to the Meter Inventory serial search', async () => {
+    serveSearch(INVENTORY);
+    await renderPage();
+    fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'PHEDC' } });
+    search('00690');
+
+    await waitFor(() => expect(searchCalls().length).toBeGreaterThan(0), { timeout: 8000 });
+    expect(searchCalls().at(-1)).toMatchObject({ q: '00690', discoCode: 'PHEDC' });
   }, 25000);
 
   it('says the list is partial when there are more matches than one page', async () => {

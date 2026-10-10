@@ -44,7 +44,6 @@ const InstallationsPage = lazy(() => import('./components/installations/Installa
 // separate standalone "Meters" page/route was removed as a duplicate.
 const MeterSchedule = lazy(() => import('./components/schedule/MeterSchedule'));
 const UserManagement = lazy(() => import('./components/admin/UserManagement'));
-const ExcelUpload = lazy(() => import('./components/uploads/ExcelUpload'));
 // Installer-only complaint form (report a problem that blocks/delays a job).
 const ComplaintForm = lazy(() => import('./components/complaints/ComplaintForm'));
 // Multi-disco installation flow (2026-09-21). A separate domain from the JED
@@ -226,12 +225,9 @@ function AppContent() {
                     Supervisor doesn't hold. */}
                 <Route path="/schedule" element={permissions.canViewSchedule ? <MeterSchedule /> : <AccessDenied />} />
                 <Route path="/users" element={permissions.canViewUsers ? <UserManagement /> : <AccessDenied />} />
-                {/* Uploads: admin-tier only. `canUploadExcel` is the
-                    permission-model check (Installer no longer holds
-                    UPLOADS.EXCEL); ExcelUpload repeats it internally as a
-                    second layer. Direct URL access as Installer renders
-                    AccessDenied here, before the page module even loads. */}
-                <Route path="/uploads" element={permissions.canUploadExcel ? <ExcelUpload /> : <AccessDenied />} />
+                {/* Keep old bookmarks working, but send all ingestion workflows
+                    through the consolidated Imports module. */}
+                <Route path="/uploads" element={<Navigate to="/imports" replace />} />
                 {/* Complaint form — Installer only. No admin equivalent yet:
                     there is no complaints API to review (API_GAP_REPORT.md). */}
                 <Route path="/complaints" element={permissions.canSubmitComplaints ? <ComplaintForm /> : <AccessDenied />} />

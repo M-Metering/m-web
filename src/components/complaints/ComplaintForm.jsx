@@ -14,7 +14,7 @@
 //
 // Access: Installer only (App.jsx route guard + Navigation item both use
 // permissions.canSubmitComplaints). The check is repeated here as a second
-// layer, matching ExcelUpload.
+// layer, matching MeterWorkbookUpload.
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
