@@ -148,6 +148,10 @@ const COLUMNS = [
   ['completedAt', 'Completed / Reported At', DATETIME, (row) => (jed(row) ? row.raw.dateCompleted : row.raw.reportedAt)],
   ['installerName', 'Installer', TEXT, (row) => pick(row.raw.installerName, row.raw.assigneeName)],
   ['installerId', 'Installer ID', TEXT, (row) => row.raw.assignedTo],
+  // Who submitted the completion (2026-10-12). Differs from the installer
+  // when staff completed the job on the installer's behalf; optional, so a
+  // sheet with no such records drops the column.
+  ['completedByName', 'Completed By', TEXT, (row) => (jed(row) ? null : row.raw.completedByName)],
   ['assignedAt', 'Assigned At', DATETIME, (row) => row.raw.assignedAt],
   ['meterNumber', 'Meter Number', TEXT, (row) => meterSerialOf(row)],
   ['meterType', 'Meter Type', TEXT, (row) => row.meterType],
@@ -302,7 +306,7 @@ const DETAIL_KEYS = [
   'source', 'disco', 'installationId', 'status', 'accountNumber', 'customerName', 'customerPhone',
   'customerAddress', 'region', 'area', 'feederName', 'transformerName', 'transformerCode', 'installationPosition',
   'requestDate', 'datePaid', 'meterNumber', 'meterType', 'installationDate', 'completedAt',
-  'installerName', 'installerId', 'assignedAt', 'sealNumber', 'latitude', 'longitude', 'photoUrl',
+  'installerName', 'installerId', 'completedByName', 'assignedAt', 'sealNumber', 'latitude', 'longitude', 'photoUrl',
   'discoSupervisor', 'notes',
 ];
 const COLUMN_BY_KEY = new Map(COLUMNS.map((c) => [c[0], c]));

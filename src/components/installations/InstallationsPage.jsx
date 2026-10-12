@@ -29,19 +29,27 @@
 // The view lives in a `?view=` query parameter rather than a path segment
 // because /installations/:accountNumber is an existing, linked-to route; a
 // sub-path would collide with it.
+//
+// A third view, Duplicate seals (`?view=seals`, 2026-10-12), is Super Admin
+// only (the API's seal-duplicates and seal-correction routes are 403 for
+// everyone else): it is not offered to other roles, and the URL falls back to
+// All Requests for them.
 import { Suspense, lazy, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ClipboardCheck, Clock, Loader2 } from 'lucide-react';
+import { ClipboardCheck, Clock, Loader2, ShieldAlert } from 'lucide-react';
 import StatusTabs from '../common/StatusTabs';
+import { usePermissions } from '../auth/usePermissions';
 
 // Split per view: opening the JED queue shouldn't download the combined
 // request list's code (and its exporter), or the other way round.
 const InstallationRequests = lazy(() => import('../admin/InstallationRequests'));
 const JedInstallationQueue = lazy(() => import('../admin/AdminInstallations'));
+const DuplicateSeals = lazy(() => import('./DuplicateSeals'));
 
 const INSTALLATION_VIEWS = Object.freeze({
   REQUESTS: 'requests',
   JED: 'jed',
+  SEALS: 'seals',
 });
 
 const TABS = [
@@ -59,6 +67,13 @@ const TABS = [
   },
 ];
 
+const SEALS_TAB = {
+  id: INSTALLATION_VIEWS.SEALS,
+  label: 'Duplicate seals',
+  icon: ShieldAlert,
+  description: 'Completed jobs that share a seal number — correct the wrong one',
+};
+
 const ViewLoader = () => (
   <div className="py-16 flex items-center justify-center" role="status">
     <Loader2 className="w-6 h-6 animate-spin text-brand-600" />
@@ -67,9 +82,11 @@ const ViewLoader = () => (
 );
 
 function InstallationsPage() {
+  const { canFixSeals } = usePermissions();
+  const tabs = canFixSeals === true ? [...TABS, SEALS_TAB] : TABS;
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get('view');
-  const view = TABS.some((t) => t.id === requested) ? requested : INSTALLATION_VIEWS.REQUESTS;
+  const view = tabs.some((t) => t.id === requested) ? requested : INSTALLATION_VIEWS.REQUESTS;
 
   // `replace` so switching views doesn't fill the back stack with tab
   // changes — Back still leaves the Installations area, as a user expects.
@@ -77,7 +94,7 @@ function InstallationsPage() {
     setSearchParams(next === INSTALLATION_VIEWS.REQUESTS ? {} : { view: next }, { replace: true });
   }, [setSearchParams]);
 
-  const active = TABS.find((t) => t.id === view);
+  const active = tabs.find((t) => t.id === view);
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -87,13 +104,15 @@ function InstallationsPage() {
       </div>
 
       <div className="card overflow-hidden">
-        <StatusTabs tabs={TABS} activeTab={view} onChange={changeView} />
+        <StatusTabs tabs={tabs} activeTab={view} onChange={changeView} />
       </div>
 
       {/* Each view keeps its own header, filters and actions — this page adds
           the switch, not another layer of chrome around them. */}
       <Suspense fallback={<ViewLoader />}>
-        {view === INSTALLATION_VIEWS.JED ? <JedInstallationQueue /> : <InstallationRequests />}
+        {view === INSTALLATION_VIEWS.JED ? <JedInstallationQueue />
+          : view === INSTALLATION_VIEWS.SEALS ? <DuplicateSeals />
+            : <InstallationRequests />}
       </Suspense>
     </div>
   );

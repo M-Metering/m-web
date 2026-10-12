@@ -1,5 +1,19 @@
 // src/components/installations/ReportInstallationModal.jsx
-// Installer reports a completed installation: POST /installations/{id}/report.
+// Reports a completed installation: POST /installations/{id}/report.
+//
+// Two callers (2026-10-12):
+//   - the INSTALLER, from My Jobs, with a meter from their own hands
+//     (GET /installations/me/meters);
+//   - STAFF (Supervisor/Admin/Super Admin, `forInstaller`), from the
+//     Installations page, completing an ASSIGNED/IN_PROGRESS job on the
+//     installer's behalf with a meter THAT INSTALLER holds
+//     (GET /meters?assignedTo=<job.assignedTo>). Same body, same rules; the
+//     installer stays the installer of record and the API records the caller
+//     as `completedBy`.
+//
+// The seal is required by the API since 2026-10-12: 400 when missing or
+// without digits, 409 when another job already holds its digits — nothing is
+// saved, so the user corrects the seal and resubmits.
 //
 // Body per the live spec — the API requires only `meterNumber`. The form
 // REQUIRES meter number, seal number, GPS coordinates, the installation
@@ -33,10 +47,10 @@ import { toDateInputValue } from '../../utils/date';
 import { normalizePhase } from '../../utils/installationScope';
 import { fetchAllPages } from '../../utils/fetchAllPages';
 import { METER_NUMBER_HINT } from '../../utils/meterNumber';
-import { isDuplicateSealError, DUPLICATE_SEAL_MESSAGE } from '../../utils/sealNumber';
+import { isDuplicateSealError, DUPLICATE_SEAL_MESSAGE, sealValidationErrorOf } from '../../utils/sealNumber';
 import {
   validateInstallationReport, buildReportPayload, REPORT_FIELD_ORDER, MAX_NOTES,
-  isWrongDiscoMeterError, WRONG_DISCO_METER_MESSAGE,
+  isWrongDiscoMeterError, WRONG_DISCO_METER_MESSAGE, isMeterNotHeldError, METER_NOT_HELD_MESSAGE,
 } from '../../utils/installationReport';
 
 const newForm = () => ({
@@ -68,10 +82,12 @@ function Field({ id, label, required, error, hint, children }) {
 /**
  * @param {object} props
  * @param {Set<string>} [props.usedSealKeys] - sealKey()s already recorded on
- *   this installer's own jobs. The only duplicates the client can see; true
- *   uniqueness is the backend's (see utils/sealNumber.js, API_GAP_REPORT.md).
+ *   the jobs on screen. The only duplicates the client can see; uniqueness
+ *   across every disco is the backend's (409, see utils/sealNumber.js).
+ * @param {boolean} [props.forInstaller] - staff completing the job on behalf
+ *   of its installer (job.assignedTo): the meter list is that installer's.
  */
-function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKeys }) {
+function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKeys, forInstaller = false }) {
   const [form, setForm] = useState(newForm);
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
@@ -88,7 +104,10 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState(null);
 
-  // Meters in this installer's hands, narrowed to the job's phase type so a
+  const installerId = job?.assignedTo ?? null;
+  const installerName = job?.assigneeName || job?.installerName || 'the assigned installer';
+
+  // Meters in the installer's hands, narrowed to the job's phase type so a
   // mismatch can't be selected in the first place.
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -109,14 +128,20 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
         // stored value, so a Three Phase meter recorded as "3 Phase" (or a job
         // whose meterType is "Three Phase") would list nothing at all. An
         // installer holds a handful of meters, so reading them all is cheap.
-        const list = await fetchAllPages((p) => jedApi.getMyMeters(p), {});
+        // Staff read the job's installer's meters; GET /meters omits
+        // `hasNext`, so a full page means "maybe more".
+        const list = forInstaller
+          ? await fetchAllPages((p) => jedApi.getInstallerMeters(installerId, p), {}, { inferNextFromFullPage: true })
+          : await fetchAllPages((p) => jedApi.getMyMeters(p), {});
         const jobPhase = normalizePhase(job?.meterType);
         const matching = jobPhase ? list.filter((m) => normalizePhase(m?.phaseType) === jobPhase) : list;
         if (!cancelled) setMeters(matching);
       } catch (err) {
-        console.error('[ReportInstallation] Failed to load my meters:', err);
+        console.error('[ReportInstallation] Failed to load the installer\'s meters:', err);
         if (!cancelled) {
-          setMetersError(getErrorMessage(err, 'Unable to load the meters assigned to you.'));
+          setMetersError(getErrorMessage(err, forInstaller
+            ? 'Unable to load the meters this installer holds.'
+            : 'Unable to load the meters assigned to you.'));
           setManualEntry(true);
         }
       } finally {
@@ -125,7 +150,7 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
     })();
 
     return () => { cancelled = true; };
-  }, [isOpen, job?.meterType]);
+  }, [isOpen, job?.meterType, forInstaller, installerId]);
 
   const availableMeters = useMemo(
     () => meters.filter((m) => String(m.assignmentStatus || '').toUpperCase() !== 'USED'),
@@ -208,12 +233,20 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
       // A seal the backend already holds comes back as a duplicate/unique
       // rejection; say so on the field rather than showing the raw database
       // text (which getErrorMessage would drop entirely).
+      const sealError = sealValidationErrorOf(err);
       if (isWrongDiscoMeterError(err)) {
         setErrors((prev) => ({ ...prev, meterNumber: WRONG_DISCO_METER_MESSAGE }));
         setSubmitError(WRONG_DISCO_METER_MESSAGE);
+      } else if (isMeterNotHeldError(err)) {
+        setErrors((prev) => ({ ...prev, meterNumber: METER_NOT_HELD_MESSAGE }));
+        setSubmitError(METER_NOT_HELD_MESSAGE);
       } else if (isDuplicateSealError(err)) {
+        // 409: nothing was saved — the job and its meter are unchanged.
         setErrors((prev) => ({ ...prev, sealNumber: DUPLICATE_SEAL_MESSAGE }));
         setSubmitError(DUPLICATE_SEAL_MESSAGE);
+      } else if (sealError) {
+        setErrors((prev) => ({ ...prev, sealNumber: sealError }));
+        setSubmitError(sealError);
       } else {
         setSubmitError(getErrorMessage(err, 'Could not submit this installation.'));
       }
@@ -238,12 +271,18 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
         <div className="p-4 sm:p-6 border-b border-gray-200 dark:border-gray-700 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 id="report-title" className="text-lg font-semibold text-gray-900 dark:text-white">
-              Report Installation
+              {forInstaller ? 'Complete Installation' : 'Report Installation'}
             </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
               {job.customerName} &middot; Acct {job.accountNumber}
               {job.meterType ? ` · ${job.meterType}` : ''}
             </p>
+            {forInstaller && (
+              <p className="text-xs text-gray-600 dark:text-gray-300 mt-1">
+                On behalf of <span className="font-medium">{installerName}</span>, who stays the installer of record.
+                You are recorded as the person who completed it.
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -273,7 +312,7 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
               manualEntry
                 ? METER_NUMBER_HINT
                 : job.meterType
-                  ? `Only the ${job.meterType.toLowerCase()} meters assigned to you are listed.`
+                  ? `Only the ${job.meterType.toLowerCase()} meters ${forInstaller ? 'this installer holds' : 'assigned to you'} are listed.`
                   // No meter type on the job (e.g. PHEDC): either type may be
                   // fitted, and the job takes the type of the meter reported.
                   : 'This job has no meter type set — fit either type; it is recorded from the meter you report.'
@@ -305,7 +344,7 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
                 className={inputClass('meterNumber')}
               >
                 <option value="">
-                  {metersLoading ? 'Loading your meters…' : 'Select a meter…'}
+                  {metersLoading ? (forInstaller ? 'Loading the installer’s meters…' : 'Loading your meters…') : 'Select a meter…'}
                 </option>
                 {availableMeters.map((m) => (
                   <option key={m.id ?? m.meterNumber} value={m.meterNumber}>
@@ -322,10 +361,12 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
                 onClick={() => { setManualEntry((v) => !v); setField('meterNumber', ''); }}
                 className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:underline"
               >
-                {manualEntry ? 'Choose from my meters' : 'Enter a serial manually'}
+                {manualEntry ? (forInstaller ? 'Choose from the installer’s meters' : 'Choose from my meters') : 'Enter a serial manually'}
               </button>
               {!metersLoading && !manualEntry && availableMeters.length === 0 && !metersError && (
-                <span className="text-xs text-amber-700 dark:text-amber-400">No matching meters assigned to you</span>
+                <span className="text-xs text-amber-700 dark:text-amber-400">
+                  {forInstaller ? 'This installer holds no matching meter' : 'No matching meters assigned to you'}
+                </span>
               )}
             </div>
 
@@ -335,7 +376,13 @@ function ReportInstallationModal({ job, isOpen, onClose, onReported, usedSealKey
           </Field>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field id="report-seal" label="Seal number" required error={errors.sealNumber}>
+            <Field
+              id="report-seal"
+              label="Seal number"
+              required
+              error={errors.sealNumber}
+              hint="Only the digits identify a seal: SL-004512 and 004512 are the same seal."
+            >
               <input
                 id="report-seal"
                 name="sealNumber"

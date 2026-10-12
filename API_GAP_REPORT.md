@@ -1,5 +1,19 @@
 # API Gap Report
 
+## 2026-10-12 (thirteenth pass): Seals, staff completion and import downloads
+
+The backend's "Seals, Staff Completion and Import Downloads" update (2026-10-12) is implemented as
+written: seal required and unique by its digits on `POST /installations/:id/report`; staff completion on
+the installer's behalf (`GET /meters?assignedTo=` for the meter list); the Super Admin duplicate-seal
+screen (`GET /installations/seal-duplicates`, `PATCH /installations/:id/seal`); `completedByName`; and
+the import's `completedExport` download.
+
+| Item | Status |
+|---|---|
+| **AL — partly closed.** The report now requires `sealNumber` server-side. GPS, picture link and DISCO supervisor are still optional on the API and enforced only by the form. | Backend: require them too. |
+| **AM — uniqueness closed; whitelist still open.** A seal can be used once across all discos (409), so single use is now enforced. There is still no seal resource, so a whitelist, per-installer seal assignment and the seals-held ≤ meters-held cap can't be built. | Backend: the `Seal` model in gap AM below. |
+| **BA — `completedBy`/`completedByName` aren't in the installation schema.** Checked against `/api-docs` on 2026-10-12: `seal-duplicates`, `PATCH /installations/{id}/seal`, `GET /meters?assignedTo=` and `completedExport` are all published; `completedBy` appears only in the report operation's description and `completedByName` nowhere. | The app reads `completedByName` as the update document describes and shows nothing when it is absent. Backend: add both fields to the `InstallationRequest` schema. |
+
 ## 2026-10-05 (twelfth pass): Per-Disco Access and PHEDC — the backend's integration update
 
 The backend's "Per-Disco Access and PHEDC" update (2026-10-05) is implemented as written; it supersedes

@@ -63,6 +63,14 @@ export function usePermissions() {
     // clears the seal, date, GPS, photo and recognised revenue.
     canRevertInstallations: isSuperAdmin,
     canCompleteInstallations: hasPermission(userRole, PERMISSIONS.INSTALLATIONS.COMPLETE),
+    // Complete an imported job on its installer's behalf (2026-10-12):
+    // Supervisor, Admin, Super Admin. Never the Installer, who reports their
+    // own jobs from My Jobs.
+    canCompleteForInstaller: isAdmin || hasPermission(userRole, PERMISSIONS.INSTALLATIONS.COMPLETE_FOR_INSTALLER),
+    // Duplicate seals: list and correct a completed job's seal
+    // (GET /installations/seal-duplicates, PATCH /installations/:id/seal).
+    // Super Admin ONLY on the API.
+    canFixSeals: isSuperAdmin,
     
     // User management permissions
     canViewUsers: isAdmin || hasPermission(userRole, PERMISSIONS.USERS.VIEW),

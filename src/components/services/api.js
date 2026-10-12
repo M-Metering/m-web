@@ -1517,6 +1517,42 @@ class JEDApiService {
     return response;
   }
 
+  /**
+   * Seals held by more than one installation (SUPERADMIN only, 2026-10-12).
+   * One entry per clash — `{ digits, installations: [...] }`, oldest report
+   * first. An empty `data` means there are no duplicates. Never cached: the
+   * list must reflect a correction the moment it is saved.
+   */
+  async getSealDuplicates() {
+    const url = this.buildApiUrl(this.endpoints.INSTALLATIONS.SEAL_DUPLICATES);
+    return await this.makeRequest(url, { method: 'GET' });
+  }
+
+  /**
+   * Correct the seal on a completed (INSTALLED/EXPORTED) job — SUPERADMIN
+   * only. The new seal goes through the same checks as a report: 400 without
+   * digits, 409 when another job already holds its digits. `reason` is
+   * optional and goes to the server log.
+   */
+  async correctInstallationSeal(id, { sealNumber, reason }) {
+    const url = this.buildApiUrl(this.endpoints.INSTALLATIONS.SEAL(id));
+    const body = { sealNumber };
+    if (reason) body.reason = reason;
+    const response = await this.makeRequest(url, { method: 'PATCH', body: JSON.stringify(body) });
+    this.clearCache();
+    return response;
+  }
+
+  /**
+   * The meters one installer currently holds (GET /meters?assignedTo=,
+   * 2026-10-12) — used or returned meters are excluded. Scoped by the
+   * caller's disco access like every meter read. For staff completing a job
+   * on the installer's behalf; an installer reads their own via getMyMeters.
+   */
+  async getInstallerMeters(installerId, params = {}) {
+    return await this.getMeters({ ...params, assignedTo: installerId });
+  }
+
   // ---------- Installations (installer app) ----------
   // Both /me/* endpoints scope to the caller's token — there is no installer
   // id to pass, and none should ever be sent.
@@ -1538,8 +1574,13 @@ class JEDApiService {
   }
 
   /**
-   * @param {Object} data - { meterNumber (required, must be assigned to the
-   *   caller), sealNumber?, installationDate? ('YYYY-MM-DD' plain date —
+   * Since 2026-10-12 SUPERVISOR/ADMIN/SUPERADMIN may call this too, on an
+   * ASSIGNED/IN_PROGRESS job, with a meter the job's INSTALLER holds; the
+   * installer stays the installer of record and `completedBy` records the
+   * caller. `sealNumber` is required (400 without digits, 409 when its digits
+   * are already used).
+   * @param {Object} data - { meterNumber (required, must be held by the job's
+   *   installer), sealNumber (required), installationDate? ('YYYY-MM-DD' plain date —
    *   never an ISO timestamp), latitude?, longitude?, installationPhotoUrl?
    *   (a URL; the API accepts no image uploads), discoSupervisor?, notes? }
    * Marks the request INSTALLED and the meter USED/INSTALLED in one

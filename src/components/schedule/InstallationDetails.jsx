@@ -80,6 +80,8 @@ export function InstallationDetails({ meter, record, showPhone, showPayment }) {
           ['Reported', r.completedAt ? formatDateTime(r.completedAt) : null],
           ['Installer', r.installerName],
           ['Installer ID', mono(r.installerId)],
+          // Shown only when someone other than the installer submitted it.
+          ['Completed by', r.completedByName && r.completedByName !== r.installerName ? r.completedByName : null],
           ['Location', r.installationPosition],
           ['GPS coordinates', hasGps ? (
             <a href={`https://www.google.com/maps?q=${r.latitude},${r.longitude}`} target="_blank" rel="noopener noreferrer"

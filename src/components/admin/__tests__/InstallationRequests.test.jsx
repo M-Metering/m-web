@@ -38,6 +38,8 @@ vi.mock('../../services/api', () => ({
     cancelInstallation: vi.fn(),
     revertInstallation: vi.fn(),
     exportInstallations: vi.fn(),
+    getInstallerMeters: vi.fn(),
+    reportInstallation: vi.fn(),
   },
 }));
 
@@ -518,6 +520,39 @@ describe('InstallationRequests — undo a completed installation (Super Admin)',
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm unassign' }));
     await waitFor(() => expect(jedApi.revertInstallation).toHaveBeenCalledWith(9, 'Installed at the wrong address'));
     expect(await screen.findByText(/unassigned from account 1009/)).toBeTruthy();
+  });
+});
+
+describe('InstallationRequests — complete a job for its installer (2026-10-12)', () => {
+  const completeButtonFor = (name) => within(screen.getByText(name).closest('.p-4')).queryByRole('button', { name: /Complete installation/ });
+
+  beforeEach(() => {
+    jedApi.getInstallerMeters.mockResolvedValue(page([{ id: 1, meterNumber: '0239110006909', phaseType: 'SINGLE PHASE' }]));
+  });
+
+  it('is offered on an assigned job with an installer, never on an unassigned one', async () => {
+    permissions = { ...ADMIN_PERMISSIONS, canCompleteForInstaller: true };
+    renderPage();
+    await screen.findByText('CHIDI EZE');
+    expect(completeButtonFor('CHIDI EZE')).toBeTruthy();
+    expect(completeButtonFor('ADA OBI')).toBeNull();
+  });
+
+  it('is not offered without the permission', async () => {
+    permissions = { ...ADMIN_PERMISSIONS, canCompleteForInstaller: false };
+    renderPage();
+    await screen.findByText('CHIDI EZE');
+    expect(completeButtonFor('CHIDI EZE')).toBeNull();
+  });
+
+  it("opens the completion form on the installer's own meters", async () => {
+    permissions = { ...ADMIN_PERMISSIONS, canCompleteForInstaller: true };
+    renderPage();
+    await screen.findByText('CHIDI EZE');
+    fireEvent.click(completeButtonFor('CHIDI EZE'));
+    expect(await screen.findByRole('heading', { name: 'Complete Installation' })).toBeTruthy();
+    await waitFor(() => expect(jedApi.getInstallerMeters).toHaveBeenCalledWith('uuid-1', expect.any(Object)));
+    expect(await screen.findByRole('option', { name: /0239110006909/ })).toBeTruthy();
   });
 });
 
