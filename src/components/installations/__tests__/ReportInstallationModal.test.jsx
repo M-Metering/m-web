@@ -5,7 +5,7 @@ import ReportInstallationModal from '../ReportInstallationModal';
 import jedApi from '../../services/api';
 
 vi.mock('../../services/api', () => ({
-  default: { getMyMeters: vi.fn(), reportInstallation: vi.fn(), uploadFiles: vi.fn(), deleteUploadedFile: vi.fn() },
+  default: { getMyMeters: vi.fn(), getInstallerMeters: vi.fn(), reportInstallation: vi.fn(), uploadFiles: vi.fn(), deleteUploadedFile: vi.fn() },
 }));
 
 const job = { id: 7, accountNumber: '0100', customerName: 'ADA OBI', meterType: 'SINGLE PHASE' };
@@ -200,5 +200,84 @@ describe('ReportInstallationModal — per-disco rules (2026-10-05)', () => {
     await fillRequired();
     submit();
     await waitFor(() => expect(jedApi.reportInstallation).toHaveBeenCalledWith(9, expect.objectContaining({ meterNumber: '0239110006917' })));
+  });
+});
+
+describe('ReportInstallationModal — the API seal rules (2026-10-12)', () => {
+  const submit = () => fireEvent.click(screen.getByRole('button', { name: /Submit installation/ }));
+
+  it('refuses a seal without digits before sending', async () => {
+    await open();
+    fireEvent.change(screen.getByLabelText(/Seal number/), { target: { value: 'ABC' } });
+    submit();
+    expect(await screen.findByText('Seal number must contain digits.')).toBeTruthy();
+    expect(jedApi.reportInstallation).not.toHaveBeenCalled();
+  });
+
+  it('puts the 409 "Seal number already exists" on the seal field and keeps the form open', async () => {
+    jedApi.reportInstallation.mockRejectedValueOnce(Object.assign(new Error('Seal number already exists'), { status: 409 }));
+    const onReported = await open();
+    fireEvent.change(screen.getByLabelText(/Seal number/), { target: { value: 'PH-0135152' } });
+    await fillRequired();
+    submit();
+    expect((await screen.findAllByText(/already been used/)).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText(/Seal number/).getAttribute('aria-invalid')).toBe('true');
+    expect(onReported).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReportInstallationModal — staff completing for the installer', () => {
+  const staffJob = {
+    id: 9, accountNumber: '0200', customerName: 'EMEKA', meterType: null,
+    assignedTo: '6f1c2c1e-0000-4000-8000-0000000000aa', assigneeName: 'Friday Amos Akpan',
+  };
+
+  beforeEach(() => {
+    jedApi.getInstallerMeters.mockResolvedValue({
+      success: true,
+      data: [
+        { id: 3, meterNumber: '0239110212986', phaseType: 'SINGLE PHASE' },
+        { id: 4, meterNumber: '0239110212987', phaseType: 'THREE PHASE' },
+      ],
+      pagination: { hasNext: false },
+    });
+  });
+
+  const openStaff = async (onReported = vi.fn()) => {
+    render(<ReportInstallationModal job={staffJob} isOpen forInstaller onClose={vi.fn()} onReported={onReported} />);
+    await waitFor(() => expect(screen.getByRole('option', { name: /0239110212986/ })).toBeTruthy());
+    return onReported;
+  };
+
+  it("lists the job installer's meters, not the caller's, and names the installer of record", async () => {
+    await openStaff();
+    expect(jedApi.getInstallerMeters).toHaveBeenCalledWith(staffJob.assignedTo, expect.any(Object));
+    expect(jedApi.getMyMeters).not.toHaveBeenCalled();
+    // PHEDC-style job with no meter type: either type is offered.
+    expect(screen.getByRole('option', { name: /0239110212987/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Complete Installation' })).toBeTruthy();
+    expect(screen.getByText('Friday Amos Akpan')).toBeTruthy();
+  });
+
+  it('submits the same documented body to the same endpoint', async () => {
+    const onReported = await openStaff();
+    fireEvent.change(screen.getByLabelText(/Meter installed/), { target: { value: '0239110212986' } });
+    fireEvent.change(screen.getByLabelText(/Seal number/), { target: { value: 'Ph0135153' } });
+    await fillRequired();
+    fireEvent.click(screen.getByRole('button', { name: /Submit installation/ }));
+    await waitFor(() => expect(jedApi.reportInstallation).toHaveBeenCalledWith(9, expect.objectContaining({
+      meterNumber: '0239110212986', sealNumber: 'Ph0135153',
+    })));
+    expect(onReported).toHaveBeenCalled();
+  });
+
+  it("shows a meter the installer doesn't hold on the meter field", async () => {
+    jedApi.reportInstallation.mockRejectedValueOnce(new Error("That meter is not assigned to this job's installer"));
+    await openStaff();
+    fireEvent.change(screen.getByLabelText(/Meter installed/), { target: { value: '0239110212986' } });
+    fireEvent.change(screen.getByLabelText(/Seal number/), { target: { value: '77001' } });
+    await fillRequired();
+    fireEvent.click(screen.getByRole('button', { name: /Submit installation/ }));
+    expect((await screen.findAllByText(/not held by this job's installer/)).length).toBeGreaterThan(0);
   });
 });

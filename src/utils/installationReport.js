@@ -7,10 +7,10 @@
 // coordinates, installation picture link, DISCO supervisor. Installation date
 // and notes stay optional.
 //
-// The API itself requires only `meterNumber` (every other field is optional in
-// the spec), so this form is the ONLY place the other four are enforced today;
-// API_GAP_REPORT.md gap AL asks the backend to reject an incomplete report
-// too. The report call is a single server transaction (the request becomes
+// The API requires `meterNumber` and, since 2026-10-12, `sealNumber` (which
+// must contain digits and be unique by its digits — utils/sealNumber.js). GPS,
+// picture and supervisor are still enforced only here; API_GAP_REPORT.md gap
+// AL asks the backend to reject an incomplete report too. The report call is a single server transaction (the request becomes
 // INSTALLED and the meter USED together), so a rejected or failed submission
 // leaves the installation exactly as it was — nothing is half-completed.
 import { validateMeterNumber } from './meterNumber';
@@ -134,6 +134,16 @@ export const WRONG_DISCO_METER_MESSAGE =
   "That meter belongs to a different disco's stock than this installation. Choose a meter issued for this job's disco.";
 export function isWrongDiscoMeterError(err) {
   return /METER_WRONG_DISCO|different disco'?s stock/i.test(String(err?.message ?? err ?? ''));
+}
+
+/**
+ * Staff completing a job for its installer (2026-10-12) must use a meter THAT
+ * installer holds: 400 "That meter is not assigned to this job's installer".
+ */
+export const METER_NOT_HELD_MESSAGE =
+  "That meter is not held by this job's installer. Choose one of the installer's meters.";
+export function isMeterNotHeldError(err) {
+  return /not assigned to this job'?s installer/i.test(String(err?.message ?? err ?? ''));
 }
 
 export { MAX_NOTES };

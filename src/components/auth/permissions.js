@@ -58,7 +58,13 @@ export const PERMISSIONS = Object.freeze({
     // Download the Completed Installations workbook (2026-09-28). Its own
     // capability so a Supervisor can export without gaining anything else —
     // the workbook is built from rows the role can already read.
-    EXPORT: 'installations:export'
+    EXPORT: 'installations:export',
+    // Complete an imported ASSIGNED/IN_PROGRESS job on its installer's behalf
+    // (POST /installations/:id/report, staff since 2026-10-12). Separate from
+    // COMPLETE, which is the installer's own completion (and the JED form):
+    // the installer stays the installer of record and `completedBy` records
+    // the staff member who submitted.
+    COMPLETE_FOR_INSTALLER: 'installations:complete_for_installer'
   },
 
   // Multi-disco flow — admin-tier operations. Disco *configuration*
@@ -155,6 +161,7 @@ const ADMIN_TIER_PERMISSIONS = [
   PERMISSIONS.INSTALLATIONS.MANAGE,
   PERMISSIONS.INSTALLATIONS.COMPLETE,
   PERMISSIONS.INSTALLATIONS.EXPORT,
+  PERMISSIONS.INSTALLATIONS.COMPLETE_FOR_INSTALLER,
 
   // Users - Full access (creating/editing ADMIN or SUPERADMIN accounts is
   // additionally gated to SUPERADMIN directly in UserManagement.jsx, per
@@ -246,15 +253,19 @@ const ROLE_PERMISSIONS = Object.freeze({
 
     // Installations: the combined area, the detail view, and the operations on
     // an imported job (assign, unassign, cancel, export & mark sent).
-    // INSTALLATIONS.COMPLETE is withheld: PATCH /:id/start, POST /:id/report
-    // and POST /:id/fail are INSTALLER-only on the API, and completing a JED
-    // job is the installer's task too.
+    // INSTALLATIONS.COMPLETE is withheld: PATCH /:id/start and POST /:id/fail
+    // are INSTALLER-only on the API, and completing a JED job is the
+    // installer's task too. Completing an imported job ON THE INSTALLER'S
+    // BEHALF (POST /:id/report, 2026-10-12) is its own permission below.
     PERMISSIONS.INSTALLATIONS.VIEW,
     PERMISSIONS.INSTALLATIONS.VIEW_ALL,
     PERMISSIONS.INSTALLATIONS.MANAGE,
     // Export the Completed Installations workbook — installation data only;
     // its payment columns need PAYMENTS.VIEW, which this role doesn't hold.
     PERMISSIONS.INSTALLATIONS.EXPORT,
+    // Complete an ASSIGNED/IN_PROGRESS job for its installer, with a meter
+    // that installer holds (Integration Update 2026-10-12, §4 — own discos).
+    PERMISSIONS.INSTALLATIONS.COMPLETE_FOR_INSTALLER,
 
     // Assignments: every /assignments/* route, same as ADMIN.
     PERMISSIONS.ASSIGNMENTS.VIEW,
@@ -476,6 +487,7 @@ export const getPermissionDisplayName = (permission) => {
     [PERMISSIONS.INSTALLATIONS.VIEW_ALL]: 'View All Installations',
     [PERMISSIONS.INSTALLATIONS.MANAGE]: 'Manage Installations',
     [PERMISSIONS.INSTALLATIONS.COMPLETE]: 'Complete Installations',
+    [PERMISSIONS.INSTALLATIONS.COMPLETE_FOR_INSTALLER]: 'Complete Installations for an Installer',
     [PERMISSIONS.USERS.VIEW]: 'View Users',
     [PERMISSIONS.USERS.CREATE]: 'Create Users',
     [PERMISSIONS.USERS.UPDATE]: 'Update Users',

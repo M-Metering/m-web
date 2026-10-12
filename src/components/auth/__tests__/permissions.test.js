@@ -53,6 +53,7 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
       PERMISSIONS.USERS.VIEW,
       PERMISSIONS.INSTALLERS.VIEW_STATUS,
       PERMISSIONS.INSTALLATIONS.EXPORT,
+      PERMISSIONS.INSTALLATIONS.COMPLETE_FOR_INSTALLER,
     ].sort());
   });
 
@@ -67,6 +68,10 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
     expect(hasPermission(ROLES.INSTALLER, PERMISSIONS.INSTALLERS.VIEW_STATUS)).toBe(false);
   });
 
+  it('never lets an Installer complete someone else’s job', () => {
+    expect(hasPermission(ROLES.INSTALLER, PERMISSIONS.INSTALLATIONS.COMPLETE_FOR_INSTALLER)).toBe(false);
+  });
+
   it.each([
     ['dispatch meters', PERMISSIONS.ASSIGNMENTS.MANAGE],
     ['assign and cancel installation jobs', PERMISSIONS.INSTALLATIONS.MANAGE],
@@ -74,6 +79,8 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
     ['export meters and read meter statistics', PERMISSIONS.SCHEDULE.MANAGE],
     ['view imports, history and templates', PERMISSIONS.IMPORTS.VIEW],
     ['see the installer roster', PERMISSIONS.USERS.VIEW],
+    // Integration Update 2026-10-12 §4: report a job for its installer.
+    ['complete a job on its installer’s behalf', PERMISSIONS.INSTALLATIONS.COMPLETE_FOR_INSTALLER],
   ])('can %s', (_label, permission) => {
     expect(hasPermission(ROLES.SUPERVISOR, permission)).toBe(true);
   });
@@ -87,7 +94,7 @@ describe('SUPERVISOR — exactly the permissions the API grants', () => {
   });
 
   it.each([
-    // Installer-only on the API: start / report / fail a job.
+    // Installer-only: start / fail a job, and the installer's own completion.
     ['complete an installation', PERMISSIONS.INSTALLATIONS.COMPLETE],
     // Read-only on users: no create, edit, delete or restore.
     ['create users', PERMISSIONS.USERS.CREATE],

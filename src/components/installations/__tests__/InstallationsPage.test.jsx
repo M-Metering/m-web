@@ -14,8 +14,15 @@ vi.mock('../../admin/InstallationRequests', () => ({
 vi.mock('../../admin/AdminInstallations', () => ({
   default: () => <div data-testid="view-jed">JED queue view</div>,
 }));
+vi.mock('../DuplicateSeals', () => ({
+  default: () => <div data-testid="view-seals">Duplicate seals view</div>,
+}));
 
-beforeEach(() => vi.clearAllMocks());
+// Duplicate seals is the one role-dependent view (Super Admin only).
+const perms = { canFixSeals: false };
+vi.mock('../../auth/usePermissions', () => ({ usePermissions: () => perms }));
+
+beforeEach(() => { vi.clearAllMocks(); perms.canFixSeals = false; });
 afterEach(cleanup);
 
 const renderAt = (initialEntry = '/installations') => render(
@@ -79,5 +86,21 @@ describe('InstallationsPage — one area, two views', () => {
     renderAt('/installation-requests');
     expect(await screen.findByTestId('view-requests')).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Installations' })).toBeTruthy());
+  });
+});
+
+describe('InstallationsPage — Duplicate seals (Super Admin only)', () => {
+  it('is offered to a Super Admin and opens from the URL', async () => {
+    perms.canFixSeals = true;
+    renderAt('/installations?view=seals');
+    expect(await screen.findByTestId('view-seals')).toBeTruthy();
+    expect(tab('Duplicate seals')).toBeTruthy();
+  });
+
+  it('is neither offered nor reachable by URL for any other role', async () => {
+    renderAt('/installations?view=seals');
+    expect(await screen.findByTestId('view-requests')).toBeTruthy();
+    expect(screen.queryByTestId('view-seals')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Duplicate seals/ })).toBeNull();
   });
 });

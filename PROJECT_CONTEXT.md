@@ -28,6 +28,15 @@ and a meter's state no longer reads `installedAt` (fixes "reverted meter shows I
 assignable"). The unassign reason field no longer loses focus per keystroke. See CLAUDE.md rule 10 and
 API_GAP_REPORT.md (AY, AZ; AX closed).
 
+**Seals, staff completion and import downloads (2026-10-12, the backend's integration update).** The
+seal is required on completion and identified by its digits (`utils/sealNumber.js`; 400/409 shown on the
+field). Supervisor/Admin/Super Admin can **Complete installation** for an assigned job's installer from
+Installations → All Requests, picking from that installer's meters (`GET /meters?assignedTo=`);
+`completedByName` shows when it differs from the installer. Super Admin has Installations → **Duplicate
+seals** (`GET /installations/seal-duplicates`, `PATCH /installations/:id/seal`). A pending-installations
+import shows **Download completed installations (n)** when `data.completedExport` is set. See CLAUDE.md
+("Staff complete a job…", "Duplicate seals", "Already-completed accounts on import").
+
 **Meter Schedule Disco filters (2026-10-08).** Meter Inventory and Meter Query share one
 `useDiscoOptions` list and send the selected `discoCode` with the existing Status filter on meter-list
 and serial-search requests. “All Discos” omits the parameter; changing either filter follows the

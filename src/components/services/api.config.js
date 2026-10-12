@@ -311,6 +311,10 @@ export const ENDPOINTS = {
     CANCEL: (id) => `/installations/${encodeURIComponent(id)}/cancel`,
     // SUPERADMIN only (2026-10-04): INSTALLED → PENDING, meter back to stock.
     REVERT: (id) => `/installations/${encodeURIComponent(id)}/revert`,
+    // SUPERADMIN only (2026-10-12): seals shared by more than one completed
+    // job (grouped by their digits), and correcting one completed job's seal.
+    SEAL_DUPLICATES: '/installations/seal-duplicates',
+    SEAL: (id) => `/installations/${encodeURIComponent(id)}/seal`,
     EXPORT: (discoCode) => `/installations/export/${encodeURIComponent(discoCode)}`,
     EXPORT_MARK_SENT: (discoCode) => `/installations/export/${encodeURIComponent(discoCode)}/mark-sent`,
     EXPORTS: '/installations/exports',

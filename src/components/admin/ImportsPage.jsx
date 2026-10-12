@@ -30,6 +30,7 @@ import { usePermissions } from '../auth/usePermissions';
 import StatusTabs from '../common/StatusTabs';
 import ConfirmationModal from '../common/ConfirmationModal';
 import BatchResultSummary from '../installations/BatchResultSummary';
+import CompletedExportNotice from './CompletedExportNotice';
 import ImportFileCheck from './ImportFileCheck';
 import { useDiscoOptions } from '../../hooks/useDiscoOptions';
 import { readSpreadsheetRows } from '../../utils/xlsx';
@@ -369,6 +370,7 @@ function ImportsPage() {
             )}
 
             {result && <BatchResultSummary data={result} acceptedLabel={selectedType.accepted} />}
+            {result && <CompletedExportNotice data={result} />}
             </>)}
 
             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 pt-1">

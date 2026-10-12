@@ -25,7 +25,7 @@ import { Link } from 'react-router-dom';
 import {
   RefreshCw, Search, AlertCircle, Loader2, UserPlus, X,
   Download, Ban, Undo2, Inbox, MapPin, ExternalLink, ArrowDownUp, Filter,
-  ChevronRight, FileSpreadsheet, CalendarClock, ClipboardPaste,
+  ChevronRight, FileSpreadsheet, CalendarClock, ClipboardPaste, CheckCircle2,
 } from 'lucide-react';
 import jedApi from '../services/api';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
@@ -34,6 +34,8 @@ import StatusBadge from '../common/StatusBadge';
 import ConfirmationModal from '../common/ConfirmationModal';
 import JedAssignmentNotice from '../installations/JedAssignmentNotice';
 import RevertInstallationModal from '../installations/RevertInstallationModal';
+import ReportInstallationModal from '../installations/ReportInstallationModal';
+import { collectSealKeys } from '../../utils/sealNumber';
 import { revertTargetOf } from '../../utils/installationRevert';
 import InstallerSelect from '../installations/InstallerSelect';
 import BatchResultSummary from '../installations/BatchResultSummary';
@@ -113,9 +115,14 @@ const attributeLine = (row) =>
 // Columns the import kept without a field of their own (captureExtras).
 const extrasLine = (row) => importExtrasOf(row.raw).map((e) => `${e.label}: ${e.value}`).join(' · ');
 
-function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign, onRevert, busy, canCancel = true, canUnassign = true, canRevert = false }) {
+function RequestRow({
+  row, selectable, selected, onToggle, onCancel, onUnassign, onRevert, onComplete, busy,
+  canCancel = true, canUnassign = true, canRevert = false, canComplete = false,
+}) {
   const job = row.raw;
   const actions = getAvailableActions(row.status);
+  // Staff completion needs the job's installer: the meter must be one they hold.
+  const completable = canComplete && actions.report && !!job.assignedTo;
   const coords = getCoordinates(job);
   const attrs = attributeLine(row);
   const extras = extrasLine(row);
@@ -163,6 +170,8 @@ function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign,
             </p>
           )}
           {job.installationDate && <p>Installed {formatPlainDate(job.installationDate)}{job.installerName ? ` by ${job.installerName}` : ''}</p>}
+          {/* Who actually submitted, when it wasn't the installer (staff completion, 2026-10-12). */}
+          {job.completedByName && job.completedByName !== job.installerName && <p>Completed by {job.completedByName}</p>}
           {job.discoSupervisor && <p>Supervisor {job.discoSupervisor}</p>}
           {job.failureReason && <p className="text-red-700 dark:text-red-400">Failed: {job.failureReason}</p>}
           <div className="flex flex-wrap gap-x-3">
@@ -185,8 +194,15 @@ function RequestRow({ row, selectable, selected, onToggle, onCancel, onUnassign,
 
         {/* Read-only roles (Supervisor) see the row and its status, never the
             actions that would change it. */}
-        {((canUnassign && actions.unassign) || (canCancel && actions.cancel) || (canRevert && actions.revert)) && (
+        {(completable || (canUnassign && actions.unassign) || (canCancel && actions.cancel) || (canRevert && actions.revert)) && (
           <div className="flex flex-wrap gap-2 mt-2">
+            {completable && (
+              <button type="button" onClick={() => onComplete(job)} disabled={busy}
+                title="Report this job as installed on the installer's behalf"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Complete installation
+              </button>
+            )}
             {canUnassign && actions.unassign && (
               <button type="button" onClick={() => onUnassign(job)} disabled={busy}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50">
@@ -323,6 +339,8 @@ function InstallationRequests() {
 
   const [cancelTarget, setCancelTarget] = useState(null);
   const [revertTarget, setRevertTarget] = useState(null);
+  // Staff completing a job for its installer (ReportInstallationModal forInstaller).
+  const [completeTarget, setCompleteTarget] = useState(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -756,6 +774,22 @@ function InstallationRequests() {
   const handleReverted = (target) => {
     setActionError(null);
     setNotice(`Meter${target.meterNumber ? ` ${target.meterNumber}` : ''} was unassigned from account ${target.accountNumber}. The job is pending again and the meter is back in stock.`);
+    refreshAll();
+  };
+
+  // Seals already on the imported jobs loaded here — the duplicates this page
+  // can catch before the API's own 409.
+  const usedSealKeys = useMemo(
+    () => (completeTarget ? collectSealKeys(multi.rows, completeTarget.id) : new Set()),
+    [multi.rows, completeTarget]
+  );
+
+  const handleCompleted = () => {
+    const target = completeTarget;
+    setCompleteTarget(null);
+    setActionError(null);
+    setNotice(`Account ${target?.accountNumber ?? ''} completed on behalf of ${target?.assigneeName || target?.installerName || 'its installer'}.`);
+    notifyDataChanged();
     refreshAll();
   };
 
@@ -1414,10 +1448,12 @@ function InstallationRequests() {
                     onCancel={setCancelTarget}
                     onUnassign={handleUnassign}
                     onRevert={(r) => setRevertTarget(revertTargetOf(r))}
+                    onComplete={setCompleteTarget}
                     busy={actionBusy}
                     canCancel={canManageJobs}
                     canUnassign={canAssign}
                     canRevert={permissions.canRevertInstallations === true}
+                    canComplete={permissions.canCompleteForInstaller === true}
                   />
                 )
               ))}
@@ -1560,6 +1596,15 @@ function InstallationRequests() {
       />
 
       <RevertInstallationModal target={revertTarget} onClose={() => setRevertTarget(null)} onReverted={handleReverted} />
+
+      <ReportInstallationModal
+        job={completeTarget}
+        isOpen={!!completeTarget}
+        forInstaller
+        usedSealKeys={usedSealKeys}
+        onClose={() => setCompleteTarget(null)}
+        onReported={handleCompleted}
+      />
     </div>
   );
 }
