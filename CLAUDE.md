@@ -269,11 +269,26 @@ column. "That meter is not assigned to this job's installer" lands on the meter 
 `ConfirmationModal`, warning first for an EXPORTED job (the disco's sheet keeps the old seal), then a
 re-read — never an optimistic edit.
 
-**Already-completed accounts on import (2026-10-12).** A pending-installations import may return
+**Already-completed accounts on import (2026-10-13).** A pending-installations import may return
 `data.completedExport` (`utils/importCompletedExport.js`, `admin/CompletedExportNotice.jsx`): a 7-day,
-no-login link to the disco's response sheet for skipped accounts that are INSTALLED/EXPORTED, or
-`{ rowCount, error }`. Open it as a plain `<a href>` — never fetch it with the auth header, never parse it
-out of `message` — and say the link exposes customer details.
+no-login link to a **Completed Installations workbook** (the portal export's layout, pictures as links) for
+skipped accounts that are INSTALLED/EXPORTED. It is not a disco response sheet (no `/installations/exports`
+entry), and the 12 Oct `{ rowCount, error }` shape is gone. Open it as a plain `<a href>` — never fetch it
+with the auth header, never parse it out of `message` — and say the link exposes customer details.
+
+**"Export installations" asks first (2026-10-13).** The Installations page's export button opens
+`installations/ExportChoiceModal.jsx`: **Standard export — completed installations** (the existing
+browser-built workbook of exactly the rows on screen; disabled with its reason when none match or the
+list is incomplete) or **Custom export — choose what to include** (`installations/CustomExportModal.jsx`).
+The custom export is the SERVER's: `GET /installations/custom-export/fields` is the catalogue, already
+narrowed to the role (a Supervisor gets no customer phone/email or revenue), and the builder is driven by
+it entirely — sections, types, ops, enum values, presets, buckets, metrics, formats, limits — so a new
+field needs no frontend change; never hardcode a field. `utils/customExport.js` owns the value input per
+op, labels, client checks, the exact `POST /installations/custom-export` body (dates plain `YYYY-MM-DD`,
+metrics only with a grouping, `columns: []` = totals only) and `errorsByLocation` (the 400's `errors[]`
+shown on the input named, e.g. `filters[2]`). The file is saved as the server built it
+(`downloadServerXlsx` / `downloadBlob` for its CSV) — never a client CSV writer or client totals. Same
+roles as `INSTALLATIONS.EXPORT` (`canExportInstallations`). One request in flight at a time.
 
 **Completed Installations — filter and export (2026-09-28).** "Installed from / to" on the
 Installations page filters the LIST by the actual installation date (`completionDateOf`: an imported

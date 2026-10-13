@@ -37,6 +37,14 @@ seals** (`GET /installations/seal-duplicates`, `PATCH /installations/:id/seal`).
 import shows **Download completed installations (n)** when `data.completedExport` is set. See CLAUDE.md
 ("Staff complete a job…", "Duplicate seals", "Already-completed accounts on import").
 
+**Custom export and the import workbook (2026-10-13, the backend's consolidated update).**
+Installations → **Export installations** now asks "What would you like to export?": the standard
+Completed Installations workbook, or a **Custom export** (columns, filters, grouped totals; Excel or CSV;
+every status) built from `GET /installations/custom-export/fields` and run by
+`POST /installations/custom-export`. The import's already-completed download is now a Completed
+Installations workbook. See CLAUDE.md ("Export installations asks first", "Already-completed accounts on
+import").
+
 **Meter Schedule Disco filters (2026-10-08).** Meter Inventory and Meter Query share one
 `useDiscoOptions` list and send the selected `discoCode` with the existing Status filter on meter-list
 and serial-search requests. “All Discos” omits the parameter; changing either filter follows the

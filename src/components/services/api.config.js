@@ -315,6 +315,10 @@ export const ENDPOINTS = {
     // job (grouped by their digits), and correcting one completed job's seal.
     SEAL_DUPLICATES: '/installations/seal-duplicates',
     SEAL: (id) => `/installations/${encodeURIComponent(id)}/seal`,
+    // Custom export (2026-10-13; SUPERADMIN/ADMIN/SUPERVISOR): the field
+    // catalogue for the caller's role, and the export itself (a file).
+    CUSTOM_EXPORT_FIELDS: '/installations/custom-export/fields',
+    CUSTOM_EXPORT: '/installations/custom-export',
     EXPORT: (discoCode) => `/installations/export/${encodeURIComponent(discoCode)}`,
     EXPORT_MARK_SENT: (discoCode) => `/installations/export/${encodeURIComponent(discoCode)}/mark-sent`,
     EXPORTS: '/installations/exports',
