@@ -1,35 +1,26 @@
 // src/components/admin/CompletedExportNotice.jsx
 // After a pending-installations import: the download of accounts in the sheet
-// that are ALREADY completed (data.completedExport, 2026-10-12). See
-// utils/importCompletedExport.js for the shapes and the link's rules — opened
-// directly as a plain link (it needs no login), never fetched with the auth
-// header, and sensitive: it holds customer names, phones and addresses.
-import { Download, AlertTriangle } from 'lucide-react';
+// that are ALREADY completed (data.completedExport) — a Completed Installations
+// workbook for just those accounts (2026-10-13). See
+// utils/importCompletedExport.js for the link's rules: opened directly as a
+// plain link (it needs no login), never fetched with the auth header, and
+// sensitive — it holds customer names, phones and addresses.
+import { Download } from 'lucide-react';
 import { completedExportOf } from '../../utils/importCompletedExport';
 import { formatDateTime } from '../../utils/date';
 
 function CompletedExportNotice({ data }) {
   const ce = completedExportOf(data);
   if (!ce) return null;
-  const accounts = `${ce.rowCount.toLocaleString()} account${ce.rowCount === 1 ? '' : 's'}`;
-
-  if (ce.kind === 'error') {
-    return (
-      <div role="alert" className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 flex items-start gap-2">
-        <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-        <p className="text-sm text-amber-800 dark:text-amber-300">
-          {accounts} in this sheet {ce.rowCount === 1 ? 'is' : 'are'} already completed, but their response sheet
-          could not be prepared: {ce.error}
-        </p>
-      </div>
-    );
-  }
+  const one = ce.rowCount === 1;
+  const accounts = `${ce.rowCount.toLocaleString()} account${one ? '' : 's'}`;
 
   return (
     <div className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-lg p-3 space-y-2">
       <p className="text-sm text-gray-700 dark:text-gray-300">
-        {accounts} in this sheet {ce.rowCount === 1 ? 'is' : 'are'} already completed. Nothing about {ce.rowCount === 1 ? 'it' : 'them'} was
-        changed; download the disco response sheet for just {ce.rowCount === 1 ? 'that account' : 'those accounts'}.
+        {accounts} in this sheet {one ? 'is' : 'are'} already installed, so {one ? 'it was' : 'they were'} skipped and
+        nothing about {one ? 'it' : 'them'} changed. You can download {one ? 'its' : 'their'} completed installation
+        details — the same layout as Export Completed Installations, with picture links instead of embedded pictures.
       </p>
       {ce.expired ? (
         <p className="text-sm text-amber-700 dark:text-amber-400">This download link has expired. Re-import the sheet to get a new one.</p>

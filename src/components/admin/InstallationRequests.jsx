@@ -35,6 +35,8 @@ import ConfirmationModal from '../common/ConfirmationModal';
 import JedAssignmentNotice from '../installations/JedAssignmentNotice';
 import RevertInstallationModal from '../installations/RevertInstallationModal';
 import ReportInstallationModal from '../installations/ReportInstallationModal';
+import ExportChoiceModal from '../installations/ExportChoiceModal';
+import CustomExportModal from '../installations/CustomExportModal';
 import { collectSealKeys } from '../../utils/sealNumber';
 import { revertTargetOf } from '../../utils/installationRevert';
 import InstallerSelect from '../installations/InstallerSelect';
@@ -355,6 +357,9 @@ function InstallationRequests() {
   // and pictures) | 'downloading' (building and saving the workbook). The ref
   // refuses a second click before React has re-rendered the disabled button.
   const [completedExportPhase, setCompletedExportPhase] = useState(null);
+  // "Export installations" first asks Standard or Custom (2026-10-13).
+  const [exportChoiceOpen, setExportChoiceOpen] = useState(false);
+  const [customExportOpen, setCustomExportOpen] = useState(false);
   const [photoProgress, setPhotoProgress] = useState(null);
   const completedExportRunning = useRef(false);
   const exportingCompleted = completedExportPhase !== null;
@@ -1356,10 +1361,13 @@ function InstallationRequests() {
               <p className="text-xs text-gray-500 dark:text-gray-400 sm:ml-auto" aria-live="polite">
                 {completedExportBlocked || `${completedCandidates.length.toLocaleString()} completed installation${completedCandidates.length === 1 ? '' : 's'} in scope`}
               </p>
+              {/* Opens the Standard / Custom choice. Never disabled for an
+                  empty or partial list: the custom export is the server's and
+                  doesn't depend on what this page loaded. */}
               <button
                 type="button"
-                onClick={handleExportCompleted}
-                disabled={!!completedExportBlocked || exportingCompleted || completedCandidates.length === 0}
+                onClick={() => { setCompletedExportError(null); setExportChoiceOpen(true); }}
+                disabled={exportingCompleted}
                 className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg bg-brand-500 text-gray-900 hover:bg-brand-600 disabled:opacity-50"
               >
                 {exportingCompleted ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
@@ -1367,7 +1375,7 @@ function InstallationRequests() {
                   ? 'Downloading…'
                   : completedExportPhase === 'preparing'
                     ? `Preparing…${photoProgress?.total ? ` (pictures ${photoProgress.done}/${photoProgress.total})` : ''}`
-                    : 'Export Completed Installations'}
+                    : 'Export installations'}
               </button>
             </div>
             {completedExportError && (
@@ -1596,6 +1604,22 @@ function InstallationRequests() {
       />
 
       <RevertInstallationModal target={revertTarget} onClose={() => setRevertTarget(null)} onReverted={handleReverted} />
+
+      <ExportChoiceModal
+        isOpen={exportChoiceOpen}
+        onClose={() => setExportChoiceOpen(false)}
+        completedCount={completedCandidates.length}
+        standardBlockedReason={listLoading ? 'The list is still loading — try again in a moment.' : completedExportBlocked}
+        onStandard={() => { setExportChoiceOpen(false); handleExportCompleted(); }}
+        onCustom={() => { setExportChoiceOpen(false); setNotice(null); setCustomExportOpen(true); }}
+      />
+
+      <CustomExportModal
+        isOpen={customExportOpen}
+        onClose={() => setCustomExportOpen(false)}
+        onDone={setNotice}
+        initialDiscoCodes={includeMulti && multiDiscoCode ? [multiDiscoCode] : []}
+      />
 
       <ReportInstallationModal
         job={completeTarget}

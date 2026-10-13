@@ -1,5 +1,13 @@
 # API Gap Report
 
+## 2026-10-13 (fourteenth pass): consolidated update — custom export, import workbook
+
+The 13 Oct document replaces the 12 Oct one; §2–§5 are unchanged and already implemented (below). New:
+the custom export (`GET /installations/custom-export/fields`, `POST /installations/custom-export`, both in
+the live spec on 2026-10-13), offered behind the Installations page's export button; and
+`data.completedExport` now links a Completed Installations workbook (its `{ rowCount, error }` case was
+removed from the client). Gap **BA** still stands: `completedByName` is not in the live spec's schema.
+
 ## 2026-10-12 (thirteenth pass): Seals, staff completion and import downloads
 
 The backend's "Seals, Staff Completion and Import Downloads" update (2026-10-12) is implemented as

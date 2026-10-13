@@ -14,15 +14,14 @@ describe('completedExportOf', () => {
     expect(completedExportOf({
       completedExport: {
         rowCount: 3,
-        fileName: 'aba_power_installations_2026-10-12.xlsx',
+        fileName: 'completed-installations-aba-power-2026-10-12.xlsx',
         downloadUrl: 'https://api.memetering.com/api/v1/imports/completed-exports/0c1d',
         expiresAt: '2026-10-19T11:36:58.410Z',
       },
     }, NOW)).toEqual({
-      kind: 'download',
       rowCount: 3,
       url: 'https://api.memetering.com/api/v1/imports/completed-exports/0c1d',
-      fileName: 'aba_power_installations_2026-10-12.xlsx',
+      fileName: 'completed-installations-aba-power-2026-10-12.xlsx',
       expiresAt: '2026-10-19T11:36:58.410Z',
       expired: false,
     });
@@ -35,9 +34,8 @@ describe('completedExportOf', () => {
     expect(out.expired).toBe(true);
   });
 
-  it('passes the error through when the disco has no export template', () => {
-    expect(completedExportOf({ completedExport: { rowCount: 4, error: 'No export template configured' } }, NOW))
-      .toEqual({ kind: 'error', rowCount: 4, error: 'No export template configured' });
+  it('offers nothing for a completedExport without a link', () => {
+    expect(completedExportOf({ completedExport: { rowCount: 4 } }, NOW)).toBeNull();
   });
 
   it('never offers a link that is not http(s)', () => {

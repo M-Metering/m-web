@@ -1275,22 +1275,34 @@ class JEDApiService {
    * Shared binary download for this group. Per the integration guide, these
    * endpoints return an XLSX body on success but a JSON error on failure, so
    * the content type is what decides — never assume a blob.
+   *
+   * `body` (optional) makes it a JSON POST — the custom export takes its
+   * request in the body. A JSON error carries the HTTP `status` and, when the
+   * API sent them, its per-input `errors` on the thrown Error.
    * @returns {Promise<{blob: Blob, filename: string|null}>}
    */
-  async downloadFile(url, fallbackMessage) {
+  async downloadFile(url, fallbackMessage, { body } = {}) {
     const headers = this.utils.buildHeaders();
-    delete headers['Content-Type'];
+    if (body === undefined) delete headers['Content-Type'];
+    else headers['Content-Type'] = 'application/json';
 
-    const response = await fetch(url, { method: 'GET', headers });
+    const response = await fetch(url, body === undefined
+      ? { method: 'GET', headers }
+      : { method: 'POST', headers, body: JSON.stringify(body) });
     const contentType = response.headers.get('content-type') || '';
 
     if (!response.ok) {
       if (response.status === 401) this.clearTokens();
       if (contentType.includes('application/json')) {
         const data = await response.json().catch(() => null);
-        throw new Error(`${this.errorTypes.NOT_FOUND}:${data?.message || fallbackMessage}`);
+        const error = new Error(`${this.errorTypes.NOT_FOUND}:${data?.message || fallbackMessage}`);
+        error.status = response.status;
+        if (Array.isArray(data?.errors)) error.errors = data.errors;
+        throw error;
       }
-      throw new Error(`${this.errorTypes.SERVER}:${fallbackMessage} (${response.status})`);
+      const error = new Error(`${this.errorTypes.SERVER}:${fallbackMessage} (${response.status})`);
+      error.status = response.status;
+      throw error;
     }
 
     // A JSON body on a 200 still means "no file" rather than a spreadsheet.
@@ -1551,6 +1563,27 @@ class JEDApiService {
    */
   async getInstallerMeters(installerId, params = {}) {
     return await this.getMeters({ ...params, assignedTo: installerId });
+  }
+
+  /**
+   * The custom-export field catalogue for the caller's role (2026-10-13):
+   * { fields, datePresets, dateBuckets, metrics, formats, limits }. A
+   * Supervisor's omits customer phone/email and revenue — the server decides.
+   */
+  async getCustomExportFields() {
+    const url = this.buildApiUrl(this.endpoints.INSTALLATIONS.CUSTOM_EXPORT_FIELDS);
+    return await this.makeRequest(url, { method: 'GET', useCache: true, cacheKey: 'custom-export-fields' });
+  }
+
+  /**
+   * Run a custom export: POST the request built by utils/customExport.js and
+   * get the file back. Errors (400 with `errors[]`, the row-limit 400, 403 for
+   * a disco, 404 for no matches) are thrown with `status`/`errors` attached.
+   * @returns {Promise<{blob: Blob, filename: string|null}>}
+   */
+  async runCustomExport(request) {
+    const url = this.buildApiUrl(this.endpoints.INSTALLATIONS.CUSTOM_EXPORT);
+    return await this.downloadFile(url, 'The export could not be created', { body: request });
   }
 
   // ---------- Installations (installer app) ----------

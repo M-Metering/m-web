@@ -40,6 +40,8 @@ vi.mock('../../services/api', () => ({
     exportInstallations: vi.fn(),
     getInstallerMeters: vi.fn(),
     reportInstallation: vi.fn(),
+    getCustomExportFields: vi.fn(),
+    runCustomExport: vi.fn(),
   },
 }));
 
@@ -309,16 +311,22 @@ describe('InstallationRequests — upload-field filters, selection and assignmen
   });
 });
 
+// "Export installations" first asks Standard or Custom (2026-10-13).
+const exportButton = () => screen.getByRole('button', { name: /Export installations/ });
+const chooseStandard = async () => {
+  fireEvent.click(exportButton());
+  fireEvent.click(await screen.findByRole('button', { name: /Standard export/ }));
+};
+
 describe('InstallationRequests — Export Completed Installations', () => {
   const exportedSheets = () => downloadXlsx.mock.calls.at(-1)[1];
   const exportedAccounts = () => exportedSheets()[0].rows.map((r) => r.accountNumber).sort();
-  const exportButton = () => screen.getByRole('button', { name: /Export Completed Installations/ });
 
   it('exports every completed installation in "All discos" (JED and Aba), completed statuses only', async () => {
     renderPage();
     await screen.findByText('JED DONE');
     await waitFor(() => expect(screen.getByText('2 completed installations in scope')).toBeTruthy());
-    fireEvent.click(exportButton());
+    await chooseStandard();
 
     await waitFor(() => expect(downloadXlsx).toHaveBeenCalled());
     expect(downloadXlsx.mock.calls[0][0]).toMatch(/^completed-installations-all-discos-\d{4}-\d{2}-\d{2}\.xlsx$/);
@@ -333,14 +341,14 @@ describe('InstallationRequests — Export Completed Installations', () => {
 
     fireEvent.change(screen.getByLabelText('Disco'), { target: { value: '__JED__' } });
     await waitFor(() => expect(screen.getByText('1 completed installation in scope')).toBeTruthy());
-    fireEvent.click(exportButton());
+    await chooseStandard();
     await waitFor(() => expect(downloadXlsx).toHaveBeenCalledTimes(1));
     expect(exportedAccounts()).toEqual(['477015']);
 
     fireEvent.change(screen.getByLabelText('Disco'), { target: { value: 'ABA_POWER' } });
     await waitFor(() => expect(screen.queryByText('JED PAID')).toBeNull());
     await waitFor(() => expect(screen.getByText('1 completed installation in scope')).toBeTruthy());
-    fireEvent.click(exportButton());
+    await chooseStandard();
     await waitFor(() => expect(downloadXlsx).toHaveBeenCalledTimes(2));
     expect(exportedAccounts()).toEqual(['555']);
     const summary = Object.fromEntries(exportedSheets()[1].rows.map((r) => [r.item.trim(), r.value]));
@@ -366,7 +374,7 @@ describe('InstallationRequests — Export Completed Installations', () => {
     await waitFor(() => expect(screen.queryByText('LATER')).toBeNull());
     expect(screen.getByText('LATE NIGHT')).toBeTruthy();
     expect(screen.queryByText('ADA OBI')).toBeNull();
-    fireEvent.click(exportButton());
+    await chooseStandard();
     await waitFor(() => expect(downloadXlsx).toHaveBeenCalled());
     expect(exportedAccounts()).toEqual(['600001']);
   });
@@ -378,7 +386,7 @@ describe('InstallationRequests — Export Completed Installations', () => {
     };
     renderPage();
     await screen.findByText('JED DONE');
-    fireEvent.click(exportButton());
+    await chooseStandard();
     await waitFor(() => expect(downloadXlsx).toHaveBeenCalled());
     const keys = exportedSheets()[0].columns.map((c) => c.key);
     ['rrr', 'amount', 'datePaid', 'customerPhone'].forEach((k) => expect(keys).not.toContain(k));
@@ -392,23 +400,23 @@ describe('InstallationRequests — Export Completed Installations', () => {
     await screen.findByText('JED DONE');
     await waitFor(() => expect(screen.getByText('2 completed installations in scope')).toBeTruthy());
     const button = exportButton();
-    fireEvent.click(button);
-    fireEvent.click(button); // a second click before React re-renders
+    await chooseStandard();
     await waitFor(() => expect(button.textContent).toMatch(/Downloading…/));
     expect(button.disabled).toBe(true);
-    fireEvent.click(button);
+    fireEvent.click(button); // pressed again while running: nothing opens
+    expect(screen.queryByRole('dialog')).toBeNull();
     finish();
     expect(await screen.findByText(/Download complete: 2 completed installations exported/)).toBeTruthy();
     expect(downloadXlsx).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(button.disabled).toBe(false));
-    expect(button.textContent).toMatch(/Export Completed Installations/);
+    expect(button.textContent).toMatch(/Export installations/);
   });
 
   it('offers no export to a role without INSTALLATIONS.EXPORT', async () => {
     permissions = { ...ADMIN_PERMISSIONS, canExportInstallations: false };
     renderPage();
     await screen.findByText('JED DONE');
-    expect(screen.queryByRole('button', { name: /Export Completed Installations/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Export installations/ })).toBeNull();
   });
 
   it('says so plainly when the export fails', async () => {
@@ -416,7 +424,7 @@ describe('InstallationRequests — Export Completed Installations', () => {
     renderPage();
     await screen.findByText('JED DONE');
     await waitFor(() => expect(screen.getByText('2 completed installations in scope')).toBeTruthy());
-    fireEvent.click(exportButton());
+    await chooseStandard();
     expect(await screen.findByText('Unable to export completed installations. Please try again.')).toBeTruthy();
     // The button is usable again after a failure.
     await waitFor(() => expect(exportButton().disabled).toBe(false));
@@ -429,7 +437,8 @@ describe('InstallationRequests — Export Completed Installations', () => {
     // Neither completed fixture has a dateCompleted, so a range excludes both.
     fireEvent.change(screen.getByLabelText('Installed from'), { target: { value: '2026-01-01' } });
     await waitFor(() => expect(screen.getByText('0 completed installations in scope')).toBeTruthy());
-    expect(exportButton().disabled).toBe(true);
+    fireEvent.click(exportButton());
+    expect((await screen.findByRole('button', { name: /Standard export/ })).disabled).toBe(true);
   });
 
   it('is unavailable while the list is incomplete', async () => {
@@ -438,7 +447,12 @@ describe('InstallationRequests — Export Completed Installations', () => {
     }));
     renderPage();
     await screen.findByText('Not every record loaded, so the export is unavailable.');
-    expect(exportButton().disabled).toBe(true);
+    fireEvent.click(exportButton());
+    const standard = await screen.findByRole('button', { name: /Standard export/ });
+    expect(standard.disabled).toBe(true);
+    expect(standard.textContent).toMatch(/Not every record loaded/);
+    // The custom export is built by the server, so it doesn't depend on this list.
+    expect(screen.getByRole('button', { name: /Custom export/ }).disabled).toBe(false);
   });
 });
 
@@ -470,11 +484,50 @@ describe('InstallationRequests — a Supervisor, to whom JED requests are forbid
   it('can export Completed Installations', async () => {
     renderPage();
     await screen.findByText('DONE JOB');
-    const exportButton = await screen.findByRole('button', { name: /Export Completed Installations/ });
-    await waitFor(() => expect(exportButton.disabled).toBe(false));
+    await screen.findByRole('button', { name: /Export installations/ });
+    await waitFor(() => expect(screen.getByText(/completed installations? in scope/)).toBeTruthy());
     expect(screen.queryByText(/Not every record loaded/)).toBeNull();
-    fireEvent.click(exportButton);
+    await chooseStandard();
     await waitFor(() => expect(downloadXlsx).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('InstallationRequests — the export choice', () => {
+  it('asks which export first, in plain words, and exports nothing until one is picked', async () => {
+    renderPage();
+    await screen.findByText('JED DONE');
+    fireEvent.click(exportButton());
+    const dialog = await screen.findByRole('dialog', { name: 'What would you like to export?' });
+    expect(within(dialog).getByRole('button', { name: /Standard export — completed installations/ })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: /Custom export — choose what to include/ })).toBeTruthy();
+    expect(downloadXlsx).not.toHaveBeenCalled();
+  });
+
+  it('opens the custom builder from the catalogue', async () => {
+    jedApi.getCustomExportFields.mockResolvedValue({ success: true, data: {
+      fields: [{ key: 'status', label: 'Status', section: 'Record', type: 'enum', ops: ['in'], default: true, values: ['PENDING'] }],
+      formats: ['xlsx', 'csv'], limits: { filters: 50, groupBy: 4, sort: 3 },
+    } });
+    renderPage();
+    await screen.findByText('JED DONE');
+    fireEvent.click(exportButton());
+    fireEvent.click(await screen.findByRole('button', { name: /Custom export/ }));
+    expect(await screen.findByRole('dialog', { name: 'Custom export' })).toBeTruthy();
+    expect(await screen.findByRole('checkbox', { name: 'Status' })).toBeTruthy();
+  });
+
+  it('keeps Custom available when no completed installation matches, and says why Standard is not', async () => {
+    renderPage();
+    await screen.findByText('JED DONE');
+    fireEvent.change(screen.getByLabelText('Installed from'), { target: { value: '2001-01-01' } });
+    fireEvent.change(screen.getByLabelText('Installed to'), { target: { value: '2001-01-02' } });
+    await waitFor(() => expect(screen.getByText('0 completed installations in scope')).toBeTruthy());
+    expect(exportButton().disabled).toBe(false);
+    fireEvent.click(exportButton());
+    const standard = await screen.findByRole('button', { name: /Standard export/ });
+    expect(standard.disabled).toBe(true);
+    expect(standard.textContent).toMatch(/No completed installations match your current filters/);
+    expect(screen.getByRole('button', { name: /Custom export/ }).disabled).toBe(false);
   });
 });
 
