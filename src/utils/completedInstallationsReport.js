@@ -16,7 +16,7 @@
 // in the export is dropped rather than shipped blank, so the sheet never
 // implies data the API doesn't have (e.g. JED requests carry no feeder,
 // installer or GPS; imported jobs carry no payment).
-import { ROW_SOURCE, rowStatusLabel } from './installationScope';
+import { ROW_SOURCE, rowStatusLabel, normalizePhase } from './installationScope';
 import { isInstalledStatus, getCoordinates } from './installationStatus';
 import { isCompletedStatus } from './statusBadge';
 import { parseAmount } from './paymentSummary';
@@ -185,6 +185,66 @@ const COLUMNS = [
 
 const isBlank = (v) => v === null || v === undefined || String(v).trim() === '';
 
+// ---------------------------------------------------------------------------
+// Installed meters per installer, by meter type, for the Summary sheet.
+// Kept identical to the API's copy (pharez-api
+// src/services/completedInstallationsReportService.js), which builds the same
+// workbook for an import's already-completed accounts.
+// ---------------------------------------------------------------------------
+const NOT_RECORDED_LABEL = 'Not recorded';
+const PHASE_LABELS = { 'SINGLE PHASE': 'Single Phase', 'THREE PHASE': 'Three Phase' };
+const PHASE_ORDER = ['Single Phase', 'Three Phase'];
+
+/** The fitted meter's phase (inventory), else the job's meter type, as a label. */
+const meterTypeLabel = (phase) => {
+  if (isBlank(phase)) return NOT_RECORDED_LABEL;
+  const key = normalizePhase(phase);
+  return PHASE_LABELS[key] || key;
+};
+
+const typeOrder = (a, b) => {
+  const rank = (t) => (PHASE_ORDER.includes(t) ? PHASE_ORDER.indexOf(t) : t === NOT_RECORDED_LABEL ? 99 : 2);
+  return rank(a) - rank(b) || a.localeCompare(b);
+};
+
+/** "Single Phase: 20 · Three Phase: 3 · Total: 23" (non-zero types only). */
+export const formatTypeCounts = ({ byType, total }) =>
+  [...Object.keys(byType).sort(typeOrder).map((t) => `${t}: ${byType[t]}`), `Total: ${total}`].join(' · ');
+
+/**
+ * [{ installer, byType: { label: n }, total }], busiest installer first,
+ * "Not recorded" last. `installerOf` and `phaseOf` read one row each.
+ */
+export function installedMetersByInstaller(rows, { installerOf, phaseOf }) {
+  const byInstaller = new Map();
+  rows.forEach((row) => {
+    const installer = installerOf(row) || NOT_RECORDED_LABEL;
+    const type = meterTypeLabel(phaseOf(row));
+    const entry = byInstaller.get(installer) || { installer, byType: {}, total: 0 };
+    entry.byType[type] = (entry.byType[type] || 0) + 1;
+    entry.total += 1;
+    byInstaller.set(installer, entry);
+  });
+  return [...byInstaller.values()].sort((a, b) =>
+    (a.installer === NOT_RECORDED_LABEL) - (b.installer === NOT_RECORDED_LABEL)
+    || b.total - a.total
+    || a.installer.localeCompare(b.installer));
+}
+
+/** Summary rows: a heading, one row per installer, then all installers. */
+function installerSummaryRows(counts) {
+  const all = { byType: {}, total: 0 };
+  counts.forEach((c) => {
+    Object.entries(c.byType).forEach(([t, n]) => { all.byType[t] = (all.byType[t] || 0) + n; });
+    all.total += c.total;
+  });
+  return [
+    { item: 'Installed meters by installer', value: "Meter type is the phase of the meter fitted (inventory), else the job's meter type" },
+    ...counts.map((c) => ({ item: `  ${c.installer}`, value: formatTypeCounts(c) })),
+    { item: '  All installers', value: formatTypeCounts(all) },
+  ];
+}
+
 // Kept even when every exported row is blank — the installation facts the
 // report exists for. A blank cell then says "not recorded"; dropping the
 // column (the old behaviour) made it look as if the report had no such field,
@@ -274,6 +334,10 @@ export function buildCompletedInstallationsReport({
     { item: 'Installation pictures', value: `${withPicture} of ${records.length} have a picture link${photos ? `; ${images.length} embedded` : ''}` },
     { item: 'Meter details matched', value: `${matchedMeters} of ${records.length}${context.meterDetails ? ` (${context.meterDetails})` : ''}` },
     { item: 'Data completeness', value: 'Every record in the selected scope was loaded before export.' },
+    ...installerSummaryRows(installedMetersByInstaller(completed, {
+      installerOf: (row) => pick(row.raw.installerName, row.raw.assigneeName),
+      phaseOf: (row) => pick(meterIndex.get(meterSerialOf(row))?.phaseType, row.meterType),
+    })),
   ];
 
   return {

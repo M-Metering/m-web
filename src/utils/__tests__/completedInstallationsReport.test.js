@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { normalizeMultiRow, normalizeJedRow, JED_BUCKET } from '../installationScope';
 import {
   isCompletedRow, completionDateOf, filterByCompletionDate, buildMeterIndex, buildCompletedInstallationsReport,
-  completionRecognisedAt,
+  completionRecognisedAt, installedMetersByInstaller, formatTypeCounts,
 } from '../completedInstallationsReport';
 
 const multi = (over) => normalizeMultiRow({
@@ -140,3 +140,37 @@ describe('buildCompletedInstallationsReport', () => {
   });
 });
 
+describe('installed meters per installer (Summary sheet)', () => {
+  it('counts by the fitted meter\'s phase, falling back to the job\'s type, busiest installer first', () => {
+    const rows = [
+      multi({ id: 1, installerName: 'Ada Installer', meterNumber: 'M1' }),
+      multi({ id: 2, installerName: 'Ada Installer', meterNumber: 'M2' }),
+      // Not in inventory: falls back to the job's meter type.
+      multi({ id: 3, installerName: 'Ada Installer', meterNumber: 'M9', meterType: 'THREE PHASE' }),
+      multi({ id: 4, installerName: null, assigneeName: 'Bo Assignee', meterNumber: 'M3' }),
+      // JED Remita rows carry no installer.
+      jed(),
+    ];
+    const meterIndex = buildMeterIndex([
+      { meterNumber: 'M1', phaseType: 'SINGLE PHASE' },
+      { meterNumber: 'M2', phaseType: 'THREE PHASE' },
+      { meterNumber: 'M3', phaseType: 'SINGLE PHASE' },
+    ]);
+    const { sheets } = buildCompletedInstallationsReport({ rows, meterIndex, context });
+    const summary = sheets[1].rows;
+    const start = summary.findIndex((r) => r.item === 'Installed meters by installer');
+    expect(summary.slice(start + 1).map((r) => [r.item, r.value])).toEqual([
+      ['  Ada Installer', 'Single Phase: 1 · Three Phase: 2 · Total: 3'],
+      ['  Bo Assignee', 'Single Phase: 1 · Total: 1'],
+      ['  Not recorded', 'Three Phase: 1 · Total: 1'],
+      ['  All installers', 'Single Phase: 2 · Three Phase: 3 · Total: 5'],
+    ]);
+  });
+
+  it('labels blank and unusual meter types and orders them after the two phases', () => {
+    const counts = installedMetersByInstaller([{ p: '3-PH' }, { p: null }, { p: 'POLY' }, { p: 'single phase' }], {
+      installerOf: () => 'X', phaseOf: (r) => r.p,
+    });
+    expect(formatTypeCounts(counts[0])).toBe('Single Phase: 1 · Three Phase: 1 · POLY: 1 · Not recorded: 1 · Total: 4');
+  });
+});
