@@ -4,9 +4,10 @@
 // dispatchable meters — the "418 Three Phase available" report was the
 // all-phase total shown under a Three Phase filter.
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import MeterSerialPicker from '../MeterSerialPicker';
 import { toMeterOptions } from '../../../utils/meterInventory';
+import jedApi from '../../services/api';
 
 vi.mock('../../services/api', () => ({ default: { searchMeters: vi.fn(), getMeterByNumber: vi.fn() } }));
 afterEach(cleanup);
@@ -51,5 +52,42 @@ describe('MeterSerialPicker — counts follow the meter-type filter', () => {
     fireEvent.change(screen.getByLabelText('Filter meters by phase'), { target: { value: 'SINGLE PHASE' } });
     fireEvent.change(screen.getByPlaceholderText('Search meter serial number'), { target: { value: '0100000001' } });
     expect(screen.getByText('1 matching of 5 available Single Phase meters')).toBeTruthy();
+  });
+});
+
+// 2026-10-30: PHEDC serials pasted while the batch's disco was ABA_POWER were
+// accepted, then every row was rejected at submit. The paste now checks the
+// meter's own disco and offers to switch.
+describe('MeterSerialPicker — pasting another disco\'s meters', () => {
+  const PHEDC = ['0239110211103', '0239110211111'];
+  const paste = async (props) => {
+    jedApi.getMeterByNumber.mockImplementation(async (serial) => ({
+      data: { meterNumber: serial, phaseType: 'SINGLE PHASE', status: 'AVAILABLE', assignmentStatus: 'UNASSIGNED', discoCode: 'PHEDC' },
+    }));
+    const onChange = vi.fn();
+    const onSwitchDisco = vi.fn();
+    render(
+      <MeterSerialPicker id="p" options={toMeterOptions(RECORDS, new Set(), HOLDERS)} loading={false} error={null}
+        value={[]} onChange={onChange} disabled={false} holders={HOLDERS} enforced={false}
+        discoCode="ABA_POWER" onSwitchDisco={onSwitchDisco} {...props} />
+    );
+    fireEvent.click(screen.getByText('Paste serials'));
+    fireEvent.change(screen.getByLabelText('Paste meter serial numbers'), { target: { value: PHEDC.join('\n') } });
+    fireEvent.click(screen.getByText('Add to selection'));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('0 added.'));
+    return { onChange, onSwitchDisco };
+  };
+
+  it('refuses them, names their disco, and offers the switch', async () => {
+    const { onChange, onSwitchDisco } = await paste({ switchableDiscos: ['ABA_POWER', 'PHEDC'] });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('status').textContent).toContain('0239110211103 (PHEDC stock — choose PHEDC as the Disco)');
+    fireEvent.click(screen.getByText('Switch Disco to PHEDC'));
+    expect(onSwitchDisco).toHaveBeenCalledWith('PHEDC');
+  });
+
+  it('does not offer a disco the user cannot use', async () => {
+    await paste({ switchableDiscos: ['ABA_POWER'] });
+    expect(screen.queryByText('Switch Disco to PHEDC')).toBeNull();
   });
 });

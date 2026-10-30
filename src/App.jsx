@@ -15,6 +15,7 @@ import { Suspense, lazy } from 'react';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import { Loader2, Lock } from 'lucide-react';
 import ErrorNotification from './components/common/ErrorNotification';
+import UpdateAvailableBanner from './components/common/UpdateAvailableBanner';
 import NoDiscoAccessNotice from './components/common/NoDiscoAccessNotice';
 import { usePermissions } from './components/auth/usePermissions';
 import { useAdminIdleTimeout } from './hooks/useAdminIdleTimeout';
@@ -277,6 +278,7 @@ function App() {
           <Router>
             <AppContent />
           </Router>
+          <UpdateAvailableBanner />
         </DataRefreshProvider>
       </AuthProvider>
     </ThemeProvider>

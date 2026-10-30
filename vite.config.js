@@ -75,7 +75,13 @@ export default defineConfig(({ mode }) => {
       react(),
       cspMetaTag(apiOrigin, storageOrigin),
       VitePWA({
-        registerType: 'autoUpdate',
+        // 'prompt' + hooks/useServiceWorkerUpdate.js: the app checks for a new
+        // build on start, every 15 minutes and whenever it returns to the
+        // foreground (an installed PWA is resumed, not reloaded, so the
+        // browser's own on-navigation check rarely runs), then offers a
+        // Reload. The hook registers the service worker itself.
+        registerType: 'prompt',
+        injectRegister: false,
         includeAssets: ['favicon-32.png', 'apple-touch-icon.png', 'brand-logo.png'],
         manifest: {
           name: 'ME Metering Integration',

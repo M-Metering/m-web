@@ -59,9 +59,24 @@ function AssignMeterModal({ meters = [], isOpen, onClose, onAssigned }) {
     reset();
   }, [isOpen, reset]);
 
+  // The meters' own disco when they all share one (meter records carry
+  // discoCode, 2026-10-30) -- a meter can only be dispatched for its own
+  // disco. Otherwise the first disco, as before.
+  const metersDisco = useMemo(() => {
+    const codes = new Set(meters.map((m) => m?.discoCode).filter(Boolean));
+    return codes.size === 1 ? [...codes][0] : null;
+  }, [meters]);
+
   useEffect(() => {
-    if (!discoCode && discos.length > 0) setDiscoCode(discos[0].code);
-  }, [discos, discoCode]);
+    if (!isOpen || discos.length === 0) return;
+    if (metersDisco && discos.some((d) => d.code === metersDisco)) setDiscoCode(metersDisco);
+    else if (!discoCode) setDiscoCode(discos[0].code);
+  // discoCode is read, not watched: the user may still change it afterwards.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, discos, metersDisco]);
+
+  // A result belongs to the disco and installer it was sent for.
+  useEffect(() => { reset(); }, [discoCode, installerId, reset]);
 
   if (!isOpen) return null;
 

@@ -149,8 +149,13 @@ function AssignmentsPage() {
   const {
     capacity, capacityLoading, capacityError, reloadCapacity,
     check: dispatchCheck, submit: submitDispatch, submitting, result, error: dispatchError,
-    enforce: capacityEnforced,
+    enforce: capacityEnforced, reset: resetDispatch,
   } = useMeterDispatch({ discoCode, installerId, serials, phaseBySerial });
+
+  // A result belongs to the disco and installer it was sent for. Left on
+  // screen after either changes, a rejection reads as if it were about the
+  // new choice (2026-10-30: an ABA_POWER rejection shown under PHEDC).
+  useEffect(() => { resetDispatch(); }, [discoCode, installerId, resetDispatch]);
 
   useEffect(() => {
     if (!discoCode && discos.length > 0) setDiscoCode(discos[0].code);
@@ -356,6 +361,8 @@ function AssignmentsPage() {
                 enforced={capacityEnforced}
                 holders={holders}
                 onDiscover={handleDiscoveredMeters}
+                onSwitchDisco={setDiscoCode}
+                switchableDiscos={discos.map((d) => d.code)}
               />
               {holdersError && (
                 <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">

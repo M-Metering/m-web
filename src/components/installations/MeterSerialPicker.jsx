@@ -59,9 +59,14 @@ const recordsOf = (response) => {
  *   same rule the options were.
  * @param {string|null} [props.discoCode] - the batch's disco: the server
  *   search is limited to its stock (a meter can only be dispatched for its own
- *   disco, 2026-10-05). The exact-number fallback can't be scoped; a meter it
- *   finds in another disco's stock is refused by the API per row with that
- *   reason ("Meter belongs to another disco's stock").
+ *   disco, 2026-10-05). The exact-number lookup a paste uses isn't scoped, so
+ *   a pasted meter from another disco's stock (its record's discoCode,
+ *   2026-10-30) is refused here rather than at submit.
+ * @param {(code: string) => void} [props.onSwitchDisco] - offered when every
+ *   pasted meter refused for its disco belongs to the same other disco; the
+ *   parent switches the batch's disco. Omit it to show the refusal only.
+ * @param {string[]} [props.switchableDiscos] - disco codes the user may switch
+ *   to; the switch is offered only for one of these.
  * @param {(meters: object[]) => void} [props.onDiscover] - receives dispatchable
  *   meter records found server-side that the options didn't contain; the
  *   parent merges them into its records so they become ordinary options (with
@@ -70,6 +75,7 @@ const recordsOf = (response) => {
 function MeterSerialPicker({
   id, options, loading, error, onRetry, value, onChange, disabled, invalid,
   capacity = null, enforced = true, holders = null, onDiscover, discoCode = null,
+  onSwitchDisco, switchableDiscos = [],
 }) {
   const [query, setQuery] = useState('');
   const [phase, setPhase] = useState('');
@@ -192,6 +198,15 @@ function MeterSerialPicker({
           rejected.push({ serial, reason: failed ? "couldn't be checked" : 'not in the meter inventory' });
           return;
         }
+        // A meter can only be dispatched for its own disco's batch.
+        if (discoCode && meter.discoCode && meter.discoCode !== discoCode) {
+          rejected.push({
+            serial,
+            reason: `${meter.discoCode} stock — choose ${meter.discoCode} as the Disco`,
+            otherDisco: meter.discoCode,
+          });
+          return;
+        }
         const holder = holderOf(meter);
         if (!isAssignableMeter(meter, holder)) {
           rejected.push({ serial, reason: undispatchableReason(meter, holder) || 'not available' });
@@ -213,7 +228,12 @@ function MeterSerialPicker({
       });
       const added = allowed.filter((s) => !selected.has(s));
       if (added.length) onChange([...value, ...added]);
-      setPasteResult({ added: added.length, rejected });
+      // One other disco owns every meter refused for its disco: offer to switch.
+      const otherDiscos = [...new Set(rejected.map((r) => r.otherDisco).filter(Boolean))];
+      const switchTo = otherDiscos.length === 1 && onSwitchDisco && switchableDiscos.includes(otherDiscos[0])
+        ? otherDiscos[0]
+        : null;
+      setPasteResult({ added: added.length, rejected, switchTo });
       if (rejected.length === 0) { setPasteText(''); setPasteOpen(false); }
     } finally {
       setPasting(false);
@@ -379,6 +399,15 @@ function MeterSerialPicker({
             <span className="text-red-700 dark:text-red-400">
               {' '}Not added: <span className="break-all">{pasteResult.rejected.map((r) => `${r.serial} (${r.reason})`).join(', ')}</span>
             </span>
+          )}
+          {pasteResult.switchTo && (
+            <button
+              type="button"
+              onClick={() => { onSwitchDisco(pasteResult.switchTo); setPasteResult(null); }}
+              className="ml-2 font-semibold text-brand-700 dark:text-brand-400 underline"
+            >
+              Switch Disco to {pasteResult.switchTo}
+            </button>
           )}
         </p>
       )}
