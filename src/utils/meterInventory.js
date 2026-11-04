@@ -188,6 +188,25 @@ export function indexMeterHolders(batches = []) {
   return holders;
 }
 
+/** The same index from GET /assignments/meter-holders' rows. */
+export function indexHolderRows(rows = []) {
+  const holders = new Map();
+  rows.forEach((row) => {
+    const serial = meterSerial(row);
+    if (!serial) return;
+    holders.set(serial, {
+      installerId: row.installerId ?? null,
+      installerName: row.installerName || null,
+      batchId: row.batchId ?? null,
+      batchRef: row.batchRef || null,
+      discoCode: row.discoCode || null,
+      assignedAt: row.assignedAt || null,
+      phaseType: meterPhase(row),
+    });
+  });
+  return holders;
+}
+
 /**
  * Eligible, de-duplicated picker options, sorted by serial.
  * @param {object[]} meters - raw meter records

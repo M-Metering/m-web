@@ -29,6 +29,7 @@ vi.mock('../../services/api', () => ({
     getMeters: vi.fn(),
     getMeterByNumber: vi.fn(),
     searchMeters: vi.fn(),
+    getMeterHolders: vi.fn(() => Promise.reject(Object.assign(new Error("NOT_FOUND:No such endpoint"), { status: 404 }))),
     getAssignmentBatches: vi.fn(),
     getAssignmentBatch: vi.fn(),
     assignMeters: vi.fn(),
@@ -99,12 +100,15 @@ const setup = async () => {
 
 const meterList = () => screen.getByRole('list', { name: 'Available meters' });
 const pickMeter = (serial) => fireEvent.click(within(meterList()).getByText(serial));
-const figure = (label) => Number(screen.getByText(label).previousElementSibling.textContent);
+// The figure, not the tab of the same name ("Assigned meters"): a figure's label is a <p>.
+const figure = (label) => Number(
+  screen.getAllByText(label).find((el) => el.tagName === 'P').previousElementSibling.textContent
+);
 
 describe('AssignmentsPage — meter serial picker', () => {
   it('lists only eligible meters, in full, once each, from GET /meters?status=AVAILABLE', async () => {
     await renderPage();
-    expect(jedApi.getMeters).toHaveBeenCalledWith(expect.objectContaining({ status: 'AVAILABLE', page: 1, limit: 100 }));
+    expect(jedApi.getMeters).toHaveBeenCalledWith(expect.objectContaining({ status: 'AVAILABLE', assignmentStatus: 'UNASSIGNED', page: 1, limit: 100 }));
     const serials = within(meterList()).getAllByRole('checkbox').map((cb) => cb.closest('label').querySelector('.font-mono').textContent);
     expect(serials).toEqual(['0239110006911', '0239110006912', '0239110006913']);
     expect(screen.getByText('Select meter serial number')).toBeTruthy();

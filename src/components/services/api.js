@@ -1276,19 +1276,21 @@ class JEDApiService {
    * endpoints return an XLSX body on success but a JSON error on failure, so
    * the content type is what decides — never assume a blob.
    *
-   * `body` (optional) makes it a JSON POST — the custom export takes its
-   * request in the body. A JSON error carries the HTTP `status` and, when the
+   * `body` (optional) makes it a POST: JSON, or multipart for a FormData — the
+   * custom export takes its request in the body. A JSON error carries the HTTP `status` and, when the
    * API sent them, its per-input `errors` on the thrown Error.
    * @returns {Promise<{blob: Blob, filename: string|null}>}
    */
   async downloadFile(url, fallbackMessage, { body } = {}) {
     const headers = this.utils.buildHeaders();
-    if (body === undefined) delete headers['Content-Type'];
+    const isForm = body instanceof FormData;
+    // The browser sets a multipart Content-Type itself, with its boundary.
+    if (body === undefined || isForm) delete headers['Content-Type'];
     else headers['Content-Type'] = 'application/json';
 
     const response = await fetch(url, body === undefined
       ? { method: 'GET', headers }
-      : { method: 'POST', headers, body: JSON.stringify(body) });
+      : { method: 'POST', headers, body: isForm ? body : JSON.stringify(body) });
     const contentType = response.headers.get('content-type') || '';
 
     if (!response.ok) {
@@ -1458,6 +1460,45 @@ class JEDApiService {
   async getAssignmentBatches(params = {}) {
     const url = this.utils.buildUrlWithParams(this.endpoints.ASSIGNMENTS.BASE, params);
     return await this.makeRequest(url, { method: 'GET', useCache: true, cacheKey: `assignments-${JSON.stringify(params)}` });
+  }
+
+  /** Every meter out with an installer now, in one request. @param {{ discoCode?: string, installerId?: string }} params */
+  async getMeterHolders(params = {}) {
+    const url = this.utils.buildUrlWithParams(this.endpoints.ASSIGNMENTS.METER_HOLDERS, params);
+    return await this.makeRequest(url, { method: 'GET', useCache: true, cacheKey: `meter-holders-${JSON.stringify(params)}` });
+  }
+
+  /** Dispatched meters, paged by the server. status is comma-separated; held meters by default. */
+  async getAssignedMeters(params = {}) {
+    const url = this.utils.buildUrlWithParams(this.endpoints.ASSIGNMENTS.METERS, params);
+    return await this.makeRequest(url, { method: 'GET' });
+  }
+
+  async exportAssignedMeters(params = {}) {
+    const url = this.utils.buildUrlWithParams(this.endpoints.ASSIGNMENTS.METERS_EXPORT, params);
+    return await this.downloadFile(url, 'No assigned meters to export');
+  }
+
+  /** A file goes up as multipart; a list as JSON. */
+  _assignedMeterSearchBody({ file, meterNumbers, format }) {
+    if (!file) return { meterNumbers, ...(format ? { format } : {}) };
+    const form = new FormData();
+    form.append('file', file);
+    if (format) form.append('format', format);
+    return form;
+  }
+
+  /** @param {{ meterNumbers?: string[], file?: File }} input */
+  async searchAssignedMeters(input) {
+    const url = this.buildApiUrl(this.endpoints.ASSIGNMENTS.METERS_SEARCH);
+    const body = this._assignedMeterSearchBody(input);
+    return await this.makeRequest(url, { method: 'POST', body: body instanceof FormData ? body : JSON.stringify(body) });
+  }
+
+  /** @param {{ meterNumbers?: string[], file?: File, format?: 'xlsx'|'csv' }} input */
+  async exportAssignedMeterSearch(input) {
+    const url = this.buildApiUrl(this.endpoints.ASSIGNMENTS.METERS_SEARCH_EXPORT);
+    return await this.downloadFile(url, 'No results to export', { body: this._assignedMeterSearchBody(input) });
   }
 
   /** One batch including its items (the list endpoint omits them). */
