@@ -3,7 +3,8 @@
 // straight from the API (never from client-side state):
 //   - open jobs:   GET /installations?installerId&discoCode&status=ASSIGNED
 //                  and status=IN_PROGRESS (all documented filters)
-//   - held meters: GET /assignments?assignmentType=METER&installerId&discoCode,
+//   - held meters: GET /assignments/meter-holders?installerId&discoCode. An API
+//                  without it gets GET /assignments?assignmentType=METER&installerId&discoCode,
 //                  then GET /assignments/{id} for each batch that still has
 //                  meters out (ACTIVE / PARTIALLY_RETURNED — a CLOSED batch has
 //                  nothing left out, per the spec), keeping ASSIGNED items.
@@ -13,25 +14,36 @@ import { fetchAllPages } from '../utils/fetchAllPages';
 import { getErrorMessage } from '../utils/errorMessage';
 import { computeMeterCapacity } from '../utils/meterCapacity';
 import { INSTALLATION_STATUS } from '../utils/installationStatus';
+import { isEndpointMissing } from './useMeterHolders';
 import { normalizeStatus } from '../utils/statusBadge';
 
 const OPEN_BATCH_STATUSES = new Set(['ACTIVE', 'PARTIALLY_RETURNED']);
 
-/** One fresh read of the installer's capacity (also used to re-check at submit time). */
-export async function loadInstallerMeterCapacity({ installerId, discoCode }) {
-  const scope = { installerId, discoCode };
-  const [assignedJobs, inProgressJobs, batches] = await Promise.all([
-    fetchAllPages((p) => jedApi.getInstallations(p), { ...scope, status: INSTALLATION_STATUS.ASSIGNED }),
-    fetchAllPages((p) => jedApi.getInstallations(p), { ...scope, status: INSTALLATION_STATUS.IN_PROGRESS }),
-    fetchAllPages((p) => jedApi.getAssignmentBatches(p), { ...scope, assignmentType: 'METER' }),
-  ]);
+async function loadHeldMeters(scope) {
+  try {
+    const response = await jedApi.getMeterHolders(scope);
+    return response?.data || [];
+  } catch (err) {
+    if (!isEndpointMissing(err)) throw err;
+  }
 
+  const batches = await fetchAllPages((p) => jedApi.getAssignmentBatches(p), { ...scope, assignmentType: 'METER' });
   const openBatches = batches.filter((b) => OPEN_BATCH_STATUSES.has(normalizeStatus(b.status)));
   const details = await Promise.all(openBatches.map((b) => jedApi.getAssignmentBatch(b.id)));
-  const heldMeters = details.flatMap((d) => {
+  return details.flatMap((d) => {
     const batch = d?.data || d;
     return Array.isArray(batch?.items) ? batch.items : [];
   });
+}
+
+/** One fresh read of the installer's capacity (also used to re-check at submit time). */
+export async function loadInstallerMeterCapacity({ installerId, discoCode }) {
+  const scope = { installerId, discoCode };
+  const [assignedJobs, inProgressJobs, heldMeters] = await Promise.all([
+    fetchAllPages((p) => jedApi.getInstallations(p), { ...scope, status: INSTALLATION_STATUS.ASSIGNED }),
+    fetchAllPages((p) => jedApi.getInstallations(p), { ...scope, status: INSTALLATION_STATUS.IN_PROGRESS }),
+    loadHeldMeters(scope),
+  ]);
 
   return computeMeterCapacity({ openJobs: [...assignedJobs, ...inProgressJobs], heldMeters });
 }

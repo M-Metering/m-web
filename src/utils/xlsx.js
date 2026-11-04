@@ -435,6 +435,12 @@ export function normalizeIdentifierCells(workbook) {
  * file can't be parsed for any reason, the original bytes are saved — the
  * download is never blocked by this step.
  */
+/** Save a file from the API: a workbook gets the usual clean-up, anything else is saved as is. */
+export async function downloadServerFile(blob, filename) {
+  if (/\.xlsx$/i.test(filename || '')) return downloadServerXlsx(blob, filename);
+  return saveBlob(blob, filename);
+}
+
 export async function downloadServerXlsx(blob, filename) {
   try {
     const ExcelJS = await loadExcelJS();

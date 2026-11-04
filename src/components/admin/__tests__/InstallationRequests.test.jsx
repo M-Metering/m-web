@@ -31,6 +31,7 @@ vi.mock('../../services/api', () => ({
     getRevenueTransactions: vi.fn(),
     getMeterTypes: vi.fn(),
     getUsers: vi.fn(),
+    getMeterHolders: vi.fn(() => Promise.reject(Object.assign(new Error("NOT_FOUND:No such endpoint"), { status: 404 }))),
     getAssignmentBatches: vi.fn(),
     getAssignmentBatch: vi.fn(),
     assignInstallations: vi.fn(),

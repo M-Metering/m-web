@@ -12,27 +12,39 @@
 // (useInstallerMeterCapacity), so the inventory, the picker and the capacity
 // figures can't disagree about who holds a meter.
 //
-// Requests: GET /assignments?assignmentType=METER&status=ACTIVE and
-// &status=PARTIALLY_RETURNED (server-side filters — closed batches are never
-// read), then GET /assignments/{id} per open batch, at most 4 at a time.
+// Requests: one GET /assignments/meter-holders (2026-11-04). It used to take a
+// request per open batch: 221 of them, 36 seconds, and growing with every
+// dispatch. An API without that endpoint still gets the batch-by-batch read:
+// GET /assignments?assignmentType=METER&status=ACTIVE and &status=PARTIALLY_RETURNED,
+// then GET /assignments/{id} per open batch, at most 4 at a time.
 // Nothing is cached beyond jedApi's own 30-second cache, and every mutation
 // that can move a meter clears that cache.
-//
-// API_GAP_REPORT.md gap G asks for `assignmentStatus`/`assignedTo` on
-// GET /meters, which would make this a single request.
 import { useState, useEffect, useCallback } from 'react';
 import jedApi from '../components/services/api';
 import { useDataRefresh } from '../components/contexts/DataRefreshContext';
 import { fetchAllPages } from '../utils/fetchAllPages';
 import { mapWithConcurrency } from '../utils/concurrency';
-import { indexMeterHolders } from '../utils/meterInventory';
+import { indexMeterHolders, indexHolderRows } from '../utils/meterInventory';
 import { getErrorMessage } from '../utils/errorMessage';
 
 const OPEN_STATUSES = ['ACTIVE', 'PARTIALLY_RETURNED'];
 const DETAIL_CONCURRENCY = 4;
 
+/** True when the API predates GET /assignments/meter-holders. */
+export const isEndpointMissing = (err) => err?.status === 404 || String(err?.message || '').startsWith('NOT_FOUND:');
+
 /** One fresh read of the open-dispatch index. */
 export async function loadMeterHolders() {
+  try {
+    const response = await jedApi.getMeterHolders();
+    return indexHolderRows(response?.data || []);
+  } catch (err) {
+    if (!isEndpointMissing(err)) throw err;
+  }
+  return loadMeterHoldersBatchByBatch();
+}
+
+async function loadMeterHoldersBatchByBatch() {
   const lists = await Promise.all(OPEN_STATUSES.map((status) => fetchAllPages(
     (p) => jedApi.getAssignmentBatches(p),
     { assignmentType: 'METER', status },

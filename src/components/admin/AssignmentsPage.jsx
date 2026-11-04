@@ -17,7 +17,7 @@
 // submitting.
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Send, PackageCheck, AlertCircle, Loader2, RefreshCw, ChevronRight, X, Undo2,
+  Send, PackageCheck, AlertCircle, Loader2, RefreshCw, ChevronRight, X, Undo2, Gauge,
 } from 'lucide-react';
 import jedApi from '../services/api';
 import { useDataRefresh } from '../contexts/DataRefreshContext';
@@ -38,6 +38,7 @@ import { toMeterOptions, meterSerial } from '../../utils/meterInventory';
 import { useMeterHolders } from '../../hooks/useMeterHolders';
 import { meterSummaryLine } from '../../utils/meterDisplay';
 import MeterSerialPicker from '../installations/MeterSerialPicker';
+import AssignedMetersPanel from './AssignedMetersPanel';
 
 // GET /meters is ~6,000 rows; 100 pages x 100 covers it with room to spare.
 const METER_MAX_PAGES = 100;
@@ -94,7 +95,9 @@ function AssignmentsPage() {
         // batch for its own disco only; any other comes back rejected.
         const list = await fetchAllPagesDetailed(
           (p) => jedApi.getMeters(p),
-          { status: 'AVAILABLE', discoCode },
+          // UNASSIGNED: a meter out with an installer can't be dispatched, so
+          // don't download it. (An older API ignores this; holders still rule it out.)
+          { status: 'AVAILABLE', assignmentStatus: 'UNASSIGNED', discoCode },
           { maxPages: METER_MAX_PAGES, inferNextFromFullPage: true }
         );
         if (!cancelled) {
@@ -284,12 +287,15 @@ function AssignmentsPage() {
           tabs={[
             ...(canDispatch ? [{ id: 'dispatch', label: 'Dispatch meters', icon: Send }] : []),
             { id: 'batches', label: 'Batches', icon: PackageCheck, count: batches.length || undefined },
+            { id: 'assigned', label: 'Assigned meters', icon: Gauge },
           ]}
           activeTab={activeTab}
           onChange={setActiveTab}
         />
 
-        {canDispatch && activeTab === 'dispatch' ? (
+        {activeTab === 'assigned' ? (
+          <AssignedMetersPanel />
+        ) : canDispatch && activeTab === 'dispatch' ? (
           <div className="p-4 sm:p-6 space-y-4">
             <p className="text-xs text-gray-500 dark:text-gray-400">
               Meters and jobs are dispatched separately. Assign jobs from the Installation Requests page — use the same
